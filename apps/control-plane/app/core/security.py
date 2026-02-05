@@ -209,22 +209,19 @@ def create_relay_token_cwt(
         Base64url-encoded CWT token string
     """
     now = utcnow()
-    exp_time = now + timedelta(minutes=expires_minutes)
 
     # Build scope string: "doc:{doc_id}:rw" or "doc:{doc_id}:r"
     auth_code = "rw" if mode == "write" else "r"
     scope = f"doc:{doc_id}:{auth_code}"
 
     # Build claims map with integer keys (RFC 8392)
+    # Note: y-sweet expects minimal claims - only iss, iat, scope
+    # Do NOT include exp or aud - y-sweet native tokens don't have them
     claims = {
         CWT_CLAIM_ISS: issuer,
-        CWT_CLAIM_EXP: int(exp_time.timestamp()),
         CWT_CLAIM_IAT: int(now.timestamp()),
         CWT_CLAIM_SCOPE: scope,
     }
-
-    if audience:
-        claims[CWT_CLAIM_AUD] = audience
 
     # Encode claims to CBOR
     claims_cbor = cbor2.dumps(claims)
