@@ -21,7 +21,8 @@ def issue_relay_token(
     share = share_service.get_share(db, payload.share_id)
 
     # For folder shares, validate that file_path is within folder boundaries
-    if share.kind == models.ShareKind.FOLDER:
+    # Skip validation if doc_id equals share_id (syncing the folder itself, not a file)
+    if share.kind == models.ShareKind.FOLDER and str(payload.share_id) != payload.doc_id:
         # Extract file path from doc_id (format can be "guid/path" or just "path")
         # Assuming doc_id contains the file path for folder shares
         file_path = payload.file_path if payload.file_path else payload.doc_id
