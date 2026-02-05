@@ -49,14 +49,14 @@ def issue_relay_token(
     expires_in = timedelta(minutes=settings.relay_token_ttl_minutes)
     expires_at = security.utcnow() + expires_in
 
-    # Generate Ed25519-signed CWT token (y-sweet expects CWT, not JWT)
+    # Generate Ed25519-signed JWT token
     private_key = request.app.state.relay_private_key
     key_id = request.app.state.relay_key_id
 
     # Include relay URL as audience for relay-server validation
     relay_url = str(settings.relay_public_url).rstrip("/")
 
-    token = security.create_relay_token_cwt(
+    token = security.create_relay_token(
         private_key=private_key,
         key_id=key_id,
         doc_id=payload.doc_id,
