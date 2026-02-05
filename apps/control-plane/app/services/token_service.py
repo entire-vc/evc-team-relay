@@ -53,12 +53,16 @@ def issue_relay_token(
     private_key = request.app.state.relay_private_key
     key_id = request.app.state.relay_key_id
 
+    # Include relay URL as audience for relay-server validation
+    relay_url = str(settings.relay_public_url).rstrip("/")
+
     token = security.create_relay_token(
         private_key=private_key,
         key_id=key_id,
         doc_id=payload.doc_id,
         mode=payload.mode.value,
         expires_minutes=settings.relay_token_ttl_minutes,
+        audience=relay_url,
     )
 
     # Log token issuance with file path for folder shares

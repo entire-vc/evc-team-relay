@@ -133,6 +133,7 @@ def create_relay_token(
     doc_id: str,
     mode: str,
     expires_minutes: int,
+    audience: str | None = None,
 ) -> str:
     """Create Ed25519-signed JWT for relay-server authentication.
 
@@ -142,6 +143,7 @@ def create_relay_token(
         doc_id: Document ID for relay access
         mode: Access mode ("read" or "write")
         expires_minutes: Token TTL in minutes
+        audience: Relay server URL for 'aud' claim (e.g., wss://tr.example.com)
 
     Returns:
         Signed JWT token string
@@ -153,5 +155,8 @@ def create_relay_token(
         "doc": doc_id,
         "mode": mode,
     }
+
+    if audience:
+        payload["aud"] = audience
 
     return jwt.encode(payload, private_key, algorithm="EdDSA", headers={"kid": key_id})
