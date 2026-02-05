@@ -230,10 +230,9 @@ def create_relay_token_cwt(
     claims_cbor = cbor2.dumps(claims)
 
     # Create COSE_Sign1 message
-    # Protected header: algorithm (EdDSA = -8), key_id
+    # Protected header: algorithm (EdDSA = -8) only
+    # Note: y-sweet does NOT include kid in protected header
     protected = {1: -8}  # alg: EdDSA
-    if key_id:
-        protected[4] = key_id.encode("utf-8")  # kid
 
     # Encode protected header
     protected_cbor = cbor2.dumps(protected)
