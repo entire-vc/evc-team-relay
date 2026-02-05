@@ -1,0 +1,1 @@
+{"version":3,"file":"label.svelte.d.ts","sourceRoot":"","sources":["../../../src/lib/components/label/label.svelte.ts"],"names":[],"mappings":"AAIA,OAAO,KAAK,EAAE,mBAAmB,EAAE,MAAM,iBAAiB,CAAC;AAGzD,KAAK,KAAK,GAAG,mBAAmB,GAAG;IACjC,KAAK,CAAC,EAAE,MAAM,CAAC;CAChB,CAAC;AAkBJ,QAAA,MAAM,KAAK,2CAAwC,CAAC;AACpD,KAAK,KAAK,GAAG,UAAU,CAAC,OAAO,KAAK,CAAC,CAAC;AACtC,eAAe,KAAK,CAAC"}
