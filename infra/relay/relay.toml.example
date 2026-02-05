@@ -1,0 +1,20 @@
+[server]
+# Public URL used by clients; DOMAIN_BASE is interpolated during deploy
+url = "https://relay.example.com"
+host = "0.0.0.0"
+port = 8080
+
+[metrics]
+port = 9090
+
+[logging]
+level = "info"
+format = "pretty"
+
+[store]
+type = "minio"
+bucket = "relay"
+endpoint = "http://minio:9000"
+access_key = "MINIO_ROOT_USER"
+secret_key = "MINIO_ROOT_PASSWORD"
+prefix = ""

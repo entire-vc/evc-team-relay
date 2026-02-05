@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block title %}OAuth/IAM Settings{% endblock %}
+
+{% block content %}
+<h2>OAuth/IAM Settings</h2>
+
+<p class="text-muted">
+    OAuth configuration is managed via environment variables.
+    This page shows the current configuration status.
+</p>
+
+<!-- Diagnostics -->
+<div class="card">
+    <div class="card-header">Configuration Status</div>
+    {% for diag in diagnostics %}
+    <div class="alert alert-{{ 'success' if diag.level == 'success' else 'danger' if diag.level == 'error' else 'warning' if diag.level == 'warning' else 'info' }}" style="margin: 0.5rem;">
+        {% if diag.level == 'success' %}&#10003;{% elif diag.level == 'error' %}&#10007;{% elif diag.level == 'warning' %}&#9888;{% else %}&#8505;{% endif %}
+        {{ diag.message }}
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Current Configuration -->
+<div class="card">
+    <div class="card-header">OAuth Provider Configuration</div>
+    <table>
+        <tr>
+            <th style="width: 40%;">Setting</th>
+            <th>Value</th>
+        </tr>
+        <tr>
+            <td><code>OAUTH_ENABLED</code></td>
+            <td>
+                {% if oauth_config.enabled %}
+                <span class="badge badge-success">Enabled</span>
+                {% else %}
+                <span class="badge badge-danger">Disabled</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_PROVIDER_NAME</code></td>
+            <td>{{ oauth_config.provider_name or '—' }}</td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_ISSUER_URL</code></td>
+            <td>
+                {% if oauth_config.issuer_url %}
+                <a href="{{ oauth_config.issuer_url }}" target="_blank" rel="noopener">{{ oauth_config.issuer_url }}</a>
+                {% else %}
+                <span class="text-muted">Not set</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_CLIENT_ID</code></td>
+            <td>
+                {% if oauth_config.client_id %}
+                <code>{{ oauth_config.client_id[:8] }}...{{ oauth_config.client_id[-4:] }}</code>
+                {% else %}
+                <span class="text-muted">Not set</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_CLIENT_SECRET</code></td>
+            <td>
+                {% if oauth_config.client_secret_set %}
+                <span class="badge badge-success">Set</span> <span class="text-muted">(hidden)</span>
+                {% else %}
+                <span class="badge badge-danger">Not set</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_SCOPES</code></td>
+            <td><code>{{ oauth_config.scopes or 'openid profile email' }}</code></td>
+        </tr>
+    </table>
+</div>
+
+<!-- User Registration Settings -->
+<div class="card">
+    <div class="card-header">User Registration</div>
+    <table>
+        <tr>
+            <th style="width: 40%;">Setting</th>
+            <th>Value</th>
+        </tr>
+        <tr>
+            <td><code>OAUTH_AUTO_REGISTER</code></td>
+            <td>
+                {% if oauth_config.auto_register %}
+                <span class="badge badge-success">Enabled</span>
+                <span class="text-muted">— new users created on first OAuth login</span>
+                {% else %}
+                <span class="badge badge-danger">Disabled</span>
+                <span class="text-muted">— users must exist before OAuth login</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_SYNC_USER_INFO</code></td>
+            <td>
+                {% if oauth_config.sync_user_info %}
+                <span class="badge badge-success">Enabled</span>
+                <span class="text-muted">— user info synced from IAM on each login</span>
+                {% else %}
+                <span class="badge badge-danger">Disabled</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td><code>OAUTH_DEFAULT_ROLE</code></td>
+            <td>
+                {% if oauth_config.default_role == 'admin' %}
+                <span class="badge badge-warning">admin</span>
+                <span class="text-muted">— new OAuth users get admin privileges</span>
+                {% else %}
+                <span class="badge">user</span>
+                <span class="text-muted">— new OAuth users are regular users</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+</div>
+
+<!-- Group Mapping -->
+<div class="card">
+    <div class="card-header">Group Mapping</div>
+    <table>
+        <tr>
+            <th style="width: 40%;">Setting</th>
+            <th>Value</th>
+        </tr>
+        <tr>
+            <td><code>OAUTH_ADMIN_GROUPS</code></td>
+            <td>
+                {% if oauth_config.admin_groups %}
+                {% for group in oauth_config.admin_groups.split(',') %}
+                <span class="badge badge-warning">{{ group.strip() }}</span>
+                {% endfor %}
+                <br><span class="text-muted">Users in these IAM groups get admin role</span>
+                {% else %}
+                <span class="text-muted">Not configured — admin role not synced from IAM groups</span>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+</div>
+
+<!-- Registered Providers -->
+{% if providers %}
+<div class="card">
+    <div class="card-header">Registered OAuth Providers</div>
+    <table>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Issuer URL</th>
+            <th>Status</th>
+        </tr>
+        {% for provider in providers %}
+        <tr>
+            <td>{{ provider.name }}</td>
+            <td>{{ provider.provider_type.value }}</td>
+            <td><code>{{ provider.issuer_url }}</code></td>
+            <td>
+                {% if provider.enabled %}
+                <span class="badge badge-success">Enabled</span>
+                {% else %}
+                <span class="badge badge-danger">Disabled</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<!-- Help Section -->
+<div class="card">
+    <div class="card-header">Configuration Help</div>
+    <p>To configure OAuth authentication, set these environment variables and restart the Control Plane:</p>
+    <pre style="background: var(--bg-muted); padding: 1rem; border-radius: 4px; overflow-x: auto;">
+# Required settings
+OAUTH_ENABLED=true
+OAUTH_PROVIDER_NAME=casdoor
+OAUTH_ISSUER_URL=https://auth.example.com
+OAUTH_CLIENT_ID=your_client_id
+OAUTH_CLIENT_SECRET=your_client_secret
+
+# Optional settings
+OAUTH_SCOPES=openid profile email
+OAUTH_AUTO_REGISTER=true
+OAUTH_SYNC_USER_INFO=true
+OAUTH_ADMIN_GROUPS=admins,superusers
+OAUTH_DEFAULT_ROLE=user</pre>
+    <p class="text-muted">
+        For detailed setup instructions, see the
+        <a href="https://github.com/entire-vc/relay-onprem/blob/main/docs/guides/casdoor-setup.md" target="_blank" rel="noopener">
+            Casdoor Integration Guide
+        </a>.
+    </p>
+</div>
+{% endblock %}

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entire VC Team Relay - {% block title %}Admin Panel{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/evc-ava.svg">
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+    {% if user %}
+    <header>
+        <div class="container">
+            <div class="header-brand">
+                <a href="/admin-ui/dashboard" class="brand-logo">
+                    <img src="{{ branding.logo_url if branding and branding.logo_url else '/static/img/evc-ava.svg' }}" alt="{{ branding.name if branding else 'Entire VC' }}" width="32" height="32">
+                </a>
+                <a href="/admin-ui/dashboard" style="text-decoration: none; color: inherit;"><h1>{{ branding.name if branding and branding.name else 'Team Relay' }}</h1></a>
+            </div>
+            <nav>
+                <a href="/admin-ui/dashboard" {% if active_page == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+                <a href="/admin-ui/users" {% if active_page == 'users' %}class="active"{% endif %}>Users</a>
+                <a href="/admin-ui/shares" {% if active_page == 'shares' %}class="active"{% endif %}>Shares</a>
+                <div style="position: relative; display: inline-block;">
+                    <a href="#" {% if active_page == 'settings' %}class="active"{% endif %} onclick="toggleSettingsMenu(event)" id="settings-link">Settings ▾</a>
+                    <div id="settings-menu" style="display: none; position: absolute; top: calc(100% + 4px); left: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; min-width: 150px; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+                        <a href="/admin-ui/settings/oauth" style="display: block; padding: 0.5rem 1rem; text-decoration: none; color: var(--text);">OAuth</a>
+                        <a href="/admin-ui/settings/branding" style="display: block; padding: 0.5rem 1rem; text-decoration: none; color: var(--text);">Branding</a>
+                    </div>
+                </div>
+                <span class="text-muted">{{ user.email }}</span>
+                <form method="POST" action="/admin-ui/logout" style="display: inline; margin: 0;">
+                    <button type="submit" class="btn-secondary">Logout</button>
+                </form>
+            </nav>
+        </div>
+    </header>
+    {% endif %}
+
+    <main class="container">
+        {% if flash_message %}
+        <div class="alert alert-{{ flash_type or 'success' }}">
+            {{ flash_message }}
+        </div>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="/static/js/admin.js"></script>
+    <script>
+        function toggleSettingsMenu(e) {
+            e.preventDefault();
+            const menu = document.getElementById('settings-menu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const settingsLink = document.getElementById('settings-link');
+            const settingsMenu = document.getElementById('settings-menu');
+            if (settingsLink && settingsMenu && !settingsLink.contains(e.target) && !settingsMenu.contains(e.target)) {
+                settingsMenu.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>

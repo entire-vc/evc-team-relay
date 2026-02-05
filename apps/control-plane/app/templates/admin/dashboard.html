@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<h2>Dashboard</h2>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Total Users</h3>
+        <div class="value">{{ stats.total_users }}</div>
+    </div>
+
+    <div class="stat-card">
+        <h3>Active Users</h3>
+        <div class="value">{{ stats.active_users }}</div>
+    </div>
+
+    <div class="stat-card">
+        <h3>Total Shares</h3>
+        <div class="value">{{ stats.total_shares }}</div>
+    </div>
+
+    <div class="stat-card">
+        <h3>Share Members</h3>
+        <div class="value">{{ stats.total_share_members }}</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Shares by Visibility</div>
+    <table>
+        <tr>
+            <th>Visibility</th>
+            <th>Count</th>
+        </tr>
+        <tr>
+            <td>Private</td>
+            <td>{{ stats.shares_by_visibility.private }}</td>
+        </tr>
+        <tr>
+            <td>Public</td>
+            <td>{{ stats.shares_by_visibility.public }}</td>
+        </tr>
+        <tr>
+            <td>Protected</td>
+            <td>{{ stats.shares_by_visibility.protected }}</td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header">Shares by Kind</div>
+    <table>
+        <tr>
+            <th>Kind</th>
+            <th>Count</th>
+        </tr>
+        <tr>
+            <td>Documents</td>
+            <td>{{ stats.shares_by_kind.doc }}</td>
+        </tr>
+        <tr>
+            <td>Folders</td>
+            <td>{{ stats.shares_by_kind.folder }}</td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <div class="card-header">Recent Activity</div>
+    <p>Recent activity events: <strong>{{ stats.recent_activity_count }}</strong></p>
+    <p class="text-muted">View detailed audit logs via API endpoint: <code>/admin/audit-logs</code></p>
+</div>
+{% endblock %}

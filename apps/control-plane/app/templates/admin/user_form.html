@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}{{ 'Edit User' if user_data else 'Create User' }}{% endblock %}
+
+{% block content %}
+<h2>{{ 'Edit User' if user_data else 'Create New User' }}</h2>
+
+<div class="card">
+    <form method="POST" data-validate>
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required
+               value="{{ user_data.email if user_data else '' }}"
+               placeholder="user@example.com">
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password"
+               {% if not user_data %}required{% endif %}
+               placeholder="{{ 'Leave empty to keep current password' if user_data else 'Minimum 8 characters' }}">
+        {% if user_data %}
+        <p class="text-muted" style="margin-top: -0.5rem;">Leave empty to keep current password</p>
+        {% endif %}
+
+        <div class="checkbox-group">
+            <input type="checkbox" id="is_admin" name="is_admin" value="true"
+                   {% if user_data and user_data.is_admin %}checked{% endif %}>
+            <label for="is_admin">Admin privileges</label>
+        </div>
+
+        <div class="checkbox-group">
+            <input type="checkbox" id="is_active" name="is_active" value="true"
+                   {% if not user_data or user_data.is_active %}checked{% endif %}>
+            <label for="is_active">Active account</label>
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+            <button type="submit" class="btn-primary">{{ 'Update User' if user_data else 'Create User' }}</button>
+            <a href="/admin-ui/users" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

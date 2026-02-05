@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+
+{% block title %}Branding Settings{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="margin: 0;">Branding Settings</h2>
+</div>
+
+<!-- Branding Form -->
+<div class="card" style="padding: 1rem;">
+    <form id="branding-form">
+        <!-- Row 1: All fields -->
+        <div style="display: flex; gap: 1rem; align-items: flex-start;">
+            <div style="flex: 1;">
+                <label for="name" style="display: block; font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; color: var(--muted-foreground);">Instance Name</label>
+                <input type="text" id="name" name="name" maxlength="100" placeholder="Entire VC Team Relay"
+                       style="width: 100%; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 0.875rem;">
+            </div>
+            <div style="flex: 1;">
+                <label for="logo_url" style="display: block; font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; color: var(--muted-foreground);">Logo</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="logo_url" name="logo_url" maxlength="2048" placeholder="URL or upload"
+                           style="flex: 1; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 0.875rem;" readonly>
+                    <input type="file" id="logo_file" accept="image/*" style="display: none;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('logo_file').click()">Browse</button>
+                </div>
+            </div>
+            <div style="flex: 1;">
+                <label for="favicon_url" style="display: block; font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; color: var(--muted-foreground);">Favicon</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="favicon_url" name="favicon_url" maxlength="2048" placeholder="URL or upload"
+                           style="flex: 1; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 0.875rem;" readonly>
+                    <input type="file" id="favicon_file" accept="image/*,.ico" style="display: none;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('favicon_file').click()">Browse</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: Save button centered -->
+        <div style="display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1rem;">
+            <button type="submit" class="btn btn-primary btn-sm" id="save-btn">Save Changes</button>
+            <span id="save-status" style="display: none; font-size: 0.8125rem;"></span>
+        </div>
+    </form>
+</div>
+
+<!-- Preview Section -->
+<div class="card" style="margin-top: 1rem; padding: 1rem;">
+    <div style="display: flex; gap: 2rem; align-items: flex-start;">
+        <div>
+            <span class="text-muted" style="font-size: 0.75rem;">Logo Preview:</span>
+            <div id="logo-preview" style="margin-top: 0.5rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary); min-width: 100px; min-height: 50px; display: flex; align-items: center; justify-content: center;">
+                <img id="logo-img" src="" alt="Logo" style="max-width: 150px; max-height: 60px; display: none;">
+                <span class="text-muted" id="logo-placeholder" style="font-size: 0.75rem;">No logo</span>
+            </div>
+        </div>
+        <div>
+            <span class="text-muted" style="font-size: 0.75rem;">Favicon Preview:</span>
+            <div id="favicon-preview" style="margin-top: 0.5rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-secondary); min-width: 50px; min-height: 50px; display: flex; align-items: center; justify-content: center;">
+                <img id="favicon-img" src="" alt="Favicon" style="max-width: 32px; max-height: 32px; display: none;">
+                <span class="text-muted" id="favicon-placeholder" style="font-size: 0.75rem;">No icon</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    const form = document.getElementById('branding-form');
+    const nameInput = document.getElementById('name');
+    const logoUrlInput = document.getElementById('logo_url');
+    const faviconUrlInput = document.getElementById('favicon_url');
+    const logoFileInput = document.getElementById('logo_file');
+    const faviconFileInput = document.getElementById('favicon_file');
+    const saveBtn = document.getElementById('save-btn');
+    const saveStatus = document.getElementById('save-status');
+    const logoImg = document.getElementById('logo-img');
+    const logoPlaceholder = document.getElementById('logo-placeholder');
+    const faviconImg = document.getElementById('favicon-img');
+    const faviconPlaceholder = document.getElementById('favicon-placeholder');
+
+    // Load current branding
+    async function loadBranding() {
+        try {
+            const response = await fetch('/admin-ui/api/branding', { credentials: 'include' });
+            if (!response.ok) throw new Error('Failed to load');
+            const data = await response.json();
+
+            nameInput.value = data.name || '';
+            logoUrlInput.value = data.logo_url || '';
+            faviconUrlInput.value = data.favicon_url || '';
+
+            updateLogoPreview(data.logo_url);
+            updateFaviconPreview(data.favicon_url);
+        } catch (error) {
+            console.error('Error loading branding:', error);
+        }
+    }
+
+    function updateLogoPreview(url) {
+        if (url) {
+            logoImg.src = url;
+            logoImg.style.display = 'block';
+            logoPlaceholder.style.display = 'none';
+            logoImg.onerror = () => {
+                logoImg.style.display = 'none';
+                logoPlaceholder.textContent = 'Invalid URL';
+                logoPlaceholder.style.display = 'block';
+            };
+        } else {
+            logoImg.style.display = 'none';
+            logoPlaceholder.textContent = 'No logo';
+            logoPlaceholder.style.display = 'block';
+        }
+    }
+
+    function updateFaviconPreview(url) {
+        if (url) {
+            faviconImg.src = url;
+            faviconImg.style.display = 'block';
+            faviconPlaceholder.style.display = 'none';
+            faviconImg.onerror = () => {
+                faviconImg.style.display = 'none';
+                faviconPlaceholder.textContent = 'Invalid URL';
+                faviconPlaceholder.style.display = 'block';
+            };
+        } else {
+            faviconImg.style.display = 'none';
+            faviconPlaceholder.textContent = 'No icon';
+            faviconPlaceholder.style.display = 'block';
+        }
+    }
+
+    // Upload file to server
+    async function uploadFile(file) {
+        // Client-side validation
+        const maxSize = 1024 * 1024; // 1MB
+        if (file.size > maxSize) {
+            throw new Error('File too large (max 1MB)');
+        }
+
+        const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/svg+xml', 'image/x-icon', 'image/vnd.microsoft.icon'];
+        if (!allowedTypes.includes(file.type) && !file.name.endsWith('.ico')) {
+            throw new Error('Invalid file type. Allowed: PNG, JPG, GIF, SVG, ICO');
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/admin-ui/api/upload', {
+            method: 'POST',
+            credentials: 'include',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Upload failed');
+        }
+
+        const data = await response.json();
+        return data.url;
+    }
+
+    // File input handlers
+    logoFileInput.addEventListener('change', async function() {
+        if (this.files && this.files[0]) {
+            try {
+                showMessage('Uploading...', 'info');
+                const url = await uploadFile(this.files[0]);
+                logoUrlInput.value = url;
+                updateLogoPreview(url);
+                showMessage('Logo uploaded', 'success');
+            } catch (error) {
+                showMessage(error.message || 'Upload failed', 'error');
+            }
+        }
+    });
+
+    faviconFileInput.addEventListener('change', async function() {
+        if (this.files && this.files[0]) {
+            try {
+                showMessage('Uploading...', 'info');
+                const url = await uploadFile(this.files[0]);
+                faviconUrlInput.value = url;
+                updateFaviconPreview(url);
+                showMessage('Favicon uploaded', 'success');
+            } catch (error) {
+                showMessage(error.message || 'Upload failed', 'error');
+            }
+        }
+    });
+
+    // Save branding
+    async function saveBranding(e) {
+        e.preventDefault();
+        const payload = {
+            name: nameInput.value.trim(),
+            logo_url: logoUrlInput.value.trim(),
+            favicon_url: faviconUrlInput.value.trim()
+        };
+
+        if (!payload.name && !payload.logo_url && !payload.favicon_url) {
+            showMessage('Please fill in at least one field', 'error');
+            return;
+        }
+
+        try {
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+
+            const response = await fetch('/admin-ui/api/branding', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Failed to save');
+            }
+
+            showMessage('Saved successfully', 'success');
+        } catch (error) {
+            showMessage(error.message || 'Failed to save', 'error');
+        } finally {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Changes';
+        }
+    }
+
+    function showMessage(message, type) {
+        saveStatus.textContent = message;
+        if (type === 'success') {
+            saveStatus.style.color = 'var(--success)';
+        } else if (type === 'error') {
+            saveStatus.style.color = 'var(--danger)';
+        } else {
+            saveStatus.style.color = 'var(--muted-foreground)';
+        }
+        saveStatus.style.display = 'inline';
+        if (type !== 'info') {
+            setTimeout(() => { saveStatus.style.display = 'none'; }, 3000);
+        }
+    }
+
+    form.addEventListener('submit', saveBranding);
+    loadBranding();
+})();
+</script>
+{% endblock %}

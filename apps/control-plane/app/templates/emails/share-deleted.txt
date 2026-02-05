@@ -1,0 +1,10 @@
+A share has been deleted
+
+The following share has been deleted and is no longer accessible:
+
+{{ share_kind|capitalize }}: {{ share_path }}
+
+If you need to recover this content, please contact the share owner.
+
+--
+{{ server_name }}

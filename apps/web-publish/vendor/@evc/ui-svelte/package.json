@@ -1,0 +1,46 @@
+{
+  "name": "@evc/ui-svelte",
+  "version": "0.1.0",
+  "description": "Entire VC UI Components - Svelte 5 components",
+  "type": "module",
+  "svelte": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "svelte": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {},
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  },
+  "dependencies": {
+    "bits-ui": "^1.0.0-next.70",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "tailwind-merge": "^2.2.0"
+  },
+  "devDependencies": {},
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/entire-vc/evc-brandkit.git",
+    "directory": "packages/ui-svelte"
+  },
+  "keywords": [
+    "svelte",
+    "ui",
+    "components",
+    "design-system",
+    "tailwindcss",
+    "entire-vc"
+  ],
+  "license": "MIT"
+}

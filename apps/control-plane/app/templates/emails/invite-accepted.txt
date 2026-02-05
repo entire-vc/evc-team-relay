@@ -1,0 +1,11 @@
+Your invitation was accepted!
+
+{{ new_member_email }} has accepted your invitation and joined:
+
+Share: {{ share_path }}
+Role: {{ role|capitalize }}
+
+They now have access to collaborate on this share.
+
+--
+{{ server_name }}

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Shares{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="margin: 0;">Shares</h2>
+    <span class="text-muted">{{ total }} total</span>
+</div>
+
+<div class="card" style="margin-bottom: 1rem; padding: 0.75rem 1rem;">
+    <form method="get" action="/admin-ui/shares" style="display: flex; gap: 0.5rem; align-items: center; justify-content: center;">
+        <select id="kind" name="kind" class="select-inline">
+            <option value="">All kinds</option>
+            <option value="doc" {% if kind_filter == 'doc' %}selected{% endif %}>Doc</option>
+            <option value="folder" {% if kind_filter == 'folder' %}selected{% endif %}>Folder</option>
+        </select>
+        <select id="visibility" name="visibility" class="select-inline">
+            <option value="">All visibility</option>
+            <option value="private" {% if visibility_filter == 'private' %}selected{% endif %}>Private</option>
+            <option value="public" {% if visibility_filter == 'public' %}selected{% endif %}>Public</option>
+            <option value="protected" {% if visibility_filter == 'protected' %}selected{% endif %}>Protected</option>
+        </select>
+        <select id="owner_id" name="owner_id" class="select-inline">
+            <option value="">All owners</option>
+            {% for user_item in all_users %}
+            <option value="{{ user_item.id }}" {% if owner_filter and owner_filter|string == user_item.id|string %}selected{% endif %}>{{ user_item.email }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" id="search" name="search" placeholder="Search path..." value="{{ search_filter or '' }}" class="input" style="width: auto; min-width: 140px; height: 32px; margin-bottom: 0;">
+        <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+        <a href="/admin-ui/shares" class="btn btn-secondary btn-sm">Clear</a>
+    </form>
+</div>
+
+<div class="card">
+    <table class="table-compact">
+        <thead>
+            <tr>
+                <th>Path</th>
+                <th>Visibility</th>
+                <th>Owner</th>
+                <th style="text-align: center;">Members</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for share in shares %}
+            <tr>
+                <td>
+                    <span class="text-muted" style="font-size: 0.75rem;">{% if share.kind.value == 'doc' %}doc{% else %}folder{% endif %}</span>
+                    {{ share.path }}
+                </td>
+                <td>
+                    <span class="visibility-{{ share.visibility.value }}">{{ share.visibility.value | capitalize }}</span>
+                </td>
+                <td style="font-size: 0.8125rem;">{{ share.owner.email }}</td>
+                <td style="text-align: center;">{{ share.members|length }}</td>
+                <td style="font-size: 0.8125rem;">{{ share.created_at.strftime('%Y-%m-%d') if share.created_at else '-' }}</td>
+                <td>
+                    <div class="actions">
+                        <a href="/admin-ui/shares/{{ share.id }}" class="btn btn-outline btn-sm">View</a>
+                        <button class="btn btn-danger btn-sm" onclick="deleteShare('{{ share.id }}', '{{ share.path }}')">Delete</button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not shares %}
+    <p class="text-muted text-center">No shares found.</p>
+    {% endif %}
+</div>
+
+{% if total_pages > 1 %}
+<div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 1.5rem;">
+    {% if page > 1 %}
+    <a href="?page={{ page - 1 }}{% if kind_filter %}&kind={{ kind_filter }}{% endif %}{% if visibility_filter %}&visibility={{ visibility_filter }}{% endif %}{% if owner_filter %}&owner_id={{ owner_filter }}{% endif %}{% if search_filter %}&search={{ search_filter }}{% endif %}" class="btn btn-secondary">Previous</a>
+    {% endif %}
+
+    <span style="padding: 0.5rem 1rem;">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="?page={{ page + 1 }}{% if kind_filter %}&kind={{ kind_filter }}{% endif %}{% if visibility_filter %}&visibility={{ visibility_filter }}{% endif %}{% if owner_filter %}&owner_id={{ owner_filter }}{% endif %}{% if search_filter %}&search={{ search_filter }}{% endif %}" class="btn btn-secondary">Next</a>
+    {% endif %}
+</div>
+{% endif %}
+
+<script>
+function deleteShare(shareId, sharePath) {
+    if (confirm(`Are you sure you want to delete share "${sharePath}"?\n\nThis will remove all members and cannot be undone.`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/admin-ui/shares/${shareId}/delete`;
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+</script>
+{% endblock %}

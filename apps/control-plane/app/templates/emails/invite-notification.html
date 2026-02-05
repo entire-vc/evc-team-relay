@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}You're invited to collaborate{% endblock %}
+{% block content %}
+<h2>You've been invited to collaborate!</h2>
+
+<p><strong>{{ inviter_email }}</strong> has invited you to collaborate on:</p>
+
+<div class="highlight">
+    <p><strong>{{ share_kind|capitalize }}:</strong> {{ share_path }}</p>
+    <p><strong>Your role:</strong> {{ role|capitalize }}</p>
+    {% if expires_at %}
+    <p><strong>Expires:</strong> {{ expires_at }}</p>
+    {% endif %}
+</div>
+
+<p style="text-align: center;">
+    <a href="{{ invite_url }}" class="button">Accept Invitation</a>
+</p>
+
+<p style="font-size: 14px; color: #666;">
+    Or copy this link: <code>{{ invite_url }}</code>
+</p>
+
+<p style="font-size: 14px; color: #666;">
+    If you don't know {{ inviter_email }} or weren't expecting this invitation,
+    you can safely ignore this email.
+</p>
+{% endblock %}

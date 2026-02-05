@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'infra/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  lint-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Lint with Ruff
+        working-directory: apps/control-plane
+        run: |
+          uv sync --extra dev --extra test
+          uv run ruff check app/ tests/
+          uv run ruff format --check app/ tests/
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run tests
+        working-directory: apps/control-plane
+        run: |
+          uv sync --extra dev --extra test
+          uv run pytest -v --tb=short
+
+  build-docker:
+    runs-on: ubuntu-latest
+    needs: [lint-python, test-python]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build control-plane
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/control-plane
+          push: false
+          tags: evc-team-relay/control-plane:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build web-publish
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/web-publish
+          push: false
+          tags: evc-team-relay/web-publish:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

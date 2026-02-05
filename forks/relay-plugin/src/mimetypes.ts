@@ -1,0 +1,36 @@
+const mimeTypes: { [key: string]: string } = {
+	md: "text/markdown",
+	txt: "text/plain",
+	json: "application/json",
+	js: "application/javascript",
+	ts: "application/typescript",
+	html: "text/html",
+	css: "text/css",
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	svg: "image/svg+xml",
+	pdf: "application/pdf",
+	canvas: "application/canvas+json",
+	webp: "image/webp",
+	avif: "image/avif",
+	bmp: "image/bmp",
+	mp3: "audio/mpeg",
+	wav: "audio/wav",
+	m4a: "audio/x-m4a",
+	flac: "audio/flac",
+	ogg: "audio/ogg",
+	oga: "audio/ogg",
+	opus: "audio/opus",
+	mp4: "video/mp4",
+	webm: "video/webm",
+	ogv: "video/ogg",
+	mov: "video/quicktime",
+	mkv: "video/x-matroska",
+	"3gp": "video/3gpp",
+};
+export function getMimeType(filename: string): string {
+	const extension = filename.split(".").pop()?.toLowerCase() || "";
+	return mimeTypes[extension] || "application/octet-stream";
+}

@@ -1,0 +1,424 @@
+/**
+ * Global styles for Relay Web Publish
+ * EVC Team Relay Theme with Tailwind CSS
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================
+   EVC Team Relay Color Palette (HSL)
+   ================================ */
+@layer base {
+	:root {
+		--font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+		--font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+		/* Primary - Indigo (HSL) */
+		--primary: 239 84% 67%;
+		--primary-hover: 239 84% 60%;
+		--primary-foreground: 0 0% 100%;
+
+		/* Secondary */
+		--secondary: 226 100% 94%;
+		--secondary-foreground: 243 75% 27%;
+
+		/* Background */
+		--background: 0 0% 100%;
+		--foreground: 243 75% 20%;
+		--muted: 250 100% 98%;
+		--muted-foreground: 220 9% 46%;
+		--card: 0 0% 100%;
+		--card-foreground: 243 75% 20%;
+		--popover: 0 0% 100%;
+		--popover-foreground: 243 75% 20%;
+
+		/* Accent - Purple */
+		--accent: 258 90% 66%;
+		--accent-foreground: 0 0% 100%;
+
+		/* Semantic Colors */
+		--destructive: 0 84% 60%;
+		--destructive-hover: 0 72% 51%;
+		--destructive-foreground: 0 0% 100%;
+		--success: 160 84% 39%;
+		--success-foreground: 0 0% 100%;
+		--warning: 38 92% 50%;
+		--warning-foreground: 243 75% 20%;
+
+		/* UI Elements */
+		--border: 220 13% 91%;
+		--input: 220 13% 91%;
+		--ring: 239 84% 67%;
+		--radius: 0.5rem;
+
+		/* Sidebar - Light gray background per brandkit */
+		--sidebar-background: 0 0% 98%;
+		--sidebar-foreground: 220 9% 46%;
+		--sidebar-primary: 239 84% 67%;
+		--sidebar-primary-foreground: 0 0% 100%;
+		--sidebar-accent: 0 0% 96%;
+		--sidebar-accent-foreground: 239 84% 60%;
+		--sidebar-border: 220 13% 91%;
+		--sidebar-ring: 239 84% 67%;
+
+		/* Code blocks */
+		--code-bg: 220 13% 18%;
+		--code-fg: 220 14% 71%;
+		--code-inline-bg: 250 100% 98%;
+		--code-inline-fg: 258 90% 66%;
+
+		/* Effects */
+		--shadow: rgba(0, 0, 0, 0.1);
+		--shadow-lg: rgba(0, 0, 0, 0.15);
+	}
+
+	.dark {
+		/* Primary - Lighter Indigo for dark mode */
+		--primary: 239 84% 70%;
+		--primary-hover: 239 84% 67%;
+		--primary-foreground: 243 75% 8%;
+
+		/* Secondary */
+		--secondary: 243 30% 20%;
+		--secondary-foreground: 250 100% 98%;
+
+		/* Background */
+		--background: 243 75% 8%;
+		--foreground: 250 100% 98%;
+		--muted: 243 30% 15%;
+		--muted-foreground: 243 15% 65%;
+		--card: 243 75% 11%;
+		--card-foreground: 250 100% 98%;
+		--popover: 243 75% 11%;
+		--popover-foreground: 250 100% 98%;
+
+		/* Accent */
+		--accent: 258 90% 70%;
+		--accent-foreground: 243 75% 8%;
+
+		/* UI Elements */
+		--border: 243 30% 18%;
+		--input: 243 30% 18%;
+		--ring: 239 84% 70%;
+
+		/* Sidebar dark */
+		--sidebar-background: 243 75% 6%;
+		--sidebar-foreground: 243 15% 65%;
+		--sidebar-primary: 239 84% 70%;
+		--sidebar-primary-foreground: 243 75% 8%;
+		--sidebar-accent: 243 30% 15%;
+		--sidebar-accent-foreground: 239 84% 70%;
+		--sidebar-border: 243 30% 18%;
+		--sidebar-ring: 239 84% 70%;
+
+		/* Code inline dark */
+		--code-inline-bg: 243 30% 15%;
+		--code-inline-fg: 263 70% 75%;
+
+		/* Semantic adjusted for dark */
+		--destructive: 0 63% 45%;
+		--destructive-hover: 0 84% 60%;
+
+		/* Effects */
+		--shadow: rgba(0, 0, 0, 0.3);
+		--shadow-lg: rgba(0, 0, 0, 0.4);
+	}
+
+	* {
+		@apply border-border;
+	}
+
+	html {
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+		scroll-behavior: smooth;
+	}
+
+	body {
+		@apply bg-background text-foreground;
+		font-family: var(--font-sans);
+		font-size: 16px;
+		line-height: 1.6;
+	}
+
+	/* Ensure text is always selectable in main content area */
+	main, article, .markdown-content, div, h1, h2, h3, h4, h5, h6, p, li, td, th, blockquote, span, a {
+		-webkit-user-select: text !important;
+		-moz-user-select: text !important;
+		-ms-user-select: text !important;
+		user-select: text !important;
+		-webkit-touch-callout: default !important;
+	}
+
+	/* Ensure main content is above any potential overlays and receives pointer events */
+	main {
+		position: relative;
+		z-index: 1;
+		pointer-events: auto !important;
+	}
+
+	/* Ensure article and content wrapper receive events */
+	article, .content-wrapper, .markdown-content {
+		pointer-events: auto !important;
+		-webkit-user-drag: none !important;
+	}
+}
+
+/* ================================
+   Typography
+   ================================ */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	@apply font-semibold text-foreground;
+	line-height: 1.25;
+	margin: 0;
+}
+
+p {
+	margin: 0 0 1rem 0;
+}
+
+a {
+	@apply text-primary transition-colors;
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+	opacity: 0.9;
+}
+
+a:focus-visible {
+	@apply outline-2 outline-ring outline-offset-2 rounded-sm;
+}
+
+/* Selection */
+::selection {
+	background-color: hsl(var(--primary));
+	color: hsl(var(--primary-foreground));
+}
+
+/* ================================
+   Form Elements
+   ================================ */
+button {
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
+	cursor: pointer;
+}
+
+button:focus-visible {
+	@apply outline-2 outline-ring outline-offset-2;
+}
+
+button:disabled {
+	@apply cursor-not-allowed opacity-60;
+}
+
+input,
+textarea,
+select {
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+	@apply outline-2 outline-ring outline-offset-2;
+}
+
+/* ================================
+   Code
+   ================================ */
+code,
+pre {
+	font-family: var(--font-mono);
+}
+
+code {
+	background-color: hsl(var(--code-inline-bg));
+	color: hsl(var(--code-inline-fg));
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-size: 0.9em;
+}
+
+pre {
+	background-color: hsl(var(--code-bg));
+	color: hsl(var(--code-fg));
+	padding: 1rem;
+	border-radius: 8px;
+	overflow-x: auto;
+	line-height: 1.5;
+}
+
+pre code {
+	background-color: transparent;
+	padding: 0;
+	color: inherit;
+	font-size: 0.875rem;
+}
+
+/* ================================
+   Tables
+   ================================ */
+table {
+	border-collapse: collapse;
+	width: 100%;
+}
+
+th,
+td {
+	@apply text-left border border-border;
+	padding: 0.75rem;
+}
+
+th {
+	@apply bg-secondary text-secondary-foreground font-semibold;
+}
+
+/* ================================
+   Lists
+   ================================ */
+ul,
+ol {
+	margin: 0 0 1rem 0;
+	padding-left: 2rem;
+}
+
+li {
+	margin-bottom: 0.5rem;
+}
+
+/* ================================
+   Blockquotes
+   ================================ */
+blockquote {
+	@apply text-muted-foreground border-l-4 border-border italic;
+	margin: 0 0 1rem 0;
+	padding-left: 1rem;
+}
+
+/* ================================
+   Horizontal Rules
+   ================================ */
+hr {
+	@apply border-t border-border;
+	border-bottom: none;
+	margin: 2rem 0;
+}
+
+/* ================================
+   Images
+   ================================ */
+img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+}
+
+/* ================================
+   Scrollbar Styling
+   ================================ */
+::-webkit-scrollbar {
+	width: 12px;
+	height: 12px;
+}
+
+::-webkit-scrollbar-track {
+	@apply bg-secondary;
+}
+
+::-webkit-scrollbar-thumb {
+	@apply bg-border rounded-md;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	@apply bg-muted-foreground;
+}
+
+/* ================================
+   Utility Classes
+   ================================ */
+.sr-only {
+	@apply absolute w-px h-px p-0 -m-px overflow-hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border-width: 0;
+}
+
+/* Skip Link */
+.skip-link {
+	@apply absolute left-0 bg-primary text-primary-foreground px-4 py-2 z-[100];
+	top: -40px;
+}
+
+.skip-link:focus {
+	top: 0;
+}
+
+/* ================================
+   Accessibility
+   ================================ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	html {
+		scroll-behavior: auto;
+	}
+}
+
+/* ================================
+   Print Styles
+   ================================ */
+@media print {
+	body {
+		@apply bg-background text-foreground;
+	}
+
+	a {
+		text-decoration: underline;
+	}
+
+	pre,
+	blockquote {
+		border: 1px solid #999;
+		page-break-inside: avoid;
+	}
+
+	thead {
+		display: table-header-group;
+	}
+
+	tr,
+	img {
+		page-break-inside: avoid;
+	}
+
+	img {
+		max-width: 100% !important;
+	}
+
+	@page {
+		margin: 2cm;
+	}
+}

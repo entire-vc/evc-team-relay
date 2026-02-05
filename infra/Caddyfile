@@ -1,0 +1,24 @@
+{
+  email {$ACME_EMAIL}
+}
+
+cp.{$DOMAIN_BASE} {
+  reverse_proxy control-plane:8000
+}
+
+relay.{$DOMAIN_BASE} {
+  reverse_proxy relay-server:8080
+}
+
+# Grafana monitoring dashboard
+grafana.{$DOMAIN_BASE} {
+  reverse_proxy grafana:3000
+}
+
+# Web publishing (optional)
+# Set WEB_PUBLISH_DOMAIN in .env to enable (e.g., docs.example.com)
+# Default 'web-publish.disabled' is a placeholder that won't match real requests
+{$WEB_PUBLISH_DOMAIN:web-publish.disabled} {
+  reverse_proxy web-publish:3000
+}
+

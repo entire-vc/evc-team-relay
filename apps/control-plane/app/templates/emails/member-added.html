@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}You've been added to a share{% endblock %}
+{% block content %}
+<h2>You've been added to a share!</h2>
+
+<p><strong>{{ adder_email }}</strong> has added you to:</p>
+
+<div class="highlight">
+    <p><strong>Share:</strong> {{ share_path }}</p>
+    <p><strong>Your role:</strong> {{ role|capitalize }}</p>
+</div>
+
+<p>You can now access and collaborate on this share.</p>
+{% endblock %}

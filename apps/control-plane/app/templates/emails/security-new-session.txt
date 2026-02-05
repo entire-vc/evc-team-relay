@@ -1,0 +1,15 @@
+New login detected
+
+A new login was detected on your account:
+
+Device: {{ device_name }}
+IP Address: {{ ip_address }}
+Time: {{ timestamp }}
+
+WASN'T YOU?
+
+If you didn't sign in, we recommend changing your password immediately
+and reviewing your active sessions.
+
+--
+{{ server_name }}

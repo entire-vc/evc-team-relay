@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Share Details{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="margin: 0;">Share Details</h2>
+    <div style="display: flex; gap: 0.5rem;">
+        <a href="/admin-ui/shares" class="btn btn-secondary btn-sm">Back</a>
+        <button class="btn btn-danger btn-sm" onclick="deleteShare('{{ share.id }}', '{{ share.path }}')">
+            Delete
+        </button>
+    </div>
+</div>
+
+<!-- Share Information -->
+<div class="card" style="margin-bottom: 1rem; padding: 0.75rem 1rem;">
+    <div style="display: flex; gap: 1.5rem; align-items: center; font-size: 0.8125rem; flex-wrap: nowrap; height: 32px;">
+        <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;">
+            <span class="text-muted">Path:</span>
+            <strong>{{ share.path }}</strong>
+            <span class="text-muted">({% if share.kind.value == 'doc' %}doc{% else %}folder{% endif %})</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;">
+            <span class="text-muted">Visibility:</span>
+            <form method="post" action="/admin-ui/shares/{{ share.id }}/edit" style="display: inline-flex; align-items: center; margin: 0; height: 100%;">
+                <select name="visibility" class="select-compact" onchange="this.form.submit()">
+                    <option value="private" {% if share.visibility.value == 'private' %}selected{% endif %}>Private</option>
+                    <option value="public" {% if share.visibility.value == 'public' %}selected{% endif %}>Public</option>
+                    <option value="protected" {% if share.visibility.value == 'protected' %}selected{% endif %}>Protected</option>
+                </select>
+            </form>
+            {% if share.password_hash %}<span class="text-muted">(pwd)</span>{% endif %}
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;"><span class="text-muted">Owner:</span> {{ share.owner.email }}</div>
+        <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;"><span class="text-muted">Created:</span> {{ share.created_at.strftime('%Y-%m-%d') if share.created_at else '-' }}</div>
+        <div style="margin-left: auto; font-size: 0.75rem; color: var(--muted-foreground); display: flex; align-items: center; height: 100%;">ID: {{ share.id }}</div>
+    </div>
+</div>
+
+<!-- Members Management -->
+<div class="card" style="padding: 0.75rem 1rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; height: 32px;">
+        <h3 style="margin: 0; font-size: 0.875rem; display: flex; align-items: center; height: 100%;">Members ({{ members|length }})</h3>
+        {% if available_users %}
+        <form method="post" action="/admin-ui/shares/{{ share.id }}/members" style="display: flex; gap: 0.5rem; align-items: center; margin: 0; height: 100%;">
+            <select id="user_id" name="user_id" required class="select-inline">
+                <option value="">Add user...</option>
+                {% for user_item in available_users %}
+                <option value="{{ user_item.id }}">{{ user_item.email }}</option>
+                {% endfor %}
+            </select>
+            <select id="role" name="role" required class="select-inline">
+                <option value="viewer">Viewer</option>
+                <option value="editor" selected>Editor</option>
+            </select>
+            <button type="submit" class="btn btn-primary btn-sm">Add</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if members %}
+    <table class="table-compact">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Added</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for member in members %}
+            <tr>
+                <td>{{ member.user.email }}</td>
+                <td>
+                    <form method="post" action="/admin-ui/shares/{{ share.id }}/members/{{ member.user_id }}/role" style="margin: 0;">
+                        <select name="role" onchange="this.form.submit()" class="select-compact">
+                            <option value="viewer" {% if member.role.value == 'viewer' %}selected{% endif %}>Viewer</option>
+                            <option value="editor" {% if member.role.value == 'editor' %}selected{% endif %}>Editor</option>
+                        </select>
+                    </form>
+                </td>
+                <td>{{ member.created_at.strftime('%Y-%m-%d') if member.created_at else '-' }}</td>
+                <td style="text-align: right;">
+                    <button class="btn btn-danger btn-sm" onclick="removeMember('{{ share.id }}', '{{ member.user_id }}', '{{ member.user.email }}')">Remove</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted" style="font-size: 0.8125rem; margin: 0;">No members yet.</p>
+    {% endif %}
+</div>
+
+<script>
+function removeMember(shareId, userId, userEmail) {
+    if (confirm(`Remove ${userEmail} from this share?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/admin-ui/shares/${shareId}/members/${userId}/remove`;
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function deleteShare(shareId, sharePath) {
+    if (confirm(`Are you sure you want to delete share "${sharePath}"?\n\nThis will remove all members and cannot be undone.`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/admin-ui/shares/${shareId}/delete`;
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+</script>
+
+{% endblock %}

@@ -1,0 +1,34 @@
+name: relay-server
+replicaCount: 1
+hostname: relay-server.zzz.com  # your custom domain
+image:
+  repository: docker.system3.md
+  tag: relay-server
+  pullPolicy: Always
+resources:
+  requests:
+    cpu: 1
+    memory: 4Gi
+  limits:
+    cpu: 1
+    memory: 4Gi
+port: 8080
+
+# Non-secret environment variables
+env:
+  # URL for your service
+  relayServerUrl: "https://relay-server.zzz.com"  # must match above hostname
+  
+  # S3 storage
+  relayServerStorage: "s3://your-tigris-bucket-name-1986/"
+  awsRegion: "auto"  # for AWS and sometimes other services
+  
+  # For non-AWS S3-compatible services (Tigris, MinIO, R2, etc.)
+  awsEndpointUrlS3: "https://fly.storage.tigris.dev"
+  # awsS3UsePathStyle: "true"  # uncomment for path-style URLs if needed
+
+# if you don't use Azure KeyVault for your secrets, you'll need to figure out your own solution here,
+# and edit templates/secrets.yaml accordingly.
+azure:
+  keyVault:
+    name: an-azure-keyvault-name

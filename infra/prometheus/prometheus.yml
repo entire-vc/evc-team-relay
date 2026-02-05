@@ -1,0 +1,35 @@
+# Prometheus configuration for Relay Control Plane
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# Rule files (optional)
+# rule_files:
+#   - "alerts/*.yml"
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: /metrics
+
+  # Control Plane metrics
+  - job_name: 'control-plane'
+    static_configs:
+      - targets: ['control-plane:8000']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Caddy metrics (if enabled)
+  # - job_name: 'caddy'
+  #   static_configs:
+  #     - targets: ['caddy:2019']
+  #   metrics_path: /metrics

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Share deleted{% endblock %}
+{% block content %}
+<h2>A share has been deleted</h2>
+
+<p>The following share has been deleted and is no longer accessible:</p>
+
+<div class="highlight">
+    <p><strong>{{ share_kind|capitalize }}:</strong> {{ share_path }}</p>
+</div>
+
+<p>If you need to recover this content, please contact the share owner.</p>
+{% endblock %}

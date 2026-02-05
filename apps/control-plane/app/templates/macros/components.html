@@ -1,0 +1,222 @@
+{# EVC UI Component Macros #}
+
+{# Button
+   Usage: {{ button("Click me", variant="primary", size="default") }}
+   Variants: primary, secondary, destructive, outline, ghost, success, warning
+   Sizes: sm, default, lg, icon
+#}
+{% macro button(text, variant='primary', size='default', type='button', href=None, disabled=False, class='', onclick='') %}
+  {% set size_classes = {
+    'sm': 'btn-sm',
+    'default': '',
+    'lg': 'btn-lg',
+    'icon': 'btn-icon'
+  } %}
+  {% if href %}
+    <a href="{{ href }}"
+       class="btn btn-{{ variant }} {{ size_classes[size] }} {{ class }}"
+       {% if disabled %}aria-disabled="true" tabindex="-1"{% endif %}
+       {% if onclick %}onclick="{{ onclick }}"{% endif %}>
+      {{ text }}
+    </a>
+  {% else %}
+    <button type="{{ type }}"
+            class="btn btn-{{ variant }} {{ size_classes[size] }} {{ class }}"
+            {% if disabled %}disabled{% endif %}
+            {% if onclick %}onclick="{{ onclick }}"{% endif %}>
+      {{ text }}
+    </button>
+  {% endif %}
+{% endmacro %}
+
+{# Badge
+   Usage: {{ badge("Active", variant="success") }}
+   Variants: default, secondary, destructive, success, warning, outline
+#}
+{% macro badge(text, variant='default') %}
+<span class="badge badge-{{ variant }}">{{ text }}</span>
+{% endmacro %}
+
+{# Alert
+   Usage: {{ alert("Title", message="Description", variant="success") }}
+   Variants: success, danger, warning, info
+#}
+{% macro alert(title, message=None, variant='info', dismissible=False) %}
+<div class="alert alert-{{ variant }}" role="alert">
+  <div>
+    {% if title %}<strong>{{ title }}</strong>{% endif %}
+    {% if message %}<p style="margin: 0.25rem 0 0 0;">{{ message }}</p>{% endif %}
+  </div>
+  {% if dismissible %}
+    <button type="button" class="btn btn-ghost btn-icon" onclick="this.parentElement.remove()" style="position: absolute; right: 0.5rem; top: 0.5rem;">
+      &times;
+    </button>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# Input
+   Usage: {{ input("email", type="email", placeholder="Enter email") }}
+#}
+{% macro input(name, type='text', value='', placeholder='', required=False, disabled=False, class='', id=None) %}
+<input
+  type="{{ type }}"
+  name="{{ name }}"
+  {% if id %}id="{{ id }}"{% else %}id="{{ name }}"{% endif %}
+  value="{{ value }}"
+  placeholder="{{ placeholder }}"
+  class="input {{ class }}"
+  {% if required %}required{% endif %}
+  {% if disabled %}disabled{% endif %}
+/>
+{% endmacro %}
+
+{# Label
+   Usage: {{ label("Email", for="email") }}
+#}
+{% macro label(text, for=None, required=False) %}
+<label class="label" {% if for %}for="{{ for }}"{% endif %}>
+  {{ text }}{% if required %}<span style="color: var(--destructive);">*</span>{% endif %}
+</label>
+{% endmacro %}
+
+{# Form Group
+   Usage: {% call form_group() %}...{% endcall %}
+#}
+{% macro form_group() %}
+<div class="form-group">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# Pagination
+   Usage: {{ pagination(page=1, total_pages=10, endpoint='admin.users') }}
+#}
+{% macro pagination(page, total_pages, endpoint, **kwargs) %}
+<nav class="pagination" aria-label="Pagination">
+  {# Previous #}
+  {% if page > 1 %}
+    <a href="{{ url_for(endpoint, page=page-1, **kwargs) }}" class="pagination-item">&larr;</a>
+  {% else %}
+    <span class="pagination-item disabled">&larr;</span>
+  {% endif %}
+
+  {# Page numbers #}
+  {% for p in range(1, total_pages + 1) %}
+    {% if p == page %}
+      <span class="pagination-item active">{{ p }}</span>
+    {% elif p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+      <a href="{{ url_for(endpoint, page=p, **kwargs) }}" class="pagination-item">{{ p }}</a>
+    {% elif p == page - 3 or p == page + 3 %}
+      <span class="pagination-item disabled">&hellip;</span>
+    {% endif %}
+  {% endfor %}
+
+  {# Next #}
+  {% if page < total_pages %}
+    <a href="{{ url_for(endpoint, page=page+1, **kwargs) }}" class="pagination-item">&rarr;</a>
+  {% else %}
+    <span class="pagination-item disabled">&rarr;</span>
+  {% endif %}
+</nav>
+{% endmacro %}
+
+{# Tabs
+   Usage:
+   {% call tabs_list() %}
+     {{ tabs_trigger("tab1", "Tab 1", active=True) }}
+     {{ tabs_trigger("tab2", "Tab 2") }}
+   {% endcall %}
+   <div class="tabs-content" data-tab="tab1">Content 1</div>
+   <div class="tabs-content" data-tab="tab2" style="display:none">Content 2</div>
+#}
+{% macro tabs_list() %}
+<div class="tabs-list">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{% macro tabs_trigger(id, text, active=False) %}
+<button type="button"
+        class="tabs-trigger {% if active %}active{% endif %}"
+        data-tab="{{ id }}"
+        onclick="switchTab('{{ id }}')">
+  {{ text }}
+</button>
+{% endmacro %}
+
+{# Card
+   Usage:
+   {% call card() %}
+     {% call card_header() %}Title{% endcall %}
+     {% call card_content() %}Content{% endcall %}
+   {% endcall %}
+#}
+{% macro card(class='') %}
+<div class="card {{ class }}">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{% macro card_header(title=None, description=None) %}
+<div class="card-header">
+  {% if title %}<h3 class="card-title">{{ title }}</h3>{% endif %}
+  {% if description %}<p class="card-description">{{ description }}</p>{% endif %}
+  {{ caller() if caller else '' }}
+</div>
+{% endmacro %}
+
+{% macro card_content() %}
+<div class="card-content">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{% macro card_footer() %}
+<div class="card-footer">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# Separator
+   Usage: {{ separator() }}
+#}
+{% macro separator(vertical=False) %}
+<div class="separator{% if vertical %} separator-vertical{% endif %}"></div>
+{% endmacro %}
+
+{# Skeleton
+   Usage: {{ skeleton(width="100%", height="20px") }}
+#}
+{% macro skeleton(width='100%', height='20px', class='') %}
+<div class="skeleton {{ class }}" style="width: {{ width }}; height: {{ height }};"></div>
+{% endmacro %}
+
+{# Helper Text
+   Usage: {{ helper_text("Enter your email address", error=False) }}
+#}
+{% macro helper_text(text, error=False) %}
+<p class="helper-text{% if error %} helper-text-error{% endif %}">{{ text }}</p>
+{% endmacro %}
+
+{# Status Badge (specialized)
+   Usage: {{ status_badge(is_active=True) }}
+#}
+{% macro status_badge(is_active) %}
+{% if is_active %}
+  {{ badge("Active", variant="success") }}
+{% else %}
+  {{ badge("Inactive", variant="destructive") }}
+{% endif %}
+{% endmacro %}
+
+{# Role Badge (specialized)
+   Usage: {{ role_badge(is_admin=True) }}
+#}
+{% macro role_badge(is_admin) %}
+{% if is_admin %}
+  {{ badge("Admin", variant="default") }}
+{% else %}
+  {{ badge("User", variant="secondary") }}
+{% endif %}
+{% endmacro %}

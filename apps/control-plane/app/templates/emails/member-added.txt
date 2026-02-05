@@ -1,0 +1,11 @@
+You've been added to a share!
+
+{{ adder_email }} has added you to:
+
+Share: {{ share_path }}
+Your role: {{ role|capitalize }}
+
+You can now access and collaborate on this share.
+
+--
+{{ server_name }}

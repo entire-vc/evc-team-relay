@@ -1,0 +1,37 @@
+EVC Team Relay
+Copyright 2024-2026 Entire VC
+
+This product includes software developed at Entire VC (https://entire.vc/).
+
+Licensed under the Apache License, Version 2.0.
+
+---
+
+This project includes the following third-party components:
+
+y-sweet (Relay Server)
+  License: MIT
+  Source: https://github.com/jamsocket/y-sweet
+
+Yjs (CRDT Library)
+  License: MIT
+  Source: https://github.com/yjs/yjs
+
+FastAPI
+  License: MIT
+  Source: https://github.com/tiangolo/fastapi
+
+SQLAlchemy
+  License: MIT
+  Source: https://github.com/sqlalchemy/sqlalchemy
+
+SvelteKit (Web Publish)
+  License: MIT
+  Source: https://github.com/sveltejs/kit
+
+---
+
+Attribution requirement (Apache 2.0):
+
+If you use this software, you must include this NOTICE file in your
+distribution and give appropriate credit to the original authors.

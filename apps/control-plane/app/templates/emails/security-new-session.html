@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}New login to your account{% endblock %}
+{% block content %}
+<h2>New login detected</h2>
+
+<p>A new login was detected on your account:</p>
+
+<div class="highlight">
+    <p><strong>Device:</strong> {{ device_name }}</p>
+    <p><strong>IP Address:</strong> {{ ip_address }}</p>
+    <p><strong>Time:</strong> {{ timestamp }}</p>
+</div>
+
+<div class="warning">
+    <p><strong>Wasn't you?</strong></p>
+    <p>If you didn't sign in, we recommend changing your password immediately
+    and reviewing your active sessions.</p>
+</div>
+{% endblock %}

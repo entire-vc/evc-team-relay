@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entire VC Team Relay - Join Share</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/evc-ava.svg">
+    <link rel="stylesheet" href="/static/css/admin.css">
+    <style>
+        .invite-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: var(--bg-secondary);
+        }
+
+        .invite-card {
+            background: var(--bg);
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px var(--shadow);
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .invite-card h1 {
+            margin-top: 0;
+            font-size: 1.75rem;
+        }
+
+        .invite-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .invite-brand a {
+            display: flex;
+            transition: opacity 0.2s;
+        }
+
+        .invite-brand a:hover {
+            opacity: 0.8;
+        }
+
+        .invite-brand img {
+            border-radius: 8px;
+        }
+
+        .invite-brand span {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .share-info {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1.5rem 0;
+        }
+
+        .share-info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .share-info-row:last-child {
+            border-bottom: none;
+        }
+
+        .share-info-label {
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .share-info-value {
+            font-weight: 600;
+        }
+
+        .divider {
+            border-top: 2px solid var(--border);
+            margin: 2rem 0;
+        }
+
+        .auth-section {
+            margin-top: 2rem;
+        }
+
+        .auth-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .auth-tab {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 1rem;
+            color: var(--text-muted);
+            transition: all 0.2s;
+        }
+
+        .auth-tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .auth-tab:hover {
+            color: var(--text);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .success-message {
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .success-message h2 {
+            color: var(--success);
+            margin-bottom: 1rem;
+        }
+
+        .success-icon {
+            font-size: 3rem;
+            color: var(--success);
+            margin-bottom: 1rem;
+        }
+
+        .info-box {
+            background: rgba(0, 102, 204, 0.1);
+            border-left: 4px solid var(--primary);
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 4px;
+        }
+
+        .btn-full {
+            width: 100%;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .mt-1 {
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="invite-container">
+        <div class="invite-card">
+            <div class="invite-brand">
+                <a href="/">
+                    <img src="/static/img/evc-ava.svg" alt="EVC Team Relay" width="40" height="40">
+                </a>
+                <span>Team Relay</span>
+            </div>
+            {% if not success %}
+                <!-- Invite Details -->
+                <h1>You've been invited!</h1>
+
+                {% if error %}
+                <div class="alert alert-danger">
+                    {{ error }}
+                </div>
+                {% endif %}
+
+                {% if invite_info.is_valid %}
+                    <p>{{ invite_info.owner_email }} has invited you to collaborate on:</p>
+
+                    <div class="share-info">
+                        <div class="share-info-row">
+                            <span class="share-info-label">Path:</span>
+                            <span class="share-info-value">{{ invite_info.share_path }}</span>
+                        </div>
+                        <div class="share-info-row">
+                            <span class="share-info-label">Type:</span>
+                            <span class="share-info-value">{{ invite_info.share_kind.title() }}</span>
+                        </div>
+                        <div class="share-info-row">
+                            <span class="share-info-label">Your role:</span>
+                            <span class="share-info-value">{{ invite_info.role.value.title() }}</span>
+                        </div>
+                        {% if invite_info.expires_at %}
+                        <div class="share-info-row">
+                            <span class="share-info-label">Expires:</span>
+                            <span class="share-info-value">{{ invite_info.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="divider"></div>
+
+                    <!-- Authentication Section -->
+                    <div class="auth-section">
+                        {% if current_user %}
+                            <!-- User is already logged in -->
+                            <p>Logged in as: <strong>{{ current_user.email }}</strong></p>
+
+                            <form method="POST" action="/invite/{{ token }}/accept">
+                                <button type="submit" class="btn btn-primary btn-full">
+                                    Join Share as {{ invite_info.role.value.title() }}
+                                </button>
+                            </form>
+
+                            <p class="text-center text-muted mt-1">
+                                <small>Not you? <a href="/invite/{{ token }}/logout">Sign out</a> and use a different account.</small>
+                            </p>
+                        {% else %}
+                            <!-- User needs to authenticate -->
+                            {% if oauth_enabled %}
+                                <!-- OAuth Sign In -->
+                                <div class="text-center">
+                                    <a href="{{ oauth_authorize_url }}"
+                                       class="btn btn-primary btn-full">
+                                        Sign in
+                                    </a>
+                                    <p class="text-muted mt-1">
+                                        <small>Sign in to join this share.</small>
+                                    </p>
+                                </div>
+                            {% else %}
+                                <!-- Email/Password Authentication -->
+                                <div class="auth-tabs">
+                                    <button class="auth-tab active" onclick="switchTab('register')">Create Account</button>
+                                    <button class="auth-tab" onclick="switchTab('login')">Sign In</button>
+                                </div>
+
+                                <!-- Register Tab -->
+                                <div id="register-tab" class="tab-content active">
+                                    <form method="POST" action="/invite/{{ token }}/accept">
+                                        <input type="hidden" name="action" value="register">
+
+                                        <label for="register-email">Email</label>
+                                        <input type="email" id="register-email" name="email" required
+                                               placeholder="your@email.com" autofocus>
+
+                                        <label for="register-password">Password</label>
+                                        <input type="password" id="register-password" name="password" required
+                                               placeholder="At least 8 characters" minlength="8">
+
+                                        <label for="register-confirm">Confirm Password</label>
+                                        <input type="password" id="register-confirm" name="confirm_password" required
+                                               placeholder="Re-enter password" minlength="8">
+
+                                        <button type="submit" class="btn btn-primary btn-full">
+                                            Create Account & Join
+                                        </button>
+                                    </form>
+
+                                    <div class="info-box mt-1">
+                                        <small>Creating an account will automatically grant you access to this share.</small>
+                                    </div>
+                                </div>
+
+                                <!-- Login Tab -->
+                                <div id="login-tab" class="tab-content">
+                                    <form method="POST" action="/invite/{{ token }}/accept">
+                                        <input type="hidden" name="action" value="login">
+
+                                        <label for="login-email">Email</label>
+                                        <input type="email" id="login-email" name="email" required
+                                               placeholder="your@email.com">
+
+                                        <label for="login-password">Password</label>
+                                        <input type="password" id="login-password" name="password" required
+                                               placeholder="Your password">
+
+                                        <button type="submit" class="btn btn-primary btn-full">
+                                            Sign In & Join
+                                        </button>
+                                    </form>
+                                </div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                {% else %}
+                    <!-- Invalid Invite -->
+                    <div class="alert alert-danger">
+                        <strong>This invite link is not valid.</strong><br>
+                        {{ invite_info.error or "The link may have expired or been revoked." }}
+                    </div>
+                {% endif %}
+
+            {% else %}
+                <!-- Success Message -->
+                <div class="success-message">
+                    <div class="success-icon">✓</div>
+                    <h2>Successfully Joined!</h2>
+                    <p>You now have <strong>{{ success_role }}</strong> access to:</p>
+                    <p><strong>{{ success_path }}</strong></p>
+
+                    <div class="info-box mt-1">
+                        <p><strong>Next Steps:</strong></p>
+                        <ul style="text-align: left; margin: 0.5rem 0 0 1.5rem;">
+                            <li>Open the Obsidian plugin</li>
+                            <li>Navigate to the shared {{ success_kind }}</li>
+                            <li>Start collaborating!</li>
+                        </ul>
+                    </div>
+
+                    {% if access_token %}
+                    <div class="info-box mt-1">
+                        <p><strong>Authentication Token:</strong></p>
+                        <p style="word-break: break-all; font-family: monospace; font-size: 0.875rem; margin-top: 0.5rem;">
+                            {{ access_token }}
+                        </p>
+                        <p style="margin-top: 0.5rem;"><small>Save this token - you'll need it to configure the Obsidian plugin.</small></p>
+                    </div>
+                    {% endif %}
+
+                    <p class="mt-1" style="color: var(--text-muted);">
+                        You can now close this page and return to Obsidian.
+                    </p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tabName) {
+            // Update tabs
+            document.querySelectorAll('.auth-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+
+            // Activate selected tab
+            event.target.classList.add('active');
+            document.getElementById(tabName + '-tab').classList.add('active');
+        }
+
+        // Password confirmation validation for registration
+        const registerForm = document.querySelector('#register-tab form');
+        if (registerForm) {
+            registerForm.addEventListener('submit', function(e) {
+                const password = document.getElementById('register-password').value;
+                const confirm = document.getElementById('register-confirm').value;
+
+                if (password !== confirm) {
+                    e.preventDefault();
+                    alert('Passwords do not match. Please try again.');
+                    return false;
+                }
+            });
+        }
+    </script>
+</body>
+</html>

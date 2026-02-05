@@ -1,0 +1,14 @@
+# Dashboard provisioning for Grafana
+apiVersion: 1
+
+providers:
+  - name: 'Relay Control Plane'
+    orgId: 1
+    folder: ''
+    folderUid: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

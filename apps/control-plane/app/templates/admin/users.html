@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Users{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+    <h2>Users</h2>
+    <a href="/admin-ui/users/new" class="btn btn-primary">Create New User</a>
+</div>
+
+<div class="card">
+    <input type="text" id="user-search" placeholder="Search users by email..."
+           style="margin-bottom: 1rem;">
+
+    <table>
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user_item in users %}
+            <tr>
+                <td>{{ user_item.email }}</td>
+                <td>
+                    {% if user_item.is_active %}
+                    <span class="badge badge-success">Active</span>
+                    {% else %}
+                    <span class="badge badge-danger">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if user_item.is_admin %}
+                    <span class="badge badge-success">Admin</span>
+                    {% else %}
+                    <span class="text-muted">User</span>
+                    {% endif %}
+                </td>
+                <td>{{ user_item.created_at.strftime('%Y-%m-%d %H:%M') if user_item.created_at else 'N/A' }}</td>
+                <td>
+                    <div class="actions">
+                        <a href="/admin-ui/users/{{ user_item.id }}/edit" class="btn btn-secondary">Edit</a>
+
+                        {% if user_item.id != user.id %}
+                        <button class="btn btn-secondary"
+                                onclick="toggleAdmin('{{ user_item.id }}', '{{ user_item.email }}', {{ 'true' if user_item.is_admin else 'false' }})">
+                            {% if user_item.is_admin %}Revoke Admin{% else %}Make Admin{% endif %}
+                        </button>
+
+                        <button class="btn btn-secondary"
+                                onclick="toggleActive('{{ user_item.id }}', '{{ user_item.email }}', {{ 'true' if user_item.is_active else 'false' }})">
+                            {% if user_item.is_active %}Deactivate{% else %}Activate{% endif %}
+                        </button>
+
+                        <button class="btn btn-danger"
+                                onclick="deleteUser('{{ user_item.id }}', '{{ user_item.email }}')">
+                            Delete
+                        </button>
+                        {% else %}
+                        <span class="text-muted">(Current user)</span>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not users %}
+    <p class="text-muted text-center">No users found.</p>
+    {% endif %}
+</div>
+{% endblock %}
