@@ -202,3 +202,42 @@ secret_key = "your-minio-password"
 # Control plane public key endpoint
 public_key_url = "http://control-plane:8000/keys/public"
 ```
+
+## Reverse Proxy (Caddy)
+
+The `Caddyfile` in the `infra/` directory configures Caddy as a reverse proxy with automatic HTTPS. It also handles **WebSocket token proxying** for the relay server.
+
+### WebSocket Token Proxy
+
+The relay server authenticates WebSocket connections using CWT (CBOR Web Token) tokens passed via the `Authorization: Bearer` header. However, the browser WebSocket API (`new WebSocket(url)`) does not support custom headers.
+
+To bridge this gap, Caddy extracts the `?token=` query parameter and sets it as the `Authorization` header:
+
+```caddy
+relay.{$DOMAIN_BASE} {
+  @token_in_query query token=*
+  request_header @token_in_query Authorization "Bearer {query.token}"
+  reverse_proxy relay-server:8080
+}
+```
+
+**How it works:**
+
+1. The Obsidian plugin connects to `wss://relay.yourdomain.com/doc/ws/{docId}?token=<CWT>`
+2. Caddy sees the `?token=` query parameter and sets `Authorization: Bearer <CWT>` header
+3. The relay server receives the `Authorization` header and validates the CWT token
+
+Both methods are supported simultaneously:
+- **`?token=` query parameter** — used by browser-based clients (Obsidian plugin)
+- **`Authorization: Bearer` header** — used by server-side clients and scripts
+
+### CWT Token Format
+
+Relay tokens use CWT (CBOR Web Token) format with Ed25519 signatures instead of JWT. The token structure:
+
+- **Outer wrapper**: CBOR Tag 61 (CWT)
+- **Inner wrapper**: CBOR Tag 18 (COSE_Sign1)
+- **Claims**: `iss` (issuer), `iat` (issued at), `scope` (e.g., `doc:{id}:rw`)
+- **Signature**: Ed25519
+
+The control plane generates CWT tokens via `POST /tokens/relay`. The relay server verifies them using the Ed25519 public key configured in `relay.toml`.

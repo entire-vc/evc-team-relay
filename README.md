@@ -96,7 +96,9 @@ docker compose ps                 # Check status
 
 ## Security
 
-- JWT authentication with Ed25519 signing
+- JWT authentication for API access
+- CWT (CBOR Web Token) with Ed25519 signatures for relay connections
+- Caddy proxy converts `?token=` query params to `Authorization` headers for browser WebSocket compatibility
 - Rate limiting on critical endpoints
 - Comprehensive audit logging
 - Password-protected shares support

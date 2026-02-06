@@ -73,7 +73,23 @@ Point these DNS records to your server IP:
 | `relay.yourdomain.com` | A | Your server IP |
 | `docs.yourdomain.com` | A | Your server IP (optional, for web publishing) |
 
-### 5. Start Services
+### 5. Review Caddy Configuration
+
+The default `Caddyfile` handles TLS termination, routing, and **WebSocket token proxying**. The relay server expects authentication via the `Authorization` header, but browser WebSocket API cannot set custom headers. Caddy bridges this gap by extracting `?token=` from the query string and setting it as an `Authorization: Bearer` header:
+
+```caddy
+relay.{$DOMAIN_BASE} {
+  @token_in_query query token=*
+  request_header @token_in_query Authorization "Bearer {query.token}"
+  reverse_proxy relay-server:8080
+}
+```
+
+This allows the Obsidian plugin (and other browser-based clients) to authenticate using `wss://relay.yourdomain.com/doc/ws/{docId}?token=CWT_TOKEN`.
+
+> **Important**: Do not remove the `request_header` directive — without it, the Obsidian plugin will receive `401 Unauthorized` when connecting to the relay server.
+
+### 6. Start Services
 
 ```bash
 docker compose up -d
@@ -85,7 +101,7 @@ Wait for all services to become healthy:
 docker compose ps
 ```
 
-### 6. Verify Installation
+### 7. Verify Installation
 
 ```bash
 # Check health
@@ -97,7 +113,7 @@ curl https://cp.yourdomain.com/version
 # Expected: {"version":"1.x.x"}
 ```
 
-### 7. Access Admin Panel
+### 8. Access Admin Panel
 
 Open `https://cp.yourdomain.com/admin-ui/` in your browser and login with your bootstrap admin credentials.
 

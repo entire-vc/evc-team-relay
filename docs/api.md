@@ -71,7 +71,9 @@ Response:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| POST | `/v1/tokens/relay` | Yes | Get relay connection token |
+| POST | `/tokens/relay` | Yes* | Get CWT relay connection token |
+
+\* Public shares allow unauthenticated read access. Protected shares accept a `password` field instead of JWT auth.
 
 ### Admin - Users
 
@@ -225,22 +227,42 @@ curl -X POST https://cp.example.com/v1/shares/SHARE_ID/members \
 ### Get Relay Token
 
 ```bash
-curl -X POST https://cp.example.com/v1/tokens/relay \
+curl -X POST https://cp.example.com/tokens/relay \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "share_id": "SHARE_ID"
+    "share_id": "SHARE_ID",
+    "doc_id": "DOCUMENT_ID",
+    "mode": "write"
   }'
 ```
+
+Request body:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `share_id` | UUID | Yes | Share to access |
+| `doc_id` | string | Yes | Document identifier |
+| `mode` | string | No | `read` (default) or `write` |
+| `password` | string | No | Required for protected shares (unauthenticated) |
+| `file_path` | string | No | File path within folder share (validated against share path) |
 
 Response:
 ```json
 {
-  "token": "eyJ...",
-  "relay_url": "wss://relay.example.com",
+  "token": "2dn...",
+  "relay_url": "wss://relay.example.com/doc/ws",
   "expires_at": "2024-01-15T12:30:00Z"
 }
 ```
+
+The returned `token` is a CWT (CBOR Web Token) with Ed25519 signature. To connect to the relay WebSocket:
+
+```
+wss://relay.example.com/doc/ws/{doc_id}?token={token}
+```
+
+The Caddy reverse proxy converts the `?token=` query parameter into an `Authorization: Bearer` header for the relay server.
 
 ## OpenAPI Specification
 

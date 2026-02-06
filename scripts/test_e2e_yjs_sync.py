@@ -320,18 +320,31 @@ class YjsClient:
     doc_id: str
     client_id: int = field(default_factory=lambda: int.from_bytes(os.urandom(4), "little"))
     name: str = "headless-test"
+    token_via_query: bool = False
     ws: object = None
     synced: bool = False
     received_messages: list = field(default_factory=list)
 
     def full_url(self) -> str:
         """Construct WebSocket URL: relay_url/{docId}"""
-        return f"{self.ws_url}/{self.doc_id}"
+        base = f"{self.ws_url}/{self.doc_id}"
+        if self.token_via_query:
+            return f"{base}?token={self.token}"
+        return base
 
     async def connect(self, timeout: float = 10.0) -> bool:
-        """Connect to relay server via WebSocket with token in Authorization header."""
+        """Connect to relay server via WebSocket.
+
+        Uses ?token= query param (like Obsidian plugin) or Authorization header,
+        depending on token_via_query flag.
+        """
         url = self.full_url()
-        log(f"WebSocket connecting to {url}...", "STEP")
+        method = "?token= query" if self.token_via_query else "Auth header"
+        log(f"WebSocket connecting ({method}) to {url[:80]}...", "STEP")
+
+        extra_headers = {}
+        if not self.token_via_query:
+            extra_headers["Authorization"] = f"Bearer {self.token}"
 
         try:
             self.ws = await asyncio.wait_for(
@@ -339,11 +352,11 @@ class YjsClient:
                     url,
                     ping_interval=20,
                     ping_timeout=20,
-                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    additional_headers=extra_headers,
                 ),
                 timeout=timeout,
             )
-            log(f"WebSocket connected (client_id={self.client_id})", "OK")
+            log(f"WebSocket connected ({method}, client_id={self.client_id})", "OK")
             return True
         except asyncio.TimeoutError:
             log("WebSocket connection timed out", "FAIL")
@@ -425,11 +438,12 @@ class YjsClient:
 
 
 async def test_single_client_sync(
-    cp: ControlPlaneClient, share_id: str, doc_id: str
+    cp: ControlPlaneClient, share_id: str, doc_id: str, token_via_query: bool = False
 ) -> bool:
     """Test: single client connects and syncs."""
+    method = "?token= query" if token_via_query else "Auth header"
     print("\n" + "─" * 50)
-    log("TEST: Single client Yjs sync", "STEP")
+    log(f"TEST: Single client Yjs sync ({method})", "STEP")
     print("─" * 50)
 
     token_data = cp.get_relay_token(share_id, doc_id)
@@ -441,6 +455,7 @@ async def test_single_client_sync(
         token=token_data["token"],
         doc_id=doc_id,
         name="client-1",
+        token_via_query=token_via_query,
     )
 
     if not await client.connect():
@@ -475,11 +490,12 @@ async def test_single_client_sync(
 
 
 async def test_two_client_sync(
-    cp: ControlPlaneClient, share_id: str, doc_id: str
+    cp: ControlPlaneClient, share_id: str, doc_id: str, token_via_query: bool = False
 ) -> bool:
     """Test: two clients connect, one sends update, other receives it."""
+    method = "?token= query" if token_via_query else "Auth header"
     print("\n" + "─" * 50)
-    log("TEST: Two-client Yjs sync", "STEP")
+    log(f"TEST: Two-client Yjs sync ({method})", "STEP")
     print("─" * 50)
 
     # Get two separate tokens (like two Obsidian instances would)
@@ -493,12 +509,14 @@ async def test_two_client_sync(
         token=token1_data["token"],
         doc_id=doc_id,
         name="writer",
+        token_via_query=token_via_query,
     )
     client2 = YjsClient(
         ws_url=token2_data["relay_url"],
         token=token2_data["token"],
         doc_id=doc_id,
         name="reader",
+        token_via_query=token_via_query,
     )
 
     # Connect both
@@ -580,7 +598,9 @@ async def run_tests(args) -> bool:
     print("=" * 60)
     print(f"  Server:  {args.server}")
     print(f"  User:    {args.email}")
+    auth_method = "?token= query param" if getattr(args, "token_via_query", False) else "Authorization header"
     print(f"  Mode:    {'two-client sync' if args.two_clients else 'single client'}")
+    print(f"  Auth:    {auth_method}")
     print("=" * 60)
 
     cp = ControlPlaneClient(
@@ -617,14 +637,16 @@ async def run_tests(args) -> bool:
 
     doc_id = args.doc_id or share_id
 
+    token_via_query = getattr(args, "token_via_query", False)
+
     # Step 3+4+5: Single client sync test
-    success = await test_single_client_sync(cp, share_id, doc_id)
+    success = await test_single_client_sync(cp, share_id, doc_id, token_via_query=token_via_query)
     if not success:
         return False
 
     # Step 6+7: Two-client sync test (optional)
     if args.two_clients:
-        success = await test_two_client_sync(cp, share_id, doc_id)
+        success = await test_two_client_sync(cp, share_id, doc_id, token_via_query=token_via_query)
         if not success:
             return False
 
@@ -647,6 +669,10 @@ def main():
     parser.add_argument("--doc-id", help="Document ID (defaults to share_id)")
     parser.add_argument(
         "--two-clients", action="store_true", help="Run two-client sync test"
+    )
+    parser.add_argument(
+        "--token-via-query", action="store_true",
+        help="Send token as ?token= query param instead of Authorization header (like Obsidian plugin)",
     )
 
     args = parser.parse_args()

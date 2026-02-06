@@ -7,6 +7,12 @@ cp.{$DOMAIN_BASE} {
 }
 
 relay.{$DOMAIN_BASE} {
+  # Browser WebSocket API cannot set custom headers, so Obsidian plugin
+  # sends CWT token as ?token= query param. Extract it and set as
+  # Authorization header for relay-server (which only reads from header).
+  @token_in_query query token=*
+  request_header @token_in_query Authorization "Bearer {query.token}"
+
   reverse_proxy relay-server:8080
 }
 

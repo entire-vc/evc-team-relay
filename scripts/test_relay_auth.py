@@ -49,6 +49,7 @@ class TestConfig:
     create_share_path: Optional[str] = None
     doc_id: Optional[str] = None
     verbose: bool = False
+    test_query_param: bool = False
 
 
 @dataclass
@@ -273,20 +274,17 @@ class RelayAuthTester:
             self.log_verbose(f"  Could not decode CWT: {e}")
 
     # ========== Step 4: WebSocket Connection ==========
-    async def test_websocket_connection(self, relay_url: str, token: str, doc_id: str) -> bool:
-        """Test WebSocket connection to relay-server."""
-        if not HAS_WEBSOCKETS:
-            self.log("Skipping WebSocket test (websockets not installed)", "WARN")
-            return True
+    async def _ws_connect(self, relay_url: str, token: str, doc_id: str, via_query: bool) -> bool:
+        """Connect to relay-server WebSocket using header or query param auth."""
+        method = "?token= query param" if via_query else "Authorization header"
+        self.log(f"Testing WebSocket connection ({method})...")
 
-        self.log("Testing WebSocket connection...")
-
-        # Parse relay URL and construct WebSocket URL
-        parsed = urlparse(relay_url)
-
-        # Construct WebSocket URL: wss://relay/doc/ws/{doc_id}
-        # Token goes in Authorization header (NOT query param - relay rejects ?token=)
-        ws_url = f"{relay_url}/{doc_id}"
+        if via_query:
+            ws_url = f"{relay_url}/{doc_id}?token={token}"
+            extra_headers = {}
+        else:
+            ws_url = f"{relay_url}/{doc_id}"
+            extra_headers = {"Authorization": f"Bearer {token}"}
 
         self.log_verbose(f"  WS URL: {ws_url[:80]}...")
 
@@ -295,11 +293,10 @@ class RelayAuthTester:
                 ws_url,
                 ping_interval=20,
                 ping_timeout=20,
-                additional_headers={"Authorization": f"Bearer {token}"},
+                additional_headers=extra_headers,
             ) as ws:
-                self.log("WebSocket connected!", "OK")
+                self.log(f"WebSocket connected ({method})!", "OK")
 
-                # Try to receive initial sync message
                 try:
                     msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
                     self.log(f"  Received {len(msg)} bytes", "OK")
@@ -309,11 +306,25 @@ class RelayAuthTester:
                     return True
 
         except websockets.exceptions.InvalidStatusCode as e:
-            self.log(f"WebSocket connection failed: {e.status_code}", "ERROR")
+            self.log(f"WebSocket connection failed ({method}): {e.status_code}", "ERROR")
             return False
         except Exception as e:
-            self.log(f"WebSocket error: {e}", "ERROR")
+            self.log(f"WebSocket error ({method}): {e}", "ERROR")
             return False
+
+    async def test_websocket_connection(self, relay_url: str, token: str, doc_id: str) -> bool:
+        """Test WebSocket connection via Authorization header."""
+        if not HAS_WEBSOCKETS:
+            self.log("Skipping WebSocket test (websockets not installed)", "WARN")
+            return True
+        return await self._ws_connect(relay_url, token, doc_id, via_query=False)
+
+    async def test_websocket_query_param(self, relay_url: str, token: str, doc_id: str) -> bool:
+        """Test WebSocket connection via ?token= query param (requires Caddy proxy)."""
+        if not HAS_WEBSOCKETS:
+            self.log("Skipping WebSocket test (websockets not installed)", "WARN")
+            return True
+        return await self._ws_connect(relay_url, token, doc_id, via_query=True)
 
     # ========== Run All Tests ==========
     def run_all(self) -> bool:
@@ -339,7 +350,7 @@ class RelayAuthTester:
         if not token_data:
             return False
 
-        # Step 4: WebSocket Connection
+        # Step 4: WebSocket Connection (Authorization header)
         doc_id = self.config.doc_id or share_id
         ws_success = asyncio.run(
             self.test_websocket_connection(
@@ -348,17 +359,34 @@ class RelayAuthTester:
                 doc_id,
             )
         )
+        if not ws_success:
+            self._print_summary(False)
+            return False
 
-        # Summary
+        # Step 5: WebSocket Connection via ?token= query param (Caddy proxy)
+        if self.config.test_query_param:
+            qp_success = asyncio.run(
+                self.test_websocket_query_param(
+                    token_data["relay_url"],
+                    token_data["token"],
+                    doc_id,
+                )
+            )
+            if not qp_success:
+                self.log("?token= query param test FAILED — check Caddy proxy config", "ERROR")
+                self._print_summary(False)
+                return False
+
+        self._print_summary(True)
+        return True
+
+    def _print_summary(self, success: bool):
         print("\n" + "=" * 60)
-        if ws_success:
+        if success:
             self.log("ALL TESTS PASSED!", "OK")
-            print("=" * 60 + "\n")
-            return True
         else:
             self.log("SOME TESTS FAILED", "ERROR")
-            print("=" * 60 + "\n")
-            return False
+        print("=" * 60 + "\n")
 
 
 def main():
@@ -385,6 +413,10 @@ Examples:
     parser.add_argument("--create-share", metavar="PATH", help="Create new share with this path")
     parser.add_argument("--doc-id", help="Document ID (defaults to share ID)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--test-query-param", action="store_true",
+        help="Also test ?token= query param auth (requires Caddy proxy)",
+    )
 
     args = parser.parse_args()
 
@@ -396,6 +428,7 @@ Examples:
         create_share_path=args.create_share,
         doc_id=args.doc_id,
         verbose=args.verbose,
+        test_query_param=args.test_query_param,
     )
 
     tester = RelayAuthTester(config)
