@@ -6,19 +6,24 @@ cp.{$DOMAIN_BASE} {
   reverse_proxy control-plane:8000
 }
 
-relay.{$DOMAIN_BASE} {
+{$DOMAIN_BASE} {
   # Browser WebSocket API cannot set custom headers, so Obsidian plugin
   # sends CWT token as ?token= query param. Extract it and set as
-  # Authorization header for relay-server (which only reads from header).
+  # Authorization header for relay-server, then strip ?token= from URL
+  # (relay-server also tries to parse ?token= in its own binary format,
+  # which fails on CWT tokens — so we must remove it).
   @token_in_query query token=*
-  request_header @token_in_query Authorization "Bearer {query.token}"
+  handle @token_in_query {
+    route {
+      request_header Authorization "Bearer {query.token}"
+      uri query -token
+      reverse_proxy relay-server:8080
+    }
+  }
 
-  reverse_proxy relay-server:8080
-}
-
-# Grafana monitoring dashboard
-grafana.{$DOMAIN_BASE} {
-  reverse_proxy grafana:3000
+  handle {
+    reverse_proxy relay-server:8080
+  }
 }
 
 # Web publishing (optional)
