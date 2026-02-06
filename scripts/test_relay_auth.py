@@ -91,11 +91,26 @@ class RelayAuthTester:
 
             if response.status_code == 200:
                 data = response.json()
-                self.auth_state = AuthState(
-                    jwt_token=data["access_token"],
-                    user_id=data["user"]["id"],
-                    user_email=data["user"]["email"],
+                jwt_token = data["access_token"]
+
+                # Get user info from /auth/me (login response has no "user" field)
+                me_resp = self.client.get(
+                    f"{self.config.server_url}/auth/me",
+                    headers={"Authorization": f"Bearer {jwt_token}"},
                 )
+                if me_resp.status_code == 200:
+                    me = me_resp.json()
+                    self.auth_state = AuthState(
+                        jwt_token=jwt_token,
+                        user_id=me.get("id", ""),
+                        user_email=me.get("email", self.config.email),
+                    )
+                else:
+                    self.auth_state = AuthState(
+                        jwt_token=jwt_token,
+                        user_id="",
+                        user_email=self.config.email,
+                    )
                 self.log(f"Login successful: {self.auth_state.user_email}", "OK")
                 self.log_verbose(f"JWT: {self.auth_state.jwt_token[:50]}...")
                 return True
@@ -269,14 +284,19 @@ class RelayAuthTester:
         # Parse relay URL and construct WebSocket URL
         parsed = urlparse(relay_url)
 
-        # Construct WebSocket URL: wss://relay/doc/ws/{doc_id}?token={token}
-        # or based on path structure: wss://relay/d/{doc_id}/ws/{doc_id2}
-        ws_url = f"{relay_url}/{doc_id}?token={token}"
+        # Construct WebSocket URL: wss://relay/doc/ws/{doc_id}
+        # Token goes in Authorization header (NOT query param - relay rejects ?token=)
+        ws_url = f"{relay_url}/{doc_id}"
 
         self.log_verbose(f"  WS URL: {ws_url[:80]}...")
 
         try:
-            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
+            async with websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=20,
+                additional_headers={"Authorization": f"Bearer {token}"},
+            ) as ws:
                 self.log("WebSocket connected!", "OK")
 
                 # Try to receive initial sync message
