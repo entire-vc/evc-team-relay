@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.db.models import EmailQueue, EmailStatus, UserEmailPreferences
+from app.services.instance_settings_service import get_branding
 
 if TYPE_CHECKING:
     pass
@@ -79,10 +80,10 @@ class EmailService:
             logger.warning(f"Email template directory not found: {TEMPLATE_DIR}")
             self.jinja_env = None
 
-    def _get_base_context(self) -> dict:
+    def _get_base_context(self, db: Session | None = None) -> dict:
         """Get base context for all email templates."""
         settings = get_settings()
-        return {
+        ctx = {
             "server_name": self.server_name,
             "base_url": str(settings.relay_public_url)
             .replace("wss://", "https://")
@@ -90,13 +91,27 @@ class EmailService:
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "year": datetime.now().year,
         }
+        # Include branding from instance settings if DB available
+        if db is not None:
+            try:
+                branding = get_branding(db)
+                ctx["branding"] = branding
+                # Override server_name with branding name if set
+                if branding.get("name"):
+                    ctx["server_name"] = branding["name"]
+            except Exception:
+                pass
+        return ctx
 
-    def _render_template(self, template_name: str, context: dict) -> tuple[str | None, str | None]:
+    def _render_template(
+        self, template_name: str, context: dict, db: Session | None = None
+    ) -> tuple[str | None, str | None]:
         """Render email template.
 
         Args:
             template_name: Template name without extension
             context: Template context variables
+            db: Optional database session for branding lookup
 
         Returns:
             Tuple of (html_content, text_content)
@@ -104,7 +119,7 @@ class EmailService:
         if not self.jinja_env:
             return None, None
 
-        full_context = {**self._get_base_context(), **context}
+        full_context = {**self._get_base_context(db), **context}
         html_content = None
         text_content = None
 
@@ -482,6 +497,7 @@ class EmailService:
                 "expires_at": expires_at.strftime("%Y-%m-%d %H:%M UTC") if expires_at else None,
                 "recipient_email": to_email,
             },
+            db=db,
         )
 
         if not text_body:

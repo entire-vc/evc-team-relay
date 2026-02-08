@@ -20,24 +20,11 @@ def issue_relay_token(
 ) -> token_schema.RelayTokenResponse:
     share = share_service.get_share(db, payload.share_id)
 
-    # For folder shares, validate that file_path is within folder boundaries
-    # Skip validation if doc_id equals share_id (syncing the folder itself, not a file)
-    if share.kind == models.ShareKind.FOLDER and str(payload.share_id) != payload.doc_id:
-        # Extract file path from doc_id (format can be "guid/path" or just "path")
-        # Assuming doc_id contains the file path for folder shares
-        file_path = payload.file_path if payload.file_path else payload.doc_id
-
-        # Validate file path safety
-        share_service.validate_share_path_safety(file_path, models.ShareKind.DOC)
-
-        # Validate file is within folder boundaries
-        if not share_service.validate_path_within_folder(share.path, file_path):
-            from fastapi import HTTPException, status
-
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"File path '{file_path}' is not within shared folder '{share.path}'",
-            )
+    # For folder shares, membership check (ensure_write_access/ensure_read_access below)
+    # is sufficient for authorization. File path validation is skipped because:
+    # 1. doc_id for individual files is a UUID, not a filesystem path
+    # 2. Local folder names can differ between devices (user picks any folder)
+    # 3. The relay server scopes tokens to specific doc_ids regardless
 
     # Check permissions
     if payload.mode == token_schema.TokenMode.WRITE:

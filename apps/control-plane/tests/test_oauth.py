@@ -635,10 +635,13 @@ class TestOAuthGroupMapping:
                 oauth_admin_groups="admins",
             )
 
-            updated = oauth_service.sync_user_info(db_session, user, userinfo)
+            updated, changes = oauth_service.sync_user_info(db_session, user, userinfo)
 
             assert updated is True
             assert user.is_admin is True
+            assert "is_admin" in changes
+            assert changes["is_admin"]["old"] is False
+            assert changes["is_admin"]["new"] is True
 
     def test_sync_user_info_disabled(self, db_session: Session):
         """Test syncing user info is skipped when disabled."""
@@ -668,7 +671,109 @@ class TestOAuthGroupMapping:
                 oauth_admin_groups="admins",
             )
 
-            updated = oauth_service.sync_user_info(db_session, user, userinfo)
+            updated, changes = oauth_service.sync_user_info(db_session, user, userinfo)
 
             assert updated is False
+            assert changes == {}
             assert user.is_admin is False  # Unchanged
+
+    def test_sync_user_info_only_elevates_admin(self, db_session: Session):
+        """Test that sync only ELEVATES admin rights, never revokes them."""
+        from app.schemas.oauth import OAuthUserInfo
+
+        # Create user as admin
+        user = models.User(
+            id=uuid.uuid4(),
+            email="admin@example.com",
+            password_hash="hash",
+            is_admin=True,  # Already admin
+            is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        # User NOT in admin groups anymore
+        userinfo = OAuthUserInfo(
+            sub="oauth_admin_1",
+            email="admin@example.com",
+            name="Admin User",
+            groups=["users"],  # No admin group
+        )
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                oauth_sync_user_info=True,
+                oauth_admin_groups="admins",
+            )
+
+            updated, changes = oauth_service.sync_user_info(db_session, user, userinfo)
+
+            # Should NOT revoke admin rights
+            assert updated is False
+            assert changes == {}
+            assert user.is_admin is True  # Still admin
+
+    def test_should_be_admin_with_org_prefix(self):
+        """Test admin group matching with org/group format (Casdoor style)."""
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                oauth_admin_groups="admin,evc_relay_admins",
+            )
+
+            # Exact match
+            assert oauth_service.should_be_admin(["admin"]) is True
+            assert oauth_service.should_be_admin(["evc_relay_admins"]) is True
+
+            # Org/group format (Casdoor style) - simple admin group name matches any org
+            assert oauth_service.should_be_admin(["entire_vc/admin"]) is True
+            assert oauth_service.should_be_admin(["entire_vc/evc_relay_admins"]) is True
+
+            # Cross-org match - "admin" matches any org's admin group
+            assert oauth_service.should_be_admin(["other_org/admin"]) is True
+
+            # Mixed case
+            assert oauth_service.should_be_admin(["Entire_VC/Admin"]) is True
+
+            # Multiple groups
+            assert oauth_service.should_be_admin(["entire_vc/users", "entire_vc/admin"]) is True
+
+            # Non-matching
+            assert oauth_service.should_be_admin(["entire_vc/users"]) is False
+            assert oauth_service.should_be_admin([]) is False
+
+    def test_should_be_admin_with_full_org_path(self):
+        """Test admin group matching with full org/group path specified."""
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            # Configure with FULL org/group path
+            mock_settings.return_value = MagicMock(
+                oauth_admin_groups="entire_vc/admin,entire_vc/superusers",
+            )
+
+            # Exact match with full path
+            assert oauth_service.should_be_admin(["entire_vc/admin"]) is True
+            assert oauth_service.should_be_admin(["entire_vc/superusers"]) is True
+
+            # Different org should NOT match when full path is specified
+            assert oauth_service.should_be_admin(["other_org/admin"]) is False
+
+            # Simple name should NOT match when full path is specified
+            assert oauth_service.should_be_admin(["admin"]) is False
+
+            # Non-matching
+            assert oauth_service.should_be_admin(["entire_vc/users"]) is False
+            assert oauth_service.should_be_admin([]) is False
+
+    def test_should_be_admin_with_partial_match_rejected(self):
+        """Test that partial group name matches are rejected."""
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                oauth_admin_groups="admin",
+            )
+
+            # "superadmin" should NOT match "admin"
+            assert oauth_service.should_be_admin(["superadmin"]) is False
+            assert oauth_service.should_be_admin(["entire_vc/superadmin"]) is False
+
+            # Only exact match or org/exact_match should work
+            assert oauth_service.should_be_admin(["admin"]) is True
+            assert oauth_service.should_be_admin(["org/admin"]) is True

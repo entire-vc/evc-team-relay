@@ -158,7 +158,7 @@ async def callback(
             )
 
             # Sync user info from IAM
-            oauth_service.sync_user_info(db, user, userinfo)
+            sync_updated, sync_changes = oauth_service.sync_user_info(db, user, userinfo)
 
             # Log account linking
             audit_service.log_action(
@@ -169,6 +169,7 @@ async def callback(
                     "provider": provider,
                     "provider_user_id": userinfo.sub,
                     "groups": userinfo.groups,
+                    "sync_changes": sync_changes if sync_updated else None,
                 },
             )
         elif provider_obj.auto_register:
@@ -202,7 +203,22 @@ async def callback(
             )
     else:
         # Existing OAuth user - sync info on each login
-        oauth_service.sync_user_info(db, user, userinfo)
+        sync_updated, sync_changes = oauth_service.sync_user_info(db, user, userinfo)
+
+        # Log user info sync if changes were made
+        if sync_updated:
+            audit_service.log_action(
+                db=db,
+                action=models.AuditAction.USER_UPDATED,
+                actor_user_id=user.id,
+                target_user_id=user.id,
+                details={
+                    "source": "oauth_sync",
+                    "provider": provider,
+                    "groups": userinfo.groups,
+                    "changes": sync_changes,
+                },
+            )
 
     # Check if user is active
     if not user.is_active:

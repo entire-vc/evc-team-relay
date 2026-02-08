@@ -300,7 +300,8 @@ class TestRelayTokenFolderShares:
         )
         assert resp.status_code == 200
 
-    def test_folder_share_file_outside_folder_rejected(self, client: TestClient):
+    def test_folder_share_any_doc_id_accepted(self, client: TestClient):
+        """Folder shares accept any doc_id — authorization is via membership, not path."""
         admin_token = login(client, "bootstrap@example.com", "super-secret")
         share_id = create_share(client, admin_token, kind="folder", path="vault/project")
 
@@ -310,14 +311,13 @@ class TestRelayTokenFolderShares:
                 "share_id": share_id,
                 "doc_id": "some-file-id",
                 "mode": "read",
-                "file_path": "vault/other-folder/secret.md",
             },
             headers=auth_headers(admin_token),
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
     def test_folder_share_sync_folder_itself(self, client: TestClient):
-        """When doc_id == share_id, it's syncing the folder itself — no path validation."""
+        """When doc_id == share_id, it's syncing the folder itself."""
         admin_token = login(client, "bootstrap@example.com", "super-secret")
         share_id = create_share(client, admin_token, kind="folder", path="vault/project")
 

@@ -3,7 +3,11 @@
 }
 
 cp.{$DOMAIN_BASE} {
-  reverse_proxy control-plane:8000
+  reverse_proxy control-plane:8000 {
+    # Force Connection: close to prevent stale keep-alive sockets
+    # (Electron/httpx reuse idle connections that Caddy already closed)
+    header_down Connection close
+  }
 }
 
 {$DOMAIN_BASE} {

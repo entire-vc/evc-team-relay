@@ -273,6 +273,10 @@ async def get_user_info(
 def should_be_admin(user_groups: list[str]) -> bool:
     """Check if user should be admin based on IAM groups.
 
+    Supports both exact match and org/group format (e.g., "entire_vc/admin").
+    - If admin_group contains "/", requires exact match (e.g., "entire_vc/admin")
+    - If admin_group is simple name, matches both exact and "org/name" format
+
     Args:
         user_groups: List of groups user belongs to in IAM
 
@@ -286,7 +290,19 @@ def should_be_admin(user_groups: list[str]) -> bool:
     admin_groups = [g.strip().lower() for g in settings.oauth_admin_groups.split(",") if g.strip()]
     user_groups_lower = [g.lower() for g in user_groups]
 
-    return any(ag in user_groups_lower for ag in admin_groups)
+    # Check each admin group against user groups
+    for admin_group in admin_groups:
+        for user_group in user_groups_lower:
+            # Exact match always works
+            if user_group == admin_group:
+                return True
+
+            # Suffix match only if admin_group is a simple name (no "/" in it)
+            # This allows "admin" to match "org/admin" but not "other_org/admin"
+            if "/" not in admin_group and user_group.endswith(f"/{admin_group}"):
+                return True
+
+    return False
 
 
 def get_default_admin_status() -> bool:
@@ -299,10 +315,12 @@ def sync_user_info(
     db: Session,
     user: models.User,
     userinfo: oauth_schema.OAuthUserInfo,
-) -> bool:
+) -> tuple[bool, dict[str, Any]]:
     """Sync user information from IAM.
 
-    Updates admin status based on IAM groups.
+    Updates admin status based on IAM groups. Only ELEVATES admin rights, never revokes them.
+    This prevents bootstrap admins from losing admin status during OAuth sync.
+
     Note: User name is stored in UserOAuthAccount, not User table.
 
     Args:
@@ -311,26 +329,30 @@ def sync_user_info(
         userinfo: User info from IAM
 
     Returns:
-        True if user was updated
+        Tuple of (updated, changes_dict) where updated is True if user was changed,
+        and changes_dict contains details of what changed
     """
     settings = get_settings()
     if not settings.oauth_sync_user_info:
-        return False
+        return False, {}
 
     updated = False
+    changes: dict[str, Any] = {}
 
-    # Update admin status based on groups
+    # Update admin status based on groups (only elevate, never revoke)
     if settings.oauth_admin_groups:
-        new_admin_status = should_be_admin(userinfo.groups)
-        if user.is_admin != new_admin_status:
-            user.is_admin = new_admin_status
+        should_have_admin = should_be_admin(userinfo.groups)
+        # Only ELEVATE admin rights, never revoke them
+        if should_have_admin and not user.is_admin:
+            user.is_admin = True
             updated = True
+            changes["is_admin"] = {"old": False, "new": True, "reason": "oauth_group_match"}
 
     if updated:
         db.commit()
         db.refresh(user)
 
-    return updated
+    return updated, changes
 
 
 def find_user_by_oauth(

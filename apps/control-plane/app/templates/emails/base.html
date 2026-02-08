@@ -78,6 +78,9 @@
 <body>
     <div class="container">
         <div class="header">
+            {% if branding and branding.logo_url %}
+            <img src="{{ branding.logo_url }}" alt="{{ server_name }}" width="40" height="40" style="margin-bottom: 8px; border-radius: 8px;">
+            {% endif %}
             <div class="logo">{{ server_name }}</div>
         </div>
         <div class="content">

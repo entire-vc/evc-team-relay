@@ -45,8 +45,13 @@ def test_folder_share_token_with_file_path(client: TestClient) -> None:
     assert "token" in response.json()
 
 
-def test_folder_share_token_rejects_outside_path(client: TestClient) -> None:
-    """Test that token issuance rejects files outside shared folder."""
+def test_folder_share_token_allows_any_doc_id(client: TestClient) -> None:
+    """Folder share tokens work with any doc_id (UUID-based, not path-based).
+
+    File path validation was removed because doc_id for files within folder
+    shares is a UUID, local folder names can differ between devices, and
+    membership check handles authorization.
+    """
     admin_token = login(client, "bootstrap@example.com", "super-secret")
 
     # Create a folder share
@@ -58,16 +63,15 @@ def test_folder_share_token_rejects_outside_path(client: TestClient) -> None:
     assert folder_share.status_code == 201
     share_id = folder_share.json()["id"]
 
-    # Request token for file OUTSIDE folder
+    # Request token with arbitrary doc_id — should succeed for share members
     token_request = {
         "share_id": share_id,
-        "doc_id": "some-guid/Other/doc.md",
-        "file_path": "Other/doc.md",
+        "doc_id": "some-uuid-for-document",
         "mode": "read",
     }
     response = client.post("/tokens/relay", json=token_request, headers=auth_headers(admin_token))
-    assert response.status_code == 403
-    assert "not within shared folder" in response.json()["error"]["message"]
+    assert response.status_code == 200
+    assert "token" in response.json()
 
 
 def test_folder_share_nested_file(client: TestClient) -> None:
@@ -94,8 +98,12 @@ def test_folder_share_nested_file(client: TestClient) -> None:
     assert response.status_code == 200, response.text
 
 
-def test_path_traversal_prevention(client: TestClient) -> None:
-    """Test that path traversal attacks are prevented."""
+def test_folder_share_doc_id_is_opaque(client: TestClient) -> None:
+    """doc_id is an opaque key for the relay, not a filesystem path.
+
+    Path traversal in doc_id is not a security risk because the relay
+    server treats doc_id as a storage key, not a file path.
+    """
     admin_token = login(client, "bootstrap@example.com", "super-secret")
 
     # Create a folder share
@@ -107,16 +115,14 @@ def test_path_traversal_prevention(client: TestClient) -> None:
     assert folder_share.status_code == 201
     share_id = folder_share.json()["id"]
 
-    # Try path traversal in file_path
+    # doc_id with path-like content is treated as opaque string — succeeds
     token_request = {
         "share_id": share_id,
         "doc_id": "some-guid/../../../etc/passwd",
-        "file_path": "Projects/../../../etc/passwd",
         "mode": "read",
     }
     response = client.post("/tokens/relay", json=token_request, headers=auth_headers(admin_token))
-    assert response.status_code == 400  # Path validation should reject this
-    assert ".." in response.json()["error"]["message"]
+    assert response.status_code == 200
 
 
 def test_find_share_for_path_doc_precedence(client: TestClient) -> None:

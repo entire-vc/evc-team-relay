@@ -17,6 +17,7 @@ from app.db import models
 from app.db.session import get_db
 from app.schemas import invite as invite_schema
 from app.services import auth_service, invite_service, share_service
+from app.services.instance_settings_service import get_branding
 from app.services.notification_service import get_notification_service
 from app.utils.url import get_base_url
 
@@ -28,6 +29,13 @@ public_router = APIRouter(prefix="/invite", tags=["invites"])
 
 # Templates for SSR
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _invite_response(request: Request, db: Session, template_ctx: dict) -> HTMLResponse:
+    """Render invite.html with branding injected."""
+    template_ctx["branding"] = get_branding(db)
+    template_ctx["request"] = request
+    return templates.TemplateResponse("invite.html", template_ctx)
 
 
 @router.post(
@@ -210,13 +218,15 @@ def invite_page(
 
     # Build OAuth URLs with correct scheme (HTTPS behind proxy)
     base_url = get_base_url(request)
+    invite_page_url = f"{base_url}/invite/{token}/page"
     oauth_callback_url = f"{base_url}/v1/auth/oauth/{settings.oauth_provider_name}/callback"
     oauth_authorize_url = (
         f"{base_url}/v1/auth/oauth/{settings.oauth_provider_name}/authorize"
         f"?redirect_uri={oauth_callback_url}"
-        f"&return_url={request.url}"
+        f"&return_url={invite_page_url}"
     )
 
+    branding = get_branding(db)
     return templates.TemplateResponse(
         "invite.html",
         {
@@ -229,6 +239,7 @@ def invite_page(
             "oauth_enabled": settings.oauth_enabled,
             "oauth_provider": settings.oauth_provider_name,
             "oauth_authorize_url": oauth_authorize_url,
+            "branding": branding,
         },
     )
 
@@ -280,10 +291,10 @@ def accept_invite(
             )
 
             # Set auth cookie and show success
-            response = templates.TemplateResponse(
-                "invite.html",
+            response = _invite_response(
+                request,
+                db,
                 {
-                    "request": request,
                     "token": token,
                     "success": True,
                     "success_path": result.share_path,
@@ -336,10 +347,10 @@ def accept_invite(
 
             # Generate token and set cookie
             access_token = security.create_access_token(str(user.id))
-            response = templates.TemplateResponse(
-                "invite.html",
+            response = _invite_response(
+                request,
+                db,
                 {
-                    "request": request,
                     "token": token,
                     "success": True,
                     "success_path": result.share_path,
@@ -372,10 +383,10 @@ def accept_invite(
                 new_user_data=None,
             )
 
-            return templates.TemplateResponse(
-                "invite.html",
+            return _invite_response(
+                request,
+                db,
                 {
-                    "request": request,
                     "token": token,
                     "success": True,
                     "success_path": result.share_path,
@@ -395,10 +406,10 @@ def accept_invite(
         elif "already a member" in error_msg.lower():
             # This is actually success - show success page
             invite_info = invite_service.get_invite_public_info(db, token)
-            return templates.TemplateResponse(
-                "invite.html",
+            return _invite_response(
+                request,
+                db,
                 {
-                    "request": request,
                     "token": token,
                     "success": True,
                     "success_path": invite_info.share_path,

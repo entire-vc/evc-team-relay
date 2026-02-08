@@ -24,10 +24,53 @@
 	// Track expanded folders
 	let expandedPaths = $state<Set<string>>(new Set());
 
-	// Load expanded state on mount
+	// Collect all folder paths for default expansion
+	function getAllFolderPaths(nodes: TreeNode[]): string[] {
+		const paths: string[] = [];
+		for (const node of nodes) {
+			if (node.type === 'folder') {
+				paths.push(node.path);
+				if (node.children.length > 0) {
+					paths.push(...getAllFolderPaths(node.children));
+				}
+			}
+		}
+		return paths;
+	}
+
+	// Get ancestor folder paths for the current path
+	function getAncestorPaths(path: string): string[] {
+		if (!path) return [];
+		const parts = path.split('/');
+		const ancestors: string[] = [];
+		for (let i = 1; i < parts.length; i++) {
+			ancestors.push(parts.slice(0, i).join('/'));
+		}
+		return ancestors;
+	}
+
+	// Load expanded state on mount; default to all-expanded on first visit
 	$effect(() => {
 		if (browser && currentSlug) {
-			expandedPaths = loadExpandedState(currentSlug);
+			const saved = loadExpandedState(currentSlug);
+			if (saved.size === 0 && tree.length > 0) {
+				// First visit: expand all folders
+				expandedPaths = new Set(getAllFolderPaths(tree));
+				saveExpandedState(currentSlug, expandedPaths);
+			} else {
+				// Ensure ancestors of current path are always expanded
+				const ancestors = getAncestorPaths(currentPath);
+				const merged = new Set(saved);
+				let changed = false;
+				for (const a of ancestors) {
+					if (!merged.has(a)) {
+						merged.add(a);
+						changed = true;
+					}
+				}
+				expandedPaths = merged;
+				if (changed) saveExpandedState(currentSlug, merged);
+			}
 		}
 	});
 

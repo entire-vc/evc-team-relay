@@ -161,7 +161,7 @@ class RelayAuthTester:
 
             try:
                 response = self.client.post(url, json=payload, headers=headers)
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     share = response.json()
                     self.log(f"Share created: {share['id']}", "OK")
                     return share["id"]

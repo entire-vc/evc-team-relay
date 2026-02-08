@@ -171,9 +171,9 @@
         <div class="invite-card">
             <div class="invite-brand">
                 <a href="/">
-                    <img src="/static/img/evc-ava.svg" alt="EVC Team Relay" width="40" height="40">
+                    <img src="{{ branding.logo_url if branding else '/static/img/evc-ava.svg' }}" alt="{{ branding.name if branding else 'EVC Team Relay' }}" width="40" height="40">
                 </a>
-                <span>Team Relay</span>
+                <span>{{ branding.name if branding else 'Team Relay' }}</span>
             </div>
             {% if not success %}
                 <!-- Invite Details -->
