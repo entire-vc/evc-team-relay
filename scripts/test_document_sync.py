@@ -722,7 +722,7 @@ class DocumentSyncTests:
 async def main():
     parser = argparse.ArgumentParser(description="Document Sync E2E Tests")
     parser.add_argument(
-        "--server", "-s", default="https://cp.5evofarm.entire.vc", help="Control plane URL"
+        "--server", "-s", default="http://localhost:8000", help="Control plane URL"
     )
     parser.add_argument("--user-a-email", default="test@entire.vc")
     parser.add_argument("--user-a-password", default="Test123456")

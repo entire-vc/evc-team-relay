@@ -101,10 +101,11 @@ Get a token by calling `POST /auth/login` with valid credentials.
         """,
         contact={
             "name": "Relay Control Plane",
-            "url": "https://github.com/entire-vc/relay-onprem",
+            "url": "https://github.com/entire-vc/evc-team-relay",
         },
         license_info={
-            "name": "Private",
+            "name": "BSL 1.1",
+            "url": "https://github.com/entire-vc/evc-team-relay/blob/main/LICENSE",
         },
     )
 

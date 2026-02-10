@@ -11,6 +11,14 @@ port = 9090
 level = "info"
 format = "pretty"
 
+# Auth keys from control plane
+# Get these values from: curl https://cp.YOUR_DOMAIN/keys/public
+# If RELAY_PRIVATE_KEY is set in .env, the control plane uses a stable keypair.
+# Otherwise, it auto-generates one on each startup (check control-plane logs).
+[[auth]]
+key_id = "REPLACE_WITH_KEY_ID"
+public_key = "REPLACE_WITH_PUBLIC_KEY_BASE64"
+
 [store]
 type = "minio"
 bucket = "relay"

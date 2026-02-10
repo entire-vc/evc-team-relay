@@ -10,7 +10,7 @@ Tests collaborative editing between multiple users on staging relay:
 
 Usage:
     python scripts/test_cross_user_sync.py \\
-        --server https://cp.5evofarm.entire.vc \\
+        --server http://localhost:8000 \\
         --user-a-email test@entire.vc \\
         --user-a-password Test123456 \\
         --user-b-email simple@entire.vc \\
@@ -859,8 +859,8 @@ async def main():
     parser.add_argument(
         "--server",
         "-s",
-        default="https://cp.5evofarm.entire.vc",
-        help="Control plane URL (default: https://cp.5evofarm.entire.vc)",
+        default="http://localhost:8000",
+        help="Control plane URL (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--user-a-email",

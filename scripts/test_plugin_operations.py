@@ -16,7 +16,7 @@ Simulates every API call the Obsidian plugin makes:
 Usage:
     # Full test suite on staging:
     python scripts/test_plugin_operations.py \
-        --server https://cp.5evofarm.entire.vc \
+        --server http://localhost:8000 \
         --email test@entire.vc \
         --password Test123456
 
@@ -28,7 +28,7 @@ Usage:
 
     # With second user for member tests:
     python scripts/test_plugin_operations.py \
-        --server https://cp.5evofarm.entire.vc \
+        --server http://localhost:8000 \
         --email test@entire.vc \
         --password Test123456 \
         --second-email simple@entire.vc \
@@ -36,21 +36,21 @@ Usage:
 
     # Skip WebSocket tests:
     python scripts/test_plugin_operations.py \
-        --server https://cp.5evofarm.entire.vc \
+        --server http://localhost:8000 \
         --email test@entire.vc \
         --password Test123456 \
         --skip-ws
 
     # Only specific test groups:
     python scripts/test_plugin_operations.py \
-        --server https://cp.5evofarm.entire.vc \
+        --server http://localhost:8000 \
         --email test@entire.vc \
         --password Test123456 \
         --only shares,members
 
     # Only OAuth tests:
     python scripts/test_plugin_operations.py \
-        --server https://cp.5evofarm.entire.vc \
+        --server http://localhost:8000 \
         --email test@entire.vc \
         --password Test123456 \
         --only oauth --verbose
@@ -1082,18 +1082,18 @@ def main():
         epilog="""
 Examples:
   # Full test on staging:
-  %(prog)s -s https://cp.5evofarm.entire.vc -e test@entire.vc -p Test123456
+  %(prog)s -s http://localhost:8000 -e test@entire.vc -p Test123456
 
   # Full test with member operations:
-  %(prog)s -s https://cp.5evofarm.entire.vc -e test@entire.vc -p Test123456 \\
+  %(prog)s -s http://localhost:8000 -e test@entire.vc -p Test123456 \\
            --second-email simple@entire.vc --second-password password123
 
   # Only share and member tests:
-  %(prog)s -s https://cp.5evofarm.entire.vc -e test@entire.vc -p Test123456 \\
+  %(prog)s -s http://localhost:8000 -e test@entire.vc -p Test123456 \\
            --only shares,members
 
   # Skip WebSocket tests (no relay server access):
-  %(prog)s -s https://cp.5evofarm.entire.vc -e test@entire.vc -p Test123456 --skip-ws
+  %(prog)s -s http://localhost:8000 -e test@entire.vc -p Test123456 --skip-ws
         """,
     )
 

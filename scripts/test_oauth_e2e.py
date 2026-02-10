@@ -14,23 +14,23 @@ This script simulates the OAuth flow that the Obsidian plugin uses:
 
 Usage:
     # Full test suite:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc -v
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 -v
 
     # Server edge case tests only:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc --only server -v
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 --only server -v
 
     # OAuth flow tests only:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc --only oauth -v
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 --only oauth -v
 
     # With visible browser for debugging:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc --headed -v
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 --headed -v
 
     # Custom Casdoor credentials:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc \
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 \
         --casdoor-user oauth-test --casdoor-password 123456
 
     # Skip WebSocket tests:
-    python scripts/test_oauth_e2e.py --server https://cp.5evofarm.entire.vc --skip-ws
+    python scripts/test_oauth_e2e.py --server http://localhost:8000 --skip-ws
 
 Requirements:
     pip install httpx playwright
@@ -871,7 +871,7 @@ def main():
     parser.add_argument(
         "--server",
         required=True,
-        help="Control plane URL (e.g., https://cp.5evofarm.entire.vc)",
+        help="Control plane URL (e.g., http://localhost:8000)",
     )
     parser.add_argument(
         "--casdoor-url",

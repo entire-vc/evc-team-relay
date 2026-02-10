@@ -19,7 +19,7 @@ Requirements:
 
 Usage:
     python scripts/test_plugin_crdt_sync.py
-    python scripts/test_plugin_crdt_sync.py --server https://cp.5evofarm.entire.vc
+    python scripts/test_plugin_crdt_sync.py --server http://localhost:8000
     python scripts/test_plugin_crdt_sync.py --email test@entire.vc --password Test123456
     python scripts/test_plugin_crdt_sync.py -v  # verbose mode
 """
@@ -633,7 +633,7 @@ This test simulates the exact flow that the Obsidian plugin performs:
 
 Examples:
   python scripts/test_plugin_crdt_sync.py
-  python scripts/test_plugin_crdt_sync.py --server https://cp.5evofarm.entire.vc
+  python scripts/test_plugin_crdt_sync.py --server http://localhost:8000
   python scripts/test_plugin_crdt_sync.py --email test@entire.vc --password Test123456
   python scripts/test_plugin_crdt_sync.py -v  # verbose mode
         """,
@@ -642,8 +642,8 @@ Examples:
     parser.add_argument(
         "--server",
         "-s",
-        default="https://cp.5evofarm.entire.vc",
-        help="Control plane URL (default: https://cp.5evofarm.entire.vc)",
+        default="http://localhost:8000",
+        help="Control plane URL (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--email",
