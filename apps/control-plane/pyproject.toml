@@ -32,6 +32,8 @@ dependencies = [
     # CWT (CBOR Web Token) support for y-sweet relay-server
     "cwt>=2.7.0,<3.0",
     "cbor2>=5.6.0,<6.0",
+    # MinIO for asset storage
+    "minio>=7.2.0,<8.0",
 ]
 
 [project.optional-dependencies]
