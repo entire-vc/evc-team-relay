@@ -10,6 +10,7 @@
 		sessionToken?: string;
 		authToken?: string;
 		class?: string;
+		folderItems?: Array<{ path: string; name: string; type: string; content?: string }>;
 	}
 
 	let {
@@ -18,7 +19,8 @@
 		canEdit = false,
 		sessionToken,
 		authToken,
-		class: className = ''
+		class: className = '',
+		folderItems
 	}: Props = $props();
 
 	let renderedHtml = $state('');
@@ -30,7 +32,7 @@
 
 	onMount(async () => {
 		try {
-			renderedHtml = await renderMarkdown(content);
+			renderedHtml = await renderMarkdown(content, { slug, folderItems });
 		} catch (error) {
 			console.error('Failed to render markdown:', error);
 			renderedHtml = '<p class="error">Failed to render document</p>';
@@ -43,7 +45,7 @@
 	$effect(() => {
 		if (content && !isEditing) {
 			isRendering = true;
-			renderMarkdown(content)
+			renderMarkdown(content, { slug, folderItems })
 				.then((html) => {
 					renderedHtml = html;
 				})

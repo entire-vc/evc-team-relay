@@ -1,1 +1,0 @@
-{"version":3,"file":"variants.d.ts","sourceRoot":"","sources":["../../../src/lib/components/alert/variants.ts"],"names":[],"mappings":"AAAA,OAAO,EAAO,KAAK,YAAY,EAAE,MAAM,0BAA0B,CAAC;AAElE,eAAO,MAAM,aAAa;;8EAgBzB,CAAC;AAEF,MAAM,MAAM,YAAY,GAAG,YAAY,CAAC,OAAO,aAAa,CAAC,CAAC,SAAS,CAAC,CAAC;AACzE,MAAM,MAAM,aAAa,GAAG,YAAY,CAAC,OAAO,aAAa,CAAC,CAAC"}

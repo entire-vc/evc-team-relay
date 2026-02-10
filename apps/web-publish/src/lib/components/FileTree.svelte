@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@evc/ui-svelte';
+	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@entire-vc/ui-svelte';
 	import {
 		buildFileTree,
 		loadExpandedState,
 		saveExpandedState,
+		slugifyPath,
 		type TreeNode,
 		type FolderItem
 	} from '$lib/file-tree';
@@ -90,11 +91,11 @@
 	}
 
 	function getItemUrl(node: TreeNode): string {
-		return `/${currentSlug}/${node.path}`;
+		return `/${currentSlug}/${slugifyPath(node.path)}`;
 	}
 
 	function isActive(node: TreeNode): boolean {
-		return currentPath === node.path;
+		return currentPath === slugifyPath(node.path);
 	}
 
 	function handleClick() {

@@ -51,6 +51,15 @@
 		href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github.min.css"
 	/>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	{#if branding?.favicon_url}
+		<link rel="icon" href={branding.favicon_url} />
+	{/if}
+	{#if branding?.name}
+		<meta property="og:site_name" content={branding.name} />
+	{/if}
+	{#if branding?.custom_head_code}
+		{@html branding.custom_head_code}
+	{/if}
 </svelte:head>
 
 <LoadingBar />
@@ -65,6 +74,10 @@
 		</div>
 	</main>
 </div>
+
+{#if branding?.custom_body_code}
+	{@html branding.custom_body_code}
+{/if}
 
 <style>
 	:global(body) {

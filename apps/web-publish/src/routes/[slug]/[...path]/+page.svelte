@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
+	import { extractDescription } from '$lib/markdown';
 	import {
 		Breadcrumb,
 		BreadcrumbList,
@@ -9,7 +10,7 @@
 		BreadcrumbSeparator,
 		BreadcrumbPage,
 		Separator
-	} from '@evc/ui-svelte';
+	} from '@entire-vc/ui-svelte';
 	import { page } from '$app/stores';
 	import type { PageData } from './$types';
 
@@ -17,11 +18,29 @@
 
 	const shareUrl = $derived($page.url.href);
 	const backUrl = $derived(`/${data.parentSlug}`);
+	const description = $derived(
+		extractDescription(data.content || '', `View document: ${data.file.path}`)
+	);
+	const branding = $derived($page.data?.serverInfo?.branding);
+	const pageTitle = $derived(data.file.name);
 </script>
 
 <svelte:head>
-	<title>{data.file.name} - {data.share.path} - Relay</title>
-	<meta name="description" content="View document: {data.file.path}" />
+	<title>{pageTitle} - {data.share.path} - {branding?.name || 'Relay'}</title>
+	<meta name="description" content={description} />
+	<meta property="og:title" content="{pageTitle} - {data.share.path}" />
+	<meta property="og:description" content={description} />
+	<meta property="og:type" content="article" />
+	<meta property="og:url" content={shareUrl} />
+	{#if branding?.logo_url}
+		<meta property="og:image" content={branding.logo_url} />
+	{/if}
+	<meta name="twitter:card" content="summary" />
+	<meta name="twitter:title" content="{pageTitle} - {data.share.path}" />
+	<meta name="twitter:description" content={description} />
+	{#if branding?.logo_url}
+		<meta name="twitter:image" content={branding.logo_url} />
+	{/if}
 	{#if data.share.web_noindex}
 		<meta name="robots" content="noindex" />
 	{/if}
@@ -56,7 +75,7 @@
 
 		<div class="flex gap-8 items-start">
 			<div class="flex-1 min-w-0 max-w-[800px]">
-				<MarkdownViewer content={data.content} />
+				<MarkdownViewer content={data.content} slug={data.share.web_slug} folderItems={data.folderItems} />
 			</div>
 		</div>
 	</article>

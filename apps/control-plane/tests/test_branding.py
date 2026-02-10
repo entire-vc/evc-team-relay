@@ -201,6 +201,71 @@ def test_admin_update_branding_validation_url_too_long(client):
     assert response.status_code == 422
 
 
+def test_admin_update_branding_custom_code(client):
+    """Test that admin can set custom head/body code for analytics injection."""
+    admin_token = login(client, "bootstrap@example.com", "super-secret")
+    payload = {
+        "name": "Analytics Test",
+        "logo_url": "/logo.svg",
+        "favicon_url": "/favicon.ico",
+        "custom_head_code": '<script>console.log("head")</script>',
+        "custom_body_code": '<script>console.log("body")</script>',
+    }
+    response = client.patch(
+        "/admin/settings/branding", json=payload, headers=auth_headers(admin_token)
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["custom_head_code"] == '<script>console.log("head")</script>'
+    assert data["custom_body_code"] == '<script>console.log("body")</script>'
+
+    # Verify via GET
+    response = client.get("/admin/settings/branding", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["custom_head_code"] == '<script>console.log("head")</script>'
+    assert data["custom_body_code"] == '<script>console.log("body")</script>'
+
+    # Verify reflected in /server/info
+    response = client.get("/server/info")
+    data = response.json()
+    assert data["branding"]["custom_head_code"] == '<script>console.log("head")</script>'
+    assert data["branding"]["custom_body_code"] == '<script>console.log("body")</script>'
+
+
+def test_admin_update_branding_custom_code_defaults_empty(client):
+    """Test that custom code fields default to empty string."""
+    admin_token = login(client, "bootstrap@example.com", "super-secret")
+    # Send without custom_code fields
+    payload = {
+        "name": "No Code Test",
+        "logo_url": "/logo.svg",
+        "favicon_url": "/favicon.ico",
+    }
+    response = client.patch(
+        "/admin/settings/branding", json=payload, headers=auth_headers(admin_token)
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["custom_head_code"] == ""
+    assert data["custom_body_code"] == ""
+
+
+def test_admin_update_branding_custom_code_too_long(client):
+    """Test that custom code fields have max length validation (10000 chars)."""
+    admin_token = login(client, "bootstrap@example.com", "super-secret")
+    payload = {
+        "name": "Long Code Test",
+        "logo_url": "/logo.svg",
+        "favicon_url": "/favicon.ico",
+        "custom_head_code": "x" * 10001,
+    }
+    response = client.patch(
+        "/admin/settings/branding", json=payload, headers=auth_headers(admin_token)
+    )
+    assert response.status_code == 422
+
+
 def test_branding_defaults_when_no_settings_exist(client):
     """Test that default values are returned when no settings exist in database."""
     # This test verifies the service fallback behavior

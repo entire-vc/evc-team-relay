@@ -5,7 +5,7 @@
 	import CopyButton from '$lib/components/CopyButton.svelte';
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
-	import { extractTitle, estimateReadingTime } from '$lib/markdown';
+	import { extractTitle, extractDescription, estimateReadingTime } from '$lib/markdown';
 	import { isRealtimeSyncAvailable } from '$lib/yjs';
 	import type { PageData } from './$types';
 	import { page } from '$app/stores';
@@ -27,7 +27,7 @@
 		Separator,
 		Alert,
 		AlertDescription
-	} from '@evc/ui-svelte';
+	} from '@entire-vc/ui-svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -42,8 +42,14 @@
 	const title = $derived(
 		data.isFolder ? data.share.path : extractTitle(data.content || '', data.share.path)
 	);
+	const description = $derived(
+		data.isFolder
+			? `Shared folder: ${data.share.path}`
+			: extractDescription(data.content || '', `View shared document: ${data.share.path}`)
+	);
 	const readingTime = $derived(data.content ? estimateReadingTime(data.content) : 0);
 	const shareUrl = $derived($page.url.href);
+	const branding = $derived($page.data?.serverInfo?.branding);
 	const formattedPath = $derived(data.share.path.split('/').pop()?.replace('.md', '') || title);
 	const lastUpdated = $derived(
 		new Date(data.share.updated_at || data.share.created_at).toLocaleDateString('en-US', {
@@ -100,8 +106,21 @@
 </script>
 
 <svelte:head>
-	<title>{title} - Relay</title>
-	<meta name="description" content="View shared document: {data.share.path}" />
+	<title>{title} - {branding?.name || 'Relay'}</title>
+	<meta name="description" content={description} />
+	<meta property="og:title" content={title} />
+	<meta property="og:description" content={description} />
+	<meta property="og:type" content="article" />
+	<meta property="og:url" content={shareUrl} />
+	{#if branding?.logo_url}
+		<meta property="og:image" content={branding.logo_url} />
+	{/if}
+	<meta name="twitter:card" content="summary" />
+	<meta name="twitter:title" content={title} />
+	<meta name="twitter:description" content={description} />
+	{#if branding?.logo_url}
+		<meta name="twitter:image" content={branding.logo_url} />
+	{/if}
 	{#if data.share.web_noindex}
 		<meta name="robots" content="noindex" />
 	{/if}
@@ -166,7 +185,7 @@
 				<div class="flex-1 min-w-0 max-w-[800px]">
 					{#if data.readmeContent}
 						<!-- Show README.md content -->
-						<MarkdownViewer content={data.readmeContent} />
+						<MarkdownViewer content={data.readmeContent} slug={data.share.web_slug} folderItems={data.folderItems} />
 					{:else if data.folderItems.length === 0}
 						<Card class="text-center border-dashed">
 							<CardHeader class="pb-2">
@@ -218,6 +237,7 @@
 							docId={data.share.web_doc_id}
 							slug={data.share.web_slug}
 							sessionToken={data.sessionToken}
+							folderItems={data.folderItems}
 						/>
 					{:else if data.canEdit}
 						<EditableMarkdownViewer
@@ -226,9 +246,10 @@
 							canEdit={data.canEdit}
 							sessionToken={data.sessionToken}
 							authToken={data.authToken}
+							folderItems={data.folderItems}
 						/>
 					{:else}
-						<MarkdownViewer content={data.content || ''} />
+						<MarkdownViewer content={data.content || ''} slug={data.share.web_slug} folderItems={data.folderItems} />
 					{/if}
 				</div>
 			</div>

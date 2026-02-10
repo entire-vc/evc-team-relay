@@ -10,9 +10,36 @@ This is a SvelteKit application that provides web access to Relay shared documen
 
 - **SSR for SEO** - Server-side rendering for fast initial load and search engine optimization
 - **Markdown Rendering** - Full CommonMark + GFM support with syntax highlighting
+- **Obsidian-Flavored Markdown** - Phase A + Phase B features (see below)
 - **Access Control** - Support for public, protected, and private shares
 - **Responsive Design** - Mobile-friendly layout
 - **Dynamic robots.txt** - SEO control based on share settings
+
+### Obsidian Markdown Support
+
+**Phase A (Complete)**:
+- ✅ YAML frontmatter stripping
+- ✅ Comments (`%%...%%`)
+- ✅ Highlights (`==text==`)
+- ✅ Wikilinks (`[[Note]]`, `[[Note|Display]]`)
+- ✅ Embeds (`![[image.png]]`) - placeholder display
+- ✅ Callouts (`> [!type] Title`)
+- ✅ Math/LaTeX (`$...$` and `$$...$$`)
+- ✅ Mermaid diagrams (```mermaid)
+- ✅ Footnotes (`[^1]` and `^[inline]`)
+
+**Phase B (Complete)**:
+- ✅ Tags (`#tag`, `#nested/tag`)
+- ✅ Task lists with custom checkboxes (`[x]`, `[/]`, `[-]`, etc.)
+- ✅ Code blocks with copy button and language label
+- ✅ Dark mode code highlighting (auto-switches based on system theme)
+- ✅ Strikethrough (`~~text~~`)
+
+**Phase C (Planned)**:
+- 🔄 Internal image rendering from shares
+- 🔄 Embed actual note content
+- 🔄 Advanced callout features
+- 🔄 Dataview-like queries
 
 ## Development
 

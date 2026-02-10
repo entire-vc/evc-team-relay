@@ -167,6 +167,8 @@ export interface ServerInfo {
 		name: string;
 		logo_url: string;
 		favicon_url: string;
+		custom_head_code: string;
+		custom_body_code: string;
 	};
 }
 

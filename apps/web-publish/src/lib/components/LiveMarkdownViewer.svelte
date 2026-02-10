@@ -14,9 +14,10 @@
 		/** Session token for protected shares */
 		sessionToken?: string;
 		class?: string;
+		folderItems?: Array<{ path: string; name: string; type: string; content?: string }>;
 	}
 
-	let { content, docId, slug, sessionToken, class: className = '' }: Props = $props();
+	let { content, docId, slug, sessionToken, class: className = '', folderItems }: Props = $props();
 
 	let realtimeContent = $state<string | null>(null);
 	let connectionStatus = $state<'connecting' | 'connected' | 'disconnected' | 'unavailable'>(
@@ -79,7 +80,7 @@
 		</div>
 	{/if}
 
-	<MarkdownViewer content={displayContent} class={className} />
+	<MarkdownViewer content={displayContent} class={className} slug={slug} folderItems={folderItems} />
 
 	{#if error && !realtimeContent}
 		<div class="sync-error">

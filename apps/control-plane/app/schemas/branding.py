@@ -9,6 +9,8 @@ class BrandingRead(BaseModel):
     name: str
     logo_url: str
     favicon_url: str
+    custom_head_code: str = ""
+    custom_body_code: str = ""
 
 
 class BrandingUpdate(BaseModel):
@@ -17,3 +19,5 @@ class BrandingUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     logo_url: str = Field(min_length=1, max_length=2048)
     favicon_url: str = Field(min_length=1, max_length=2048)
+    custom_head_code: str = Field(default="", max_length=10000)
+    custom_body_code: str = Field(default="", max_length=10000)

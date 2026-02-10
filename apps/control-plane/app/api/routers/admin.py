@@ -149,5 +149,7 @@ def update_branding(
         name=payload.name,
         logo_url=payload.logo_url,
         favicon_url=payload.favicon_url,
+        custom_head_code=payload.custom_head_code,
+        custom_body_code=payload.custom_body_code,
     )
     return branding_schema.BrandingRead(**branding_data)

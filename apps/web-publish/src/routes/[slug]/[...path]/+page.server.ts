@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent } from '$lib/api';
+import { slugifyPath } from '$lib/file-tree';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, cookies, url }) => {
@@ -45,17 +46,22 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 		}
 
 		// Find the file in folder items
+		// Support both exact match and slugified match (spaces → hyphens in URL)
 		const folderItems = share.web_folder_items || [];
-		const file = folderItems.find(item => item.path === path);
+		const file = folderItems.find(item => item.path === path)
+			|| folderItems.find(item => slugifyPath(item.path) === path);
 
 		if (!file) {
 			throw error(404, 'File not found in this folder');
 		}
 
+		// Use original file.path (with spaces) for API calls
+		const originalPath = file.path;
+
 		// Try to fetch file content from API
 		let content: string;
 		try {
-			const fileContent = await getFolderFileContent(slug, path, sessionToken, authToken);
+			const fileContent = await getFolderFileContent(slug, originalPath, sessionToken, authToken);
 			content = fileContent.content || '# Content not available\n\nThis file has not been synced yet.';
 		} catch (fetchError) {
 			// If file content fetch fails, show placeholder
@@ -75,7 +81,7 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			share,
 			file,
 			content,
-			filePath: path,
+			filePath: slugifyPath(originalPath),
 			parentSlug: slug,
 			folderItems,
 			isFolder: false

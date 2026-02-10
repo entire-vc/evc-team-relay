@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import io
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from minio import Minio
+from minio.error import S3Error
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -69,6 +73,14 @@ class WebContentUpdateRequest(BaseModel):
     """Request to update document content."""
 
     content: str
+
+
+class WebAssetUploadRequest(BaseModel):
+    """Request to upload a web asset (image)."""
+
+    path: str
+    data: str  # base64-encoded binary data
+    content_type: str
 
 
 @router.get("/shares/{slug}", response_model=WebSharePublic)
@@ -740,3 +752,307 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
 
     content = "\n".join(lines)
     return Response(content=content, media_type="text/plain")
+
+
+def _get_minio_client() -> Minio:
+    """Create MinIO client from settings."""
+    settings = get_settings()
+    return Minio(
+        settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        secure=settings.minio_secure,
+    )
+
+
+def _ensure_minio_bucket(client: Minio, bucket_name: str) -> None:
+    """Ensure MinIO bucket exists, create if not."""
+    try:
+        if not client.bucket_exists(bucket_name):
+            client.make_bucket(bucket_name)
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to access storage: {e}",
+        )
+
+
+# Allowed image content types for web assets
+ALLOWED_IMAGE_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "image/bmp",
+    "image/x-icon",
+}
+
+
+@router.post("/shares/{slug}/assets", status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute")  # Rate limit for asset uploads
+def upload_web_asset(
+    request: Request,
+    slug: str,
+    payload: WebAssetUploadRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Upload a web asset (image) for a folder share.
+
+    Stores the binary data in MinIO under key `web-assets/{share_id}/{path}`.
+    Only authenticated users who are admin or owner/member of the share can upload.
+
+    Max size: 5MB
+    Allowed content types: PNG, JPEG, GIF, WebP, SVG, BMP, ICO
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    # Validate content type
+    if payload.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid content type. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}",
+        )
+
+    # Decode base64 data
+    try:
+        binary_data = base64.b64decode(payload.data)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid base64 data",
+        )
+
+    # Check max size (5MB)
+    if len(binary_data) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Asset too large. Max size: 5MB",
+        )
+
+    # Find share
+    stmt = select(models.Share).where(
+        models.Share.web_slug == slug,
+        models.Share.web_published == True,  # noqa: E712
+    )
+    share = db.execute(stmt).scalar_one_or_none()
+
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found or not published",
+        )
+
+    # Authenticate user via JWT token
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+
+    token = auth_header.split(" ")[1]
+    try:
+        from uuid import UUID
+
+        from app.core import security as sec_module
+
+        payload_jwt = sec_module.decode_access_token(token)
+        user_id_str = payload_jwt.get("sub")
+        if not user_id_str:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+            )
+
+        user_id = UUID(user_id_str)
+
+        # Load user to check if admin
+        user_stmt = select(models.User).where(models.User.id == user_id)
+        user = db.execute(user_stmt).scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not found",
+            )
+
+        # Check if user is admin, owner, or member of the share
+        is_authorized = user.is_admin or share.owner_user_id == user_id
+        if not is_authorized:
+            member_stmt = select(models.ShareMember).where(
+                models.ShareMember.share_id == share.id,
+                models.ShareMember.user_id == user_id,
+            )
+            member = db.execute(member_stmt).scalar_one_or_none()
+            is_authorized = member is not None
+
+        if not is_authorized:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this share",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+    # Upload to MinIO
+    client = _get_minio_client()
+    bucket_name = settings.minio_bucket
+    _ensure_minio_bucket(client, bucket_name)
+
+    object_name = f"web-assets/{share.id}/{payload.path}"
+    data_stream = io.BytesIO(binary_data)
+
+    try:
+        client.put_object(
+            bucket_name,
+            object_name,
+            data_stream,
+            length=len(binary_data),
+            content_type=payload.content_type,
+        )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload asset: {e}",
+        )
+
+    return {
+        "message": "Asset uploaded successfully",
+        "path": payload.path,
+        "size": len(binary_data),
+    }
+
+
+@router.get("/shares/{slug}/assets")
+def serve_web_asset(
+    slug: str,
+    path: str = Query(..., description="Asset path within share"),
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    Serve a web asset (image) from a folder share.
+
+    Reads from MinIO bucket key `web-assets/{share_id}/{path}`.
+    No auth required for public shares, session/JWT required for protected/private.
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    # Find share
+    stmt = select(models.Share).where(
+        models.Share.web_slug == slug,
+        models.Share.web_published == True,  # noqa: E712
+    )
+    share = db.execute(stmt).scalar_one_or_none()
+
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found or not published",
+        )
+
+    # Check access based on visibility (same logic as get_folder_file_content)
+    if share.visibility == models.ShareVisibility.PROTECTED:
+        session_token = request.cookies.get("web_session")
+        if not session_token:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Authentication required for protected share",
+            )
+        if not WebSessionService.validate_web_session(session_token, share.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid or expired session",
+            )
+
+    if share.visibility == models.ShareVisibility.PRIVATE:
+        # Validate user JWT token
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Private shares require user authentication",
+            )
+
+        # Validate JWT and check user has access to share
+        token = auth_header.split(" ")[1]
+        try:
+            from uuid import UUID
+
+            from app.core import security as sec_module
+
+            payload_jwt = sec_module.decode_access_token(token)
+            user_id_str = payload_jwt.get("sub")
+            if not user_id_str:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid token",
+                )
+
+            user_id = UUID(user_id_str)
+            # Check if user is owner or member of the share
+            if share.owner_user_id != user_id:
+                member_stmt = select(models.ShareMember).where(
+                    models.ShareMember.share_id == share.id,
+                    models.ShareMember.user_id == user_id,
+                )
+                member = db.execute(member_stmt).scalar_one_or_none()
+                if not member:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You do not have access to this share",
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid or expired token",
+            )
+
+    # Read from MinIO
+    client = _get_minio_client()
+    bucket_name = settings.minio_bucket
+    object_name = f"web-assets/{share.id}/{path}"
+
+    try:
+        response = client.get_object(bucket_name, object_name)
+        try:
+            data = response.read()
+            content_type = response.headers.get("Content-Type", "application/octet-stream")
+        finally:
+            response.close()
+            response.release_conn()
+
+        # Set cache headers for public shares
+        headers = {}
+        if share.visibility == models.ShareVisibility.PUBLIC:
+            headers["Cache-Control"] = "public, max-age=86400"
+
+        return Response(content=data, media_type=content_type, headers=headers)
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve asset: {e}",
+        )

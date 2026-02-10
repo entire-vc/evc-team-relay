@@ -30,6 +30,8 @@ class ServerBranding(BaseModel):
     name: str
     logo_url: str
     favicon_url: str
+    custom_head_code: str = ""
+    custom_body_code: str = ""
 
 
 class ServerInfo(BaseModel):

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Badge, Button } from '@evc/ui-svelte';
+	import { Badge, Button } from '@entire-vc/ui-svelte';
 
 	interface Props {
 		visibility: string;

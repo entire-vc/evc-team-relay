@@ -12,6 +12,18 @@
 		name="description"
 		content="Share and collaborate on documents with your team using {instanceName}'s web publishing platform"
 	/>
+	<meta property="og:title" content="{instanceName} - Collaborative Document Sharing" />
+	<meta property="og:description" content="Share and collaborate on documents with your team using {instanceName}'s web publishing platform" />
+	<meta property="og:type" content="website" />
+	{#if branding?.logo_url}
+		<meta property="og:image" content={branding.logo_url} />
+	{/if}
+	<meta name="twitter:card" content="summary" />
+	<meta name="twitter:title" content="{instanceName} - Collaborative Document Sharing" />
+	<meta name="twitter:description" content="Share and collaborate on documents with your team using {instanceName}'s web publishing platform" />
+	{#if branding?.logo_url}
+		<meta name="twitter:image" content={branding.logo_url} />
+	{/if}
 </svelte:head>
 
 <div class="home-container">

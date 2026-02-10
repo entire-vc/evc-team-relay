@@ -141,6 +141,17 @@ export function loadExpandedState(slug: string): Set<string> {
 }
 
 /**
+ * Slugify a file path for clean URLs: replace spaces with hyphens in each segment.
+ * Example: "My Folder/My File.md" → "My-Folder/My-File.md"
+ */
+export function slugifyPath(path: string): string {
+	return path
+		.split('/')
+		.map((s) => s.replace(/ /g, '-'))
+		.join('/');
+}
+
+/**
  * Check if a node has any children (for determining if it's expandable).
  */
 export function hasChildren(node: TreeNode): boolean {

@@ -1,1 +1,0 @@
-export { default as AspectRatio } from './aspect-ratio.svelte';

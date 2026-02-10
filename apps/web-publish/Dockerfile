@@ -3,10 +3,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json* ./
+# Copy package files and registry config
+COPY package.json package-lock.json* .npmrc ./
 
-# Install dependencies
+# Install dependencies (GITHUB_TOKEN for @entire-vc packages on GitHub Packages)
+ARG GITHUB_TOKEN
 RUN npm ci
 
 # Copy source code
