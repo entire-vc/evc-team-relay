@@ -1,16 +1,50 @@
 # EVC Team Relay
 
-Self-hosted collaborative editing infrastructure for Obsidian.
-
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+**Self-hosted real-time collaboration and web publishing for Obsidian.**
+
+> Edit together. Publish to the web. Keep your data on your server.
+
+---
+
+## The Problem
+
+Obsidian is great for personal notes. But when your team needs to collaborate:
+- **Obsidian Sync** has no real-time collab and costs $8/user/month
+- **Notion/Confluence** means leaving Obsidian and losing your workflow
+- **Git-based sync** means merge conflicts on every concurrent edit
+- **Obsidian Publish** is $8/month with limited customization and no access control
+
+You want your team in Obsidian, editing together, publishing docs — without giving up data control.
+
+## The Solution
+
+**EVC Team Relay** is self-hosted infrastructure that adds real-time collaboration and web publishing to Obsidian. CRDT-based, local-first, fully under your control.
+
+---
 
 ## Features
 
-- **Real-time Sync** — CRDT-based collaboration via y-sweet (Yjs)
-- **Document & Folder Sharing** — Share with viewer/editor permissions
-- **Web Publishing** — Publish notes to the web with custom domains
-- **Authentication** — OAuth/OIDC, email/password, 2FA, session management
-- **Enterprise Ready** — Audit logs, webhooks, Prometheus metrics, Grafana dashboards
+### Real-time Collaboration
+- **Live editing** — CRDT-based sync via y-sweet (Yjs), no merge conflicts
+- **Offline-first** — edit without connection, sync seamlessly when back online
+- **Folder sharing** — share entire folders with viewer/editor permissions
+
+### Web Publishing
+- **Publish notes to the web** — internal wiki, client portal, or public docs
+- **Access control** — public, protected (link + token), or private (authenticated)
+- **Custom domains** — `docs.yourdomain.com`
+- **Live preview** — see your published site at [docs.entire.vc/team-relay/Demo](https://docs.entire.vc/team-relay/Demo) (example)
+
+### Enterprise Ready
+- **Authentication** — OAuth/OIDC, email/password, 2FA
+- **Audit logs** — who did what and when
+- **Webhooks** — integrate with your automation
+- **Monitoring** — Prometheus metrics + Grafana dashboards
+- **Docker Compose** — one command to deploy
+
+---
 
 ## Quick Start
 
@@ -18,102 +52,66 @@ Self-hosted collaborative editing infrastructure for Obsidian.
 git clone https://github.com/entire-vc/evc-team-relay.git
 cd evc-team-relay/infra
 cp env.example .env
-# Edit .env with your settings (see docs/configuration.md)
+# Edit .env with your settings
 docker compose up -d
 ```
 
 **Services:**
-- Control Plane API: `http://localhost:8000` (or `https://cp.yourdomain.com`)
-- Relay Server: `ws://localhost:8080` (or `wss://relay.yourdomain.com`)
-- Web Publish: `http://localhost:3000` (or `https://docs.yourdomain.com`)
+- Control Plane API: `https://cp.yourdomain.com`
+- Relay Server: `wss://relay.yourdomain.com`
+- Web Publish: `https://docs.yourdomain.com`
 - Grafana: `http://localhost:3001`
 
-## Architecture
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Obsidian       │     │  Control Plane  │     │  Relay Server   │
-│  Plugin         │────▶│  (FastAPI)      │     │  (y-sweet)      │
-│                 │     │                 │     │                 │
-│  - Auth         │     │  - User mgmt    │     │  - CRDT sync    │
-│  - Shares       │     │  - Shares       │     │  - WebSocket    │
-│  - Sync         │────────────────────────────▶│  - S3 storage   │
-└─────────────────┘     └────────┬────────┘     └────────┬────────┘
-                                 │                       │
-                        ┌────────▼────────┐     ┌────────▼────────┐
-                        │  PostgreSQL     │     │  MinIO (S3)     │
-                        │  - Users        │     │  - Documents    │
-                        │  - Shares       │     │                 │
-                        │  - Audit logs   │     │                 │
-                        └─────────────────┘     └─────────────────┘
-```
-
-## Documentation
-
-- [Installation Guide](docs/installation.md) — Requirements, setup, deployment
-- [Configuration Reference](docs/configuration.md) — All environment variables
-- [Backup & Restore](docs/backup-restore.md) — Data backup procedures
-- [API Reference](docs/api.md) — REST API documentation
-
-## Obsidian Plugin
-
-Install the companion plugin to connect Obsidian to your relay server:
-
-**[EVC Team Relay Plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin)**
-
-## Components
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Control Plane | Python, FastAPI, SQLAlchemy | User auth, share management, API |
-| Relay Server | Rust, y-sweet | CRDT sync, WebSocket connections |
-| Web Publish | SvelteKit | Public note publishing |
-| Database | PostgreSQL | Users, shares, audit logs |
-| Object Storage | MinIO (S3-compatible) | Document storage |
-| Reverse Proxy | Caddy | TLS termination, routing |
-| Monitoring | Prometheus + Grafana | Metrics and dashboards |
-
-## Development
-
-### Control Plane
-
-```bash
-cd apps/control-plane
-make install    # Install dependencies
-make fmt        # Format code
-make lint       # Lint code
-make test       # Run tests
-```
-
-### Docker Compose
-
-```bash
-cd infra
-docker compose up -d              # Start all services
-docker compose logs -f control-plane  # View logs
-docker compose ps                 # Check status
-```
-
-## Security
-
-- JWT authentication for API access
-- CWT (CBOR Web Token) with Ed25519 signatures for relay connections
-- Caddy proxy converts `?token=` query params to `Authorization` headers for browser WebSocket compatibility
-- Rate limiting on critical endpoints
-- Comprehensive audit logging
-- Password-protected shares support
-- OAuth/OIDC integration
-
-See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-Apache 2.0 — See [LICENSE](LICENSE) for details.
+Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) and connect.
 
 ---
 
-Built with love by [Entire VC](https://github.com/entire-vc)
+## Comparison
+
+| | Obsidian Sync | Notion | Confluence | Git sync | **Team Relay** |
+|---|---|---|---|---|---|
+| Real-time collab | ✗ | ✅ | ✅ | ✗ | ✅ |
+| Works in Obsidian | ✅ | ✗ | ✗ | ✅ | ✅ |
+| Web publish | via Publish ($8/mo) | ✅ | ✅ | manual | ✅ |
+| Self-hosted | ✗ | ✗ | ✅ ($$) | ✅ | ✅ |
+| Offline-first | ✅ | ✗ | ✗ | ✅ | ✅ |
+| Data sovereignty | ✗ | ✗ | partial | ✅ | ✅ |
+| Pricing | $8/user/mo | $8/user/mo | $6/user/mo | free | **free (self-hosted)** |
+
+---
+
+## Don\x27t Want to Self-Host?
+
+→ [**Hosted Team Relay**](https://entire.vc) — zero ops, all features, flat pricing.
+
+---
+
+## Want Solo Sync Without a Server?
+
+→ [**EVC Local Sync**](https://github.com/entire-vc/evc-local-sync-plugin) — bidirectional vault ↔ local folder sync, no server needed.
+
+---
+
+## Documentation
+
+Technical documentation is available in [`docs/`](./docs/):
+- [Configuration](./docs/configuration.md)
+- [API Reference](./docs/api.md)
+- [Web Publishing](./docs/web-publish.md)
+- [Monitoring](./docs/monitoring.md)
+
+---
+
+## Part of the Entire VC Toolbox
+
+| Product | What it does | Link |
+|---|---|---|
+| **Local Sync** | vault ↔ local folders, solo | [repo](https://github.com/entire-vc/evc-local-sync-plugin) |
+| **Team Relay** (you are here) | team collaboration + web publish (server) | this repo |
+| **Team Relay Plugin** | Obsidian plugin for Team Relay | [repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) |
+
+---
+
+## License
+
+Apache 2.0 — Copyright (c) 2025 Entire VC
