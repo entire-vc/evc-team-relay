@@ -80,7 +80,7 @@ Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-o
 
 ---
 
-## Don\x27t Want to Self-Host?
+## Don't Want to Self-Host?
 
 → [**Hosted Team Relay**](https://entire.vc) — zero ops, all features, flat pricing.
 
