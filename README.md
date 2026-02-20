@@ -105,13 +105,22 @@ Technical documentation is available in [`docs/`](./docs/):
 ## Part of the Entire VC Toolbox
 
 | Product | What it does | Link |
-|---|---|---|
-| **Local Sync** | vault ↔ local folders, solo | [repo](https://github.com/entire-vc/evc-local-sync-plugin) |
-| **Team Relay** (you are here) | team collaboration + web publish (server) | this repo |
+|---------|-------------|------|
+| **Local Sync** | Vault ↔ AI dev tools sync | [repo](https://github.com/entire-vc/evc-local-sync-plugin) |
+| **Team Relay** ← you are here | Self-hosted collaboration server | this repo |
 | **Team Relay Plugin** | Obsidian plugin for Team Relay | [repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) |
+| **Spark MCP** | MCP server for AI workflow catalog | [repo](https://github.com/entire-vc/evc-spark-mcp) |
+| **OpenClaw Skill** | AI agent ↔ vault access | [repo](https://github.com/entire-vc/evc-team-relay-openclaw-skill) |
 
 ---
 
+
+## Community
+
+- 🌐 [entire.vc](https://entire.vc)
+- 💬 [Discussions](https://github.com/entire-vc/.github/discussions)
+- 📧 in@entire.vc
+
 ## License
 
-Apache 2.0 — Copyright (c) 2025 Entire VC
+Apache 2.0 — Copyright (c) 2026 Entire VC
