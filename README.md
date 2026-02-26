@@ -109,8 +109,9 @@ Technical documentation is available in [`docs/`](./docs/):
 | **Local Sync** | Vault ↔ AI dev tools sync | [repo](https://github.com/entire-vc/evc-local-sync-plugin) |
 | **Team Relay** ← you are here | Self-hosted collaboration server | this repo |
 | **Team Relay Plugin** | Obsidian plugin for Team Relay | [repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) |
+| **Team Relay MCP** | MCP server for AI agent access to vault | [repo](https://github.com/entire-vc/evc-team-relay-mcp) / [PyPI](https://pypi.org/project/evc-team-relay-mcp/) |
+| **OpenClaw Skill** | AI agent skill for OpenClaw | [ClawHub](https://clawhub.ai/venturecrew/evc-team-relay) / [repo](https://github.com/entire-vc/evc-team-relay-openclaw-skill) |
 | **Spark MCP** | MCP server for AI workflow catalog | [repo](https://github.com/entire-vc/evc-spark-mcp) |
-| **OpenClaw Skill** | AI agent ↔ vault access | [repo](https://github.com/entire-vc/evc-team-relay-openclaw-skill) |
 
 ---
 
