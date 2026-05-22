@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -1056,3 +1057,188 @@ def serve_web_asset(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve asset: {e}",
         )
+
+
+MAX_MESH_UPLOAD_SIZE = 25 * 1024 * 1024  # 25MB
+_ALLOWED_PATH_RE = re.compile(r"^[a-zA-Z0-9._\-/А-Яа-я ]+$")
+
+
+def _validate_upload_path(path: str) -> None:
+    """Raise 400 if path is invalid for mesh artifact upload."""
+    if not path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path is required")
+    if path.startswith("/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path must be relative (no leading /)")
+    if len(path) > 512:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path too long (max 512 chars)")
+    segments = path.split("/")
+    if ".." in segments:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path traversal not allowed")
+    if path.count("/") > 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path too deep (max 6 levels)")
+    if not _ALLOWED_PATH_RE.match(path):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters")
+
+
+@router.post("/shares/{slug}/upload", status_code=status.HTTP_200_OK)
+async def upload_mesh_artifact(
+    request: Request,
+    slug: str,
+    path: str = Query(..., description="Relative file path within share"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Upload a file artifact from a Mesh agent into a folder share.
+
+    Auth: X-Agent-Key header — must match a non-revoked, non-expired ShareAgentKey for this share.
+    Body: raw bytes (text or binary). Max 25MB.
+    Storage: MinIO under web-assets/{share_id}/{path} (reuses existing serve path).
+    Index: upserted into share.web_folder_items with source=mesh-artifact.
+    Sync trigger: bumps share.web_content_updated_at so plugin pulls on next cycle.
+    """
+    import hashlib
+
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    # Path validation
+    _validate_upload_path(path)
+
+    # Find share by slug (must be web-published folder share)
+    stmt = select(models.Share).where(
+        models.Share.web_slug == slug,
+        models.Share.web_published == True,  # noqa: E712
+    )
+    share = db.execute(stmt).scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or not published")
+    if share.kind != models.ShareKind.FOLDER:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload only supported for folder shares")
+
+    # Agent-key auth (B1)
+    raw_key = request.headers.get("X-Agent-Key")
+    if not raw_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required")
+
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    key_stmt = select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
+    agent_key = db.execute(key_stmt).scalar_one_or_none()
+
+    if agent_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+
+    if agent_key.share_id != share.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share")
+
+    if agent_key.revoked_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked")
+
+    if agent_key.expires_at is not None:
+        from datetime import timezone as _tz
+        expires_at = agent_key.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=_tz.utc)
+        if expires_at < security.utcnow():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired")
+
+    if "write" not in agent_key.scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope")
+
+    # Read body with size cap
+    body = await request.body()
+    if len(body) > MAX_MESH_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Max size: {MAX_MESH_UPLOAD_SIZE // (1024*1024)}MB",
+        )
+
+    mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
+
+    # Store in MinIO under web-assets/{share_id}/{path} (reuses existing serve path)
+    minio_client = _get_minio_client()
+    bucket_name = settings.minio_bucket
+    _ensure_minio_bucket(minio_client, bucket_name)
+
+    object_name = f"web-assets/{share.id}/{path}"
+    data_stream = io.BytesIO(body)
+    try:
+        minio_client.put_object(
+            bucket_name,
+            object_name,
+            data_stream,
+            length=len(body),
+            content_type=mime,
+        )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store artifact: {e}",
+        )
+
+    # Upsert index entry in web_folder_items
+    from sqlalchemy.orm.attributes import flag_modified
+
+    now_iso = security.utcnow().isoformat()
+    is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
+    inline_content = body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+
+    folder_items = list(share.web_folder_items or [])
+    updated = False
+    for item in folder_items:
+        if item.get("path") == path:
+            item.update({
+                "name": path.split("/")[-1],
+                "type": "doc" if is_text else "asset",
+                "source": "mesh-artifact",
+                "mime": mime,
+                "size": len(body),
+                "modified_at": now_iso,
+                "storage_key": object_name,
+                "content": inline_content,
+            })
+            updated = True
+            break
+
+    if not updated:
+        folder_items.append({
+            "path": path,
+            "name": path.split("/")[-1],
+            "type": "doc" if is_text else "asset",
+            "source": "mesh-artifact",
+            "mime": mime,
+            "size": len(body),
+            "modified_at": now_iso,
+            "storage_key": object_name,
+            "content": inline_content,
+        })
+
+    share.web_folder_items = folder_items
+    flag_modified(share, "web_folder_items")
+
+    # Sync trigger (D1): bump updated_at so plugin pulls on next cycle
+    share.web_content_updated_at = security.utcnow()
+
+    # Update key last_used_at
+    agent_key.last_used_at = security.utcnow()
+
+    db.commit()
+
+    public_url = None
+    if share.web_published and share.web_slug and settings.web_publish_domain:
+        domain = settings.web_publish_domain
+        if not domain.startswith("http"):
+            domain = f"https://{domain}"
+        public_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+
+    return {
+        "ok": True,
+        "share_id": str(share.id),
+        "path": path,
+        "size_bytes": len(body),
+        "modified_at": now_iso,
+        "public_url": public_url,
+    }
