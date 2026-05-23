@@ -180,6 +180,10 @@ class Share(Base, TimestampMixin):
         back_populates="share",
         cascade="all, delete-orphan",
     )
+    agent_keys: Mapped[list["ShareAgentKey"]] = relationship(
+        back_populates="share",
+        cascade="all, delete-orphan",
+    )
 
 
 class ShareMember(Base, TimestampMixin):
@@ -557,3 +561,28 @@ class InstanceSetting(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class ShareAgentKey(Base, TimestampMixin):
+    __tablename__ = "share_agent_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("shares.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scopes: Mapped[str] = mapped_column(String(255), default="write", nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    share: Mapped["Share"] = relationship(back_populates="agent_keys")

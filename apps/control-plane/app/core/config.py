@@ -110,6 +110,13 @@ class Settings(BaseSettings):
         """Check if web publishing is enabled."""
         return bool(self.web_publish_domain)
 
+    # MinIO / S3 settings for asset storage
+    minio_endpoint: str = Field(default="localhost:9000", description="MinIO endpoint")
+    minio_access_key: str = Field(default="minioadmin", description="MinIO access key")
+    minio_secret_key: str = Field(default="minioadmin", description="MinIO secret key")
+    minio_secure: bool = Field(default=False, description="Use TLS for MinIO")
+    minio_bucket: str = Field(default="relay-assets", description="MinIO bucket name")
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

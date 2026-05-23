@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.routers import (
     admin,
     admin_ui,
+    agent_keys,
     auth,
     dashboard,
     health,
@@ -160,6 +161,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(tokens.router, prefix="/v1")
     app.include_router(keys.router, prefix="/v1")
     app.include_router(web.router)  # Web publishing public API (prefix included)
+    app.include_router(agent_keys.router)  # Agent key management (prefix included)
     app.include_router(webhooks.router)  # Webhooks API (prefix included)
     app.include_router(webhooks.admin_router)  # Admin webhooks API (prefix included)
 
