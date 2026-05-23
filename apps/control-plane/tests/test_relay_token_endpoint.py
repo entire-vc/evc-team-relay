@@ -11,9 +11,6 @@ import base64
 import cbor2
 from fastapi.testclient import TestClient
 
-from app.core.security import CWT_CLAIM_IAT, CWT_CLAIM_ISS, CWT_CLAIM_SCOPE, CWT_TAG
-
-
 # ── Helpers ──────────────────────────────────────────────────
 
 

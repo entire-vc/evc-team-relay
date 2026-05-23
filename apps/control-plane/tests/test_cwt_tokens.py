@@ -24,7 +24,6 @@ from app.core.security import (
     verify_relay_token_cwt,
 )
 
-
 # ── Helpers ──────────────────────────────────────────────────
 
 
@@ -334,7 +333,11 @@ class TestCWTVerification:
         cose = inner.value if isinstance(inner, cbor2.CBORTag) else inner
 
         # Change claims
-        tampered_claims = {CWT_CLAIM_ISS: "evil-issuer", CWT_CLAIM_IAT: 0, CWT_CLAIM_SCOPE: "doc:hacked:rw"}
+        tampered_claims = {
+            CWT_CLAIM_ISS: "evil-issuer",
+            CWT_CLAIM_IAT: 0,
+            CWT_CLAIM_SCOPE: "doc:hacked:rw",
+        }
         cose[2] = cbor2.dumps(tampered_claims)  # replace payload
 
         # Re-encode with original signature (now invalid)
