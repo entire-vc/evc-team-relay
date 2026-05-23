@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Build stage
 FROM node:20-alpine AS builder
 
@@ -6,9 +7,9 @@ WORKDIR /app
 # Copy package files and registry config
 COPY package.json package-lock.json* .npmrc ./
 
-# Install dependencies (GITHUB_TOKEN for @entire-vc packages on GitHub Packages)
-ARG GITHUB_TOKEN
-RUN npm ci
+# Install dependencies — token mounted as BuildKit secret, never baked into a layer
+RUN --mount=type=secret,id=github_token \
+    GITHUB_TOKEN=$(cat /run/secrets/github_token) npm ci
 
 # Copy source code
 COPY . .
