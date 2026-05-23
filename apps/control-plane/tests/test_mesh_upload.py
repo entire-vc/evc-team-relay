@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,6 +58,7 @@ def make_agent_key(db: Session, share: models.Share) -> tuple[str, models.ShareA
 def web_enabled(monkeypatch):
     monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
     from app.core.config import get_settings
+
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -74,8 +74,11 @@ def minio_patch():
 
 # ── Agent key CRUD ────────────────────────────────────────────────────────────
 
+
 class TestAgentKeyCRUD:
-    def test_create_key_returns_raw_once(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_create_key_returns_raw_once(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user)
         token = login(client, "bootstrap@example.com", "super-secret")
         resp = client.post(
@@ -89,7 +92,9 @@ class TestAgentKeyCRUD:
         assert data["label"] == "ci-agent"
         assert "key_hash" not in data
 
-    def test_list_keys_never_leaks_hash(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_list_keys_never_leaks_hash(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="list-share")
         _, _ = make_agent_key(db_session, share)
         token = login(client, "bootstrap@example.com", "super-secret")
@@ -99,7 +104,9 @@ class TestAgentKeyCRUD:
             assert "key_hash" not in item
             assert "key" not in item
 
-    def test_revoke_key(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_revoke_key(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="revoke-share")
         _, ak = make_agent_key(db_session, share)
         token = login(client, "bootstrap@example.com", "super-secret")
@@ -111,19 +118,26 @@ class TestAgentKeyCRUD:
         db_session.refresh(ak)
         assert ak.revoked_at is not None
 
-    def test_revoke_idempotent(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_revoke_idempotent(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="revoke2-share")
         _, ak = make_agent_key(db_session, share)
         token = login(client, "bootstrap@example.com", "super-secret")
         client.delete(f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token))
-        resp = client.delete(f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token))
+        resp = client.delete(
+            f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token)
+        )
         assert resp.status_code == 200
 
 
 # ── Upload endpoint ───────────────────────────────────────────────────────────
 
+
 class TestMeshUpload:
-    def test_valid_upload_text(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_valid_upload_text(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-ok")
         raw_key, _ = make_agent_key(db_session, share)
         with minio_patch():
@@ -141,7 +155,9 @@ class TestMeshUpload:
         assert data["path"] == "Notes/hello.md"
         assert data["size_bytes"] == len(b"# Hello world")
 
-    def test_valid_upload_item_in_folder_items(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_valid_upload_item_in_folder_items(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-index")
         raw_key, _ = make_agent_key(db_session, share)
         with minio_patch():
@@ -157,7 +173,9 @@ class TestMeshUpload:
         item = next(i for i in items if i["path"] == "file.md")
         assert item["source"] == "mesh-artifact"
 
-    def test_invalid_key_returns_401(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_invalid_key_returns_401(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-401")
         resp = client.post(
             "/v1/web/shares/upload-401/upload?path=file.md",
@@ -166,7 +184,9 @@ class TestMeshUpload:
         )
         assert resp.status_code == 401
 
-    def test_key_for_wrong_share_returns_403(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_key_for_wrong_share_returns_403(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share1 = make_folder_share(db_session, test_user, slug="share-one")
         share2 = make_folder_share(db_session, test_user, slug="share-two")
         raw_key, _ = make_agent_key(db_session, share1)  # key belongs to share1
@@ -178,9 +198,12 @@ class TestMeshUpload:
             )
         assert resp.status_code == 403
 
-    def test_revoked_key_returns_403(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
-        from datetime import timezone
+    def test_revoked_key_returns_403(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         from datetime import datetime as dt
+        from datetime import timezone
+
         share = make_folder_share(db_session, test_user, slug="upload-revoked")
         raw_key, ak = make_agent_key(db_session, share)
         ak.revoked_at = dt.now(timezone.utc)
@@ -193,9 +216,12 @@ class TestMeshUpload:
             )
         assert resp.status_code == 403
 
-    def test_expired_key_returns_403(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
-        from datetime import timezone, timedelta
+    def test_expired_key_returns_403(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         from datetime import datetime as dt
+        from datetime import timedelta, timezone
+
         share = make_folder_share(db_session, test_user, slug="upload-expired")
         raw_key, ak = make_agent_key(db_session, share)
         ak.expires_at = dt.now(timezone.utc) - timedelta(hours=1)
@@ -208,7 +234,9 @@ class TestMeshUpload:
             )
         assert resp.status_code == 403
 
-    def test_path_traversal_returns_400(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_path_traversal_returns_400(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-traverse")
         raw_key, _ = make_agent_key(db_session, share)
         resp = client.post(
@@ -218,7 +246,9 @@ class TestMeshUpload:
         )
         assert resp.status_code == 400
 
-    def test_leading_slash_path_returns_400(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_leading_slash_path_returns_400(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-slash")
         raw_key, _ = make_agent_key(db_session, share)
         resp = client.post(
@@ -228,7 +258,9 @@ class TestMeshUpload:
         )
         assert resp.status_code == 400
 
-    def test_idempotent_overwrite(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_idempotent_overwrite(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-idem")
         raw_key, _ = make_agent_key(db_session, share)
         with minio_patch():
@@ -250,7 +282,9 @@ class TestMeshUpload:
         assert len(matching) == 1
         assert matching[0]["size"] == len(b"v2 updated")
 
-    def test_large_file_rejected(self, client: TestClient, test_user: models.User, db_session: Session, web_enabled):
+    def test_large_file_rejected(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
         share = make_folder_share(db_session, test_user, slug="upload-large")
         raw_key, _ = make_agent_key(db_session, share)
         big_body = b"x" * (26 * 1024 * 1024)  # 26MB > 25MB cap

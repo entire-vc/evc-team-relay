@@ -13,20 +13,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import security
-from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
 
 router = APIRouter(prefix="/v1/web/shares/{share_id}/agent-keys", tags=["web"])
 
 
-def _require_share_owner_or_admin(
-    share_id: str, request: Request, db: Session
-) -> models.Share:
+def _require_share_owner_or_admin(share_id: str, request: Request, db: Session) -> models.Share:
     """Validate JWT and assert caller is admin, owner, or editor of the share."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        )
 
     token = auth_header.split(" ")[1]
     try:
@@ -38,7 +37,9 @@ def _require_share_owner_or_admin(
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
 
     share_stmt = select(models.Share).where(models.Share.id == uuid.UUID(share_id))
     share = db.execute(share_stmt).scalar_one_or_none()
@@ -60,7 +61,9 @@ def _require_share_owner_or_admin(
         is_authorized = member is not None
 
     if not is_authorized:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this share")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this share"
+        )
 
     return share
 
@@ -129,9 +132,7 @@ def list_agent_keys(
     """List agent keys for a share. Never returns key_hash or raw key."""
     _require_share_owner_or_admin(share_id, request, db)
 
-    stmt = select(models.ShareAgentKey).where(
-        models.ShareAgentKey.share_id == uuid.UUID(share_id)
-    )
+    stmt = select(models.ShareAgentKey).where(models.ShareAgentKey.share_id == uuid.UUID(share_id))
     keys = db.execute(stmt).scalars().all()
 
     return [

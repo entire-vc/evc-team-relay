@@ -1068,16 +1068,26 @@ def _validate_upload_path(path: str) -> None:
     if not path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path is required")
     if path.startswith("/"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path must be relative (no leading /)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="path must be relative (no leading /)"
+        )
     if len(path) > 512:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path too long (max 512 chars)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="path too long (max 512 chars)"
+        )
     segments = path.split("/")
     if ".." in segments:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path traversal not allowed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="path traversal not allowed"
+        )
     if path.count("/") > 6:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path too deep (max 6 levels)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="path too deep (max 6 levels)"
+        )
     if not _ALLOWED_PATH_RE.match(path):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters"
+        )
 
 
 @router.post("/shares/{slug}/upload", status_code=status.HTTP_200_OK)
@@ -1115,14 +1125,21 @@ async def upload_mesh_artifact(
     )
     share = db.execute(stmt).scalar_one_or_none()
     if not share:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or not published")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or not published"
+        )
     if share.kind != models.ShareKind.FOLDER:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload only supported for folder shares")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload only supported for folder shares",
+        )
 
     # Agent-key auth (B1)
     raw_key = request.headers.get("X-Agent-Key")
     if not raw_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required"
+        )
 
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     key_stmt = select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
@@ -1132,21 +1149,30 @@ async def upload_mesh_artifact(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
 
     if agent_key.share_id != share.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
+        )
 
     if agent_key.revoked_at is not None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
+        )
 
     if agent_key.expires_at is not None:
         from datetime import timezone as _tz
+
         expires_at = agent_key.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=_tz.utc)
         if expires_at < security.utcnow():
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
+            )
 
     if "write" not in agent_key.scopes:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope"
+        )
 
     # Read body with size cap
     body = await request.body()
@@ -1184,13 +1210,33 @@ async def upload_mesh_artifact(
 
     now_iso = security.utcnow().isoformat()
     is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
-    inline_content = body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+    inline_content = (
+        body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+    )
 
     folder_items = list(share.web_folder_items or [])
     updated = False
     for item in folder_items:
         if item.get("path") == path:
-            item.update({
+            item.update(
+                {
+                    "name": path.split("/")[-1],
+                    "type": "doc" if is_text else "asset",
+                    "source": "mesh-artifact",
+                    "mime": mime,
+                    "size": len(body),
+                    "modified_at": now_iso,
+                    "storage_key": object_name,
+                    "content": inline_content,
+                }
+            )
+            updated = True
+            break
+
+    if not updated:
+        folder_items.append(
+            {
+                "path": path,
                 "name": path.split("/")[-1],
                 "type": "doc" if is_text else "asset",
                 "source": "mesh-artifact",
@@ -1199,22 +1245,8 @@ async def upload_mesh_artifact(
                 "modified_at": now_iso,
                 "storage_key": object_name,
                 "content": inline_content,
-            })
-            updated = True
-            break
-
-    if not updated:
-        folder_items.append({
-            "path": path,
-            "name": path.split("/")[-1],
-            "type": "doc" if is_text else "asset",
-            "source": "mesh-artifact",
-            "mime": mime,
-            "size": len(body),
-            "modified_at": now_iso,
-            "storage_key": object_name,
-            "content": inline_content,
-        })
+            }
+        )
 
     share.web_folder_items = folder_items
     flag_modified(share, "web_folder_items")
