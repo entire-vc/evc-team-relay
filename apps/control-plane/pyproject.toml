@@ -41,7 +41,7 @@ test = [
     "httpx>=0.26,<0.28",
 ]
 dev = [
-    "ruff>=0.6.9,<0.7.0",
+    "ruff>=0.6.9,<0.16.0",
 ]
 
 [tool.setuptools]
