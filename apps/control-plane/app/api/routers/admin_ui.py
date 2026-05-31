@@ -85,7 +85,7 @@ def render_template(
             ctx["branding"] = instance_settings_service.get_branding(db)
         except Exception:
             ctx["branding"] = None
-    return templates.TemplateResponse(template, ctx)
+    return templates.TemplateResponse(request=request, name=template, context=ctx)
 
 
 @router.get("", response_class=HTMLResponse)
