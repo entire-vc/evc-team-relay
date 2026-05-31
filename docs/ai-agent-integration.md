@@ -11,23 +11,46 @@ Two integration methods:
 
 ---
 
+## Authentication options
+
+Two ways to authenticate:
+
+| Method | Best for | Requires |
+|--------|----------|---------|
+| **Agent key** (recommended for write-only) | SSO users, write-only agents, CI pipelines | Create a key in Obsidian plugin |
+| **Email + password** | Agents that read and write, admin setups | A local password account |
+
+→ **New: [Agent Keys Quickstart](agent-keys.md)** — create a key in 3 steps and skip the account management.
+
+---
+
 ## Prerequisites
 
 1. **A running Team Relay instance** — self-hosted or [hosted](https://entire.vc)
 2. **A user account** with access to shared folders
 3. **Shared folders** created in Obsidian via the Team Relay plugin
 
+### Option A — Agent key (write-only, no password needed)
+
+If you logged in with SSO (Casdoor / Google / GitHub) and have no local password, or if your agent only needs to write files:
+
+1. Open the Obsidian Team Relay plugin → settings → **Agent Keys**
+2. Create a key for the target share
+3. Copy the `tr_agent_...` value
+
+See [Agent Keys Quickstart](agent-keys.md) for full instructions.
+
+### Option B — Email + password
+
 You'll need three values:
 
 | Value | Example | Where to get |
 |-------|---------|-------------|
-| **Control Plane URL** | `https://cp.tr.entire.vc` | Your admin provides this. It's the URL of the control plane API. |
-| **Email** | `agent@yourteam.com` | Your account email. Ask your admin to create a dedicated agent account. |
-| **Password** | `your-password` | Your account password. |
+| **Control Plane URL** | `https://cp.tr.entire.vc` | Your admin provides this |
+| **Email** | `agent@yourteam.com` | Your account email |
+| **Password** | `your-password` | Your account password |
 
-> **Tip:** Create a dedicated user account for your AI agent (e.g. `agent@yourteam.com`) rather than using your personal account. This keeps audit logs clean and lets you manage agent permissions separately.
-
-### Getting an account
+> **Tip:** Create a dedicated user account for your AI agent (e.g. `agent@yourteam.com`) rather than using your personal account.
 
 **If you're the admin:**
 1. Open the Obsidian plugin settings → Team Relay → your server
