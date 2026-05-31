@@ -1174,6 +1174,23 @@ async def upload_mesh_artifact(
             status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope"
         )
 
+    # Update last_used_at on successful key authentication
+    import logging as _logging
+    _ak_logger = _logging.getLogger(__name__)
+    agent_key.last_used_at = security.utcnow()
+    db.add(agent_key)
+    db.commit()
+    _ak_logger.info(
+        "agent_key.used",
+        extra={
+            "event": "agent_key.used",
+            "key_id": str(agent_key.id),
+            "share_id": str(share.id),
+            "path": path,
+            "ip": request.client.host if request.client else None,
+        },
+    )
+
     # Read body with size cap
     body = await request.body()
     if len(body) > MAX_MESH_UPLOAD_SIZE:
