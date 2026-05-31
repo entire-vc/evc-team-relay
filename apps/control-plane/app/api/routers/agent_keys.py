@@ -161,7 +161,7 @@ def create_agent_key(
         label=payload.label,
         scopes="write",
         created_by=user_id,
-        expires_at=payload.expires_at,
+        expires_at=exp if payload.expires_at is not None else None,
     )
     db.add(agent_key)
     db.commit()
