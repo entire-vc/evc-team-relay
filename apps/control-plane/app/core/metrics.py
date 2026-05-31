@@ -51,21 +51,6 @@ HTTP_RESPONSE_SIZE_BYTES = Histogram(
 # Database Metrics
 # =============================================================================
 
-DB_CONNECTIONS_ACTIVE = Gauge(
-    "db_connections_active",
-    "Number of active database connections",
-)
-
-DB_CONNECTIONS_IDLE = Gauge(
-    "db_connections_idle",
-    "Number of idle database connections",
-)
-
-DB_CONNECTIONS_TOTAL = Gauge(
-    "db_connections_total",
-    "Total number of database connections in pool",
-)
-
 DB_QUERY_DURATION_SECONDS = Histogram(
     "db_query_duration_seconds",
     "Database query duration in seconds",

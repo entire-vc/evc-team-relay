@@ -64,7 +64,11 @@ def client(engine):
     from app.main import limiter as main_limiter
 
     # Clear all limiter storages
-    for lim in [main_limiter, auth.limiter, shares.limiter, tokens.limiter, invites.limiter, metrics._limiter]:
+    limiters = [
+        main_limiter, auth.limiter, shares.limiter,
+        tokens.limiter, invites.limiter, metrics._limiter,
+    ]
+    for lim in limiters:
         if hasattr(lim, "_storage") and lim._storage:
             lim._storage.reset()
 
