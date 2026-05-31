@@ -51,21 +51,6 @@ HTTP_RESPONSE_SIZE_BYTES = Histogram(
 # Database Metrics
 # =============================================================================
 
-DB_CONNECTIONS_ACTIVE = Gauge(
-    "db_connections_active",
-    "Number of active database connections",
-)
-
-DB_CONNECTIONS_IDLE = Gauge(
-    "db_connections_idle",
-    "Number of idle database connections",
-)
-
-DB_CONNECTIONS_TOTAL = Gauge(
-    "db_connections_total",
-    "Total number of database connections in pool",
-)
-
 DB_QUERY_DURATION_SECONDS = Histogram(
     "db_query_duration_seconds",
     "Database query duration in seconds",
@@ -149,15 +134,52 @@ TOTP_OPERATIONS_TOTAL = Counter(
 # Session Metrics
 # =============================================================================
 
-SESSIONS_ACTIVE = Gauge(
-    "sessions_active",
-    "Number of active user sessions",
-)
-
 SESSION_OPERATIONS_TOTAL = Counter(
     "session_operations_total",
     "Total number of session operations",
     ["operation"],  # created, revoked, refreshed, expired
+)
+
+# =============================================================================
+# Business Extended Metrics (populated by background metrics collector)
+# =============================================================================
+
+SHARE_FILES_TOTAL = Gauge(
+    "share_files_total",
+    "Total number of items in web-published folder shares",
+)
+
+SHARE_SIZE_BYTES = Gauge(
+    "share_size_bytes",
+    "Total content size in bytes of web-published doc shares",
+)
+
+AGENT_KEYS_TOTAL = Gauge(
+    "agent_keys_total",
+    "Total number of agent keys",
+    ["status"],  # active, revoked, expired
+)
+
+SESSIONS_ACTIVE_TOTAL = Gauge(
+    "sessions_active_total",
+    "Number of non-expired user sessions",
+)
+
+MINIO_BUCKET_SIZE_BYTES = Gauge(
+    "minio_bucket_size_bytes",
+    "MinIO bucket total size in bytes",
+    ["bucket"],
+)
+
+POSTGRES_SIZE_BYTES = Gauge(
+    "postgres_size_bytes",
+    "PostgreSQL database size in bytes",
+)
+
+METRICS_COLLECTION_ERRORS_TOTAL = Counter(
+    "metrics_collection_errors_total",
+    "Total number of errors during background metrics collection",
+    ["collector"],
 )
 
 # =============================================================================

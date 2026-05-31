@@ -60,11 +60,19 @@ def clean_database(engine):
 @pytest.fixture
 def client(engine):
     # Reset rate limiters before each test to avoid cross-test pollution
-    from app.api.routers import auth, invites, shares, tokens
+    from app.api.routers import auth, invites, metrics, shares, tokens
     from app.main import limiter as main_limiter
 
     # Clear all limiter storages
-    for lim in [main_limiter, auth.limiter, shares.limiter, tokens.limiter, invites.limiter]:
+    limiters = [
+        main_limiter,
+        auth.limiter,
+        shares.limiter,
+        tokens.limiter,
+        invites.limiter,
+        metrics._limiter,
+    ]
+    for lim in limiters:
         if hasattr(lim, "_storage") and lim._storage:
             lim._storage.reset()
 
