@@ -122,7 +122,7 @@ The `key` field contains the raw secret. It is shown **once only**. It is not st
 
 #### 2.2 GET `/v1/web/shares/{share_id}/agent-keys` — List
 
-**Current state:** exists and correct. No structural changes needed. Add `created_by_email` to response once `created_by` is populated.
+**Current state:** exists, needs two field additions: `is_active` (computed) and `created_by` (UUID). Both are part of the same fix pass as populating `created_by` on create — they are a single code change, not a future enhancement.
 
 **Authentication:** same as POST — Bearer CP JWT, owner or admin only (tighten from current any-member).
 
@@ -397,6 +397,7 @@ The raw key value is **never** logged. Only `key_id` (the UUID).
 | `app/api/routers/web.py` | After key auth passes at line 1175: update `agent_key.last_used_at` and commit; add `agent_key.used` audit log | High |
 | `app/db/migrations/` | New migration `202606010001` for partial index on `share_agent_keys (share_id) WHERE revoked_at IS NULL` | Medium |
 | `app/core/config.py` | Add `agent_key_max_per_share: int = 20` and `agent_key_creation_rate_per_hour: int = 10` to `Settings` | Medium |
+| `app/api/routers/agent_keys.py` | Add `@limiter.limit("{agent_key_creation_rate_per_hour}/hour")` decorator to `create_agent_key`, keyed on `get_remote_address`. Import `limiter` from `app.core.limiter` (same pattern as `auth.py` and `shares.py`). Returns 429 with `Retry-After` header when triggered. | Medium |
 
 ---
 
@@ -698,6 +699,56 @@ async revokeAgentKey(shareId: string, keyId: string): Promise<void> {
 
 No changes to `RelayOnPremAuthProvider.ts`, `RelayOnPremAuthStore.ts`, or `IAuthProvider.ts`.
 
+---
+
+### AgentKeysView Data Loading Strategy
+
+The top-level "Agent Keys" nav entry shows keys across **all owned shares** on the connected server. The component has two render modes depending on how it is invoked:
+
+**Mode A — top-level view (from sidebar nav)**
+
+`AgentKeysView.svelte` receives a `server: RelayOnPremServer` prop (not a `share` prop).
+
+On mount:
+1. Call `client.listShares()` — gets all shares the user has access to.
+2. Filter to shares where `share.owner_user_id === currentUser.id` (client-side, no extra endpoint needed).
+3. For each owned share, call `client.listAgentKeys(share.id)` in parallel (`Promise.all`).
+4. Group results by share, render each group with a loading skeleton until its fetch resolves.
+5. A share with zero keys renders the "No agent keys for this share" row with an inline `[+ Create key →]` button.
+
+`RelayOnPremSettings.svelte` change: the `agentKeys` `ViewType` branch passes `{server}` (not `selectedShare`):
+
+```svelte
+<!-- RelayOnPremSettings.svelte — agentKeys case -->
+{#if currentView === 'agentKeys'}
+  <AgentKeysView {server} {client} {currentUser} onNavigate={navigateTo} />
+{/if}
+```
+
+**Mode B — share-detail shortcut**
+
+When the user clicks "Agent Keys" from a share detail view, `navigateTo('agentKeys', { filterShare: share })` is called. `AgentKeysView` receives the optional `filterShare` prop; if present, only that share's keys are shown and the share selector in the create modal is pre-filled and locked.
+
+```svelte
+<!-- RelayOnPremSettings.svelte — share detail 'Agent Keys' button -->
+<button on:click={() => navigateTo('agentKeys', { filterShare: selectedShare })}>
+  Agent Keys
+</button>
+```
+
+**Component prop signature:**
+
+```typescript
+// AgentKeysView.svelte props
+export let server: RelayOnPremServer;
+export let client: RelayOnPremShareClient;
+export let currentUser: AuthUser;
+export let filterShare: ShareWithServer | undefined = undefined;
+export let onNavigate: (view: ViewType, params?: NavigateParams) => void;
+```
+
+The existing `share: ShareWithServer` prop is **replaced** by this signature. Any existing callers that pass `share={selectedShare}` must be updated to `filterShare={selectedShare}` + `{server}`.
+
 **Soft re-auth implementation:**
 
 ```typescript
@@ -725,7 +776,63 @@ async function onCreateClick() {
 }
 ```
 
-`loginManager.reAuthForSensitiveAction()` is a new thin method — same OIDC redirect flow as the existing OAuth login, with `max_age=0` appended to the authorize URL query string. No new auth infrastructure needed.
+`loginManager.reAuthForSensitiveAction()` is a new method on `LoginManager.ts`. Full signature and implementation:
+
+```typescript
+// LoginManager.ts — add to class LoginManager
+
+/**
+ * Forces re-authentication via OIDC with max_age=0 (Casdoor must re-prompt the user).
+ * Awaits the OAuth callback and updates the stored token on success.
+ * Throws if the user cancels or the flow times out (120s).
+ */
+async reAuthForSensitiveAction(serverId: string): Promise<void> {
+    const provider = 'casdoor';
+    // prepareOAuthFlow() builds the authorize URL; we append max_age=0
+    const url = await this.oauthHandler.prepareOAuthFlow(provider);
+    const reAuthUrl = url.includes('?')
+        ? `${url}&max_age=0`
+        : `${url}?max_age=0`;
+
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error('Re-authentication timed out.'));
+        }, 120_000);
+
+        this.oauthHandler.openOAuthWebview(reAuthUrl, async (callbackUrl: string) => {
+            clearTimeout(timeout);
+            try {
+                const newToken = await this.oauthHandler.handleCallback(callbackUrl, serverId);
+                await this.authProvider.storeToken(newToken);
+                resolve();
+            } catch (err) {
+                reject(err);
+            }
+        }, () => {
+            // user closed the webview without completing
+            clearTimeout(timeout);
+            reject(new Error('Re-authentication was cancelled.'));
+        });
+    });
+}
+```
+
+Caller in `AgentKeysView.svelte` should catch the rejection and show an inline error banner rather than propagating it to an unhandled rejection:
+
+```typescript
+async function onCreateClick() {
+    const fresh = await checkSessionFreshness();
+    if (!fresh) {
+        try {
+            await loginManager.reAuthForSensitiveAction(server.id);
+        } catch (err) {
+            errorMessage = err instanceof Error ? err.message : 'Re-authentication failed.';
+            return;
+        }
+    }
+    openCreateModal();
+}
+```
 
 ---
 
@@ -842,6 +949,7 @@ Both windows share the same localStorage auth store. The list view should refres
 - [ ] Backend: Structured audit log (create / revoke / use)
 - [ ] Backend: DB migration `202606010001` — partial index on `share_id WHERE revoked_at IS NULL`
 - [ ] Backend: `agent_key_max_per_share` config knob in `Settings`
+- [ ] Backend: Rate limiting on create — `@limiter.limit` decorator, 429 with `Retry-After` on cap
 - [ ] Plugin: `AgentKeysView.svelte` — list view grouped by share
 - [ ] Plugin: Create key modal with label / share / expiry fields
 - [ ] Plugin: One-time reveal modal with copy + download
@@ -869,6 +977,7 @@ Both windows share the same localStorage auth store. The list view should refres
 6. List response includes `is_active` computed field.
 7. Audit log lines appear in container stdout for create / revoke / use events. Raw key value absent from all logs.
 8. Migration `202606010001` applies cleanly on a fresh DB and an existing DB with data.
+9. Key creation rate limit: creating more than 10 keys per hour from the same IP returns 429 with `Retry-After` header.
 
 **Plugin UX (C2):**
 1. "Agent Keys" tab visible in server settings sidebar when authenticated.
