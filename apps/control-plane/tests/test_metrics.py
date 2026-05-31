@@ -81,3 +81,37 @@ def test_metrics_no_auth_required(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.status_code != 401
     assert response.status_code != 403
+
+
+def test_metrics_contains_extended_business_metrics(client: TestClient) -> None:
+    """Test that /metrics contains the extended business gauge names."""
+    response = client.get("/metrics")
+    assert response.status_code == 200
+
+    content = response.text
+    assert "share_files_total" in content
+    assert "share_size_bytes" in content
+    assert "agent_keys_total" in content
+    assert "sessions_active_total" in content
+    assert "minio_bucket_size_bytes" in content
+    assert "postgres_size_bytes" in content
+
+
+def test_metrics_contains_collection_error_counter(client: TestClient) -> None:
+    """Test that the metrics error counter is present in the output."""
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "metrics_collection_errors_total" in response.text
+
+
+def test_db_metrics_collection_runs_without_error(client: TestClient) -> None:
+    """Test that the DB collector function can run against the test SQLite DB."""
+    from app.workers.metrics_worker import _collect_db_metrics
+
+    # Should not raise — SQLite-incompatible queries (jsonb, pg_database_size)
+    # are gracefully caught inside the function.
+    _collect_db_metrics()
+
+    # After collection, gauges exist and /metrics still returns 200
+    response = client.get("/metrics")
+    assert response.status_code == 200

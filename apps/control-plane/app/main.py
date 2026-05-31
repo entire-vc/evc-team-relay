@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +39,7 @@ from app.db.session import get_sessionmaker
 from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.services import auth_service
+from app.workers import metrics_worker
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
@@ -229,6 +232,11 @@ Get a token by calling `POST /auth/login` with valid credentials.
         app.state.relay_private_key = private_key
         app.state.relay_public_key = public_key
         app.state.relay_key_id = key_id
+
+    @app.on_event("startup")
+    async def _start_metrics_collector() -> None:
+        """Launch background metrics collection loop (60 s interval)."""
+        asyncio.create_task(metrics_worker.run_metrics_collector())
 
     return app
 
