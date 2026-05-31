@@ -6,10 +6,12 @@ import hashlib
 import logging
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +23,7 @@ from app.db.session import get_db
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web/shares/{share_id}/agent-keys", tags=["web"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _require_share_owner_or_admin(
@@ -109,10 +112,11 @@ class AgentKeyListItem(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=AgentKeyCreateResponse)
+@limiter.limit(lambda: f"{get_settings().agent_key_creation_rate_per_hour}/hour")
 def create_agent_key(
+    request: Request,
     share_id: str,
     payload: AgentKeyCreateRequest,
-    request: Request,
     db: Session = Depends(get_db),
 ) -> AgentKeyCreateResponse:
     """Create an agent key for a share. Raw key is shown once and never retrievable again."""
@@ -123,10 +127,8 @@ def create_agent_key(
     if payload.expires_at is not None:
         now = security.utcnow()
         exp = payload.expires_at
-        # Make timezone-aware for comparison
         if exp.tzinfo is None:
-            from datetime import timezone as _tz
-            exp = exp.replace(tzinfo=_tz.utc)
+            exp = exp.replace(tzinfo=timezone.utc)
         if exp <= now:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -219,7 +221,7 @@ def list_agent_keys(
                 and (
                     k.expires_at is None
                     or (
-                        k.expires_at.replace(tzinfo=__import__("datetime").timezone.utc)
+                        k.expires_at.replace(tzinfo=timezone.utc)
                         if k.expires_at.tzinfo is None
                         else k.expires_at
                     ) > now
