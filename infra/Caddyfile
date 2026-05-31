@@ -3,7 +3,7 @@
 }
 
 cp.{$DOMAIN_BASE} {
-  handle /metrics {
+  handle /metrics* {
     respond 404
   }
   reverse_proxy control-plane:8000 {

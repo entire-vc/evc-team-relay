@@ -154,7 +154,7 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
     for status, cnt in key_rows:
         AGENT_KEYS_TOTAL.labels(status=status).set(cnt)
 
-    # ── sessions_active / sessions_active_total ───────────────────────────────
+    # ── sessions_active_total ─────────────────────────────────────────────────
     sessions_cnt = (
         db.execute(
             select(func.count(models.UserSession.id)).where(
@@ -208,6 +208,9 @@ async def run_metrics_collector() -> None:
                 loop.run_in_executor(None, _collect_minio_metrics),
                 timeout=30.0,
             )
+        except asyncio.TimeoutError:
+            METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
+            logger.warning("metrics_worker: minio timed out")
         except Exception as exc:
             logger.error("metrics_worker: unexpected error", extra={"error": str(exc)})
         await asyncio.sleep(COLLECT_INTERVAL_SECONDS)

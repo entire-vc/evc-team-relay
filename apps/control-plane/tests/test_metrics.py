@@ -26,7 +26,7 @@ def test_metrics_contains_business_metrics(client: TestClient) -> None:
     content = response.text
     assert "users_total" in content
     assert "shares_total" in content
-    assert "sessions_active" in content
+    assert "sessions_active_total" in content
 
 
 def test_metrics_contains_db_health(client: TestClient) -> None:

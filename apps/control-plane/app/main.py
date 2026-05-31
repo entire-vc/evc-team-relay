@@ -238,6 +238,13 @@ Get a token by calling `POST /auth/login` with valid credentials.
         """Launch background metrics collection loop (60 s interval)."""
         app.state.metrics_task = asyncio.create_task(metrics_worker.run_metrics_collector())
 
+    @app.on_event("shutdown")
+    async def _stop_metrics_collector() -> None:
+        """Cancel background metrics collection loop on shutdown."""
+        task = getattr(app.state, "metrics_task", None)
+        if task is not None:
+            task.cancel()
+
     return app
 
 
