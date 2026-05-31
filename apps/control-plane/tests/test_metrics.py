@@ -115,3 +115,29 @@ def test_db_metrics_collection_runs_without_error(client: TestClient) -> None:
     # After collection, gauges exist and /metrics still returns 200
     response = client.get("/metrics")
     assert response.status_code == 200
+
+
+def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
+    """Assert users_total gauge value matches seeded active-user fixture count."""
+    from app.db import models
+    from app.workers.metrics_worker import _collect_db_metrics
+
+    user = models.User(
+        email="gaugetest@example.com",
+        password_hash="x",
+        is_admin=False,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    _collect_db_metrics()
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    lines = [
+        ln for ln in response.text.splitlines()
+        if ln.startswith('users_total{status="active"}')
+    ]
+    assert lines, 'users_total{status="active"} metric not found'
+    assert float(lines[0].split()[-1]) >= 1

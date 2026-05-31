@@ -21,7 +21,6 @@ from app.core.metrics import (
     METRICS_COLLECTION_ERRORS_TOTAL,
     MINIO_BUCKET_SIZE_BYTES,
     POSTGRES_SIZE_BYTES,
-    SESSIONS_ACTIVE,
     SESSIONS_ACTIVE_TOTAL,
     SHARE_FILES_TOTAL,
     SHARE_MEMBERS_TOTAL,
@@ -164,7 +163,6 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
         ).scalar()
         or 0
     )
-    SESSIONS_ACTIVE.set(sessions_cnt)
     SESSIONS_ACTIVE_TOTAL.set(sessions_cnt)
 
     # ── postgres_size_bytes ───────────────────────────────────────────────────
@@ -189,8 +187,9 @@ def _collect_minio_metrics() -> None:
         for obj in client.list_objects(settings.minio_bucket, recursive=True):
             total_bytes += obj.size or 0
         MINIO_BUCKET_SIZE_BYTES.labels(bucket=settings.minio_bucket).set(total_bytes)
-    except S3Error:
+    except S3Error as exc:
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
+        logger.warning("metrics_worker: minio s3 error", extra={"error": str(exc)})
     except Exception as exc:
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
         logger.warning("metrics_worker: minio collection error", extra={"error": str(exc)})
@@ -203,8 +202,12 @@ async def run_metrics_collector() -> None:
     )
     while True:
         try:
-            await asyncio.get_event_loop().run_in_executor(None, _collect_db_metrics)
-            await asyncio.get_event_loop().run_in_executor(None, _collect_minio_metrics)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _collect_db_metrics)
+            await asyncio.wait_for(
+                loop.run_in_executor(None, _collect_minio_metrics),
+                timeout=30.0,
+            )
         except Exception as exc:
             logger.error("metrics_worker: unexpected error", extra={"error": str(exc)})
         await asyncio.sleep(COLLECT_INTERVAL_SECONDS)

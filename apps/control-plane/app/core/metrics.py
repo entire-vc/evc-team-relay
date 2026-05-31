@@ -149,11 +149,6 @@ TOTP_OPERATIONS_TOTAL = Counter(
 # Session Metrics
 # =============================================================================
 
-SESSIONS_ACTIVE = Gauge(
-    "sessions_active",
-    "Number of active user sessions",
-)
-
 SESSION_OPERATIONS_TOTAL = Counter(
     "session_operations_total",
     "Total number of session operations",
