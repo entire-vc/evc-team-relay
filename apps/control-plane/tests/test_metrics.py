@@ -136,8 +136,7 @@ def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
     response = client.get("/metrics")
     assert response.status_code == 200
     lines = [
-        ln for ln in response.text.splitlines()
-        if ln.startswith('users_total{status="active"}')
+        ln for ln in response.text.splitlines() if ln.startswith('users_total{status="active"}')
     ]
     assert lines, 'users_total{status="active"} metric not found'
     assert float(lines[0].split()[-1]) >= 1

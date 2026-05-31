@@ -125,9 +125,7 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
     # ── share_size_bytes: total length of web_content for doc shares ──────────
     share_size = (
         db.execute(
-            select(
-                func.coalesce(func.sum(func.length(models.Share.web_content)), 0)
-            ).where(
+            select(func.coalesce(func.sum(func.length(models.Share.web_content)), 0)).where(
                 models.Share.kind == models.ShareKind.DOC,
                 models.Share.web_content.is_not(None),
             )
@@ -157,9 +155,7 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
     # ── sessions_active_total ─────────────────────────────────────────────────
     sessions_cnt = (
         db.execute(
-            select(func.count(models.UserSession.id)).where(
-                models.UserSession.expires_at > now
-            )
+            select(func.count(models.UserSession.id)).where(models.UserSession.expires_at > now)
         ).scalar()
         or 0
     )
