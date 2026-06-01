@@ -149,7 +149,10 @@ def create_agent_key(
     if active_count >= settings.agent_key_max_per_share:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Share has reached the maximum of {settings.agent_key_max_per_share} active agent keys.",
+            detail=(
+                f"Share has reached the maximum of {settings.agent_key_max_per_share} "
+                "active agent keys."
+            ),
         )
 
     raw_key = "tr_agent_" + secrets.token_hex(24)
@@ -224,7 +227,8 @@ def list_agent_keys(
                         k.expires_at.replace(tzinfo=timezone.utc)
                         if k.expires_at.tzinfo is None
                         else k.expires_at
-                    ) > now
+                    )
+                    > now
                 )
             ),
         )

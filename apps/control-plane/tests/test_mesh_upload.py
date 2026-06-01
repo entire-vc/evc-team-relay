@@ -373,8 +373,9 @@ class TestAgentKeyNewFields:
         )
         assert resp.status_code == 201, resp.text
         # Verify DB row has created_by set
-        from app.db.models import ShareAgentKey
         from sqlalchemy import select as sa_select
+
+        from app.db.models import ShareAgentKey
 
         key_id = resp.json()["id"]
         ak = db_session.execute(
@@ -419,9 +420,7 @@ class TestAgentKeyNewFields:
         _, ak = make_agent_key(db_session, share)
         token = login(client, "bootstrap@example.com", "super-secret")
         # Revoke it
-        client.delete(
-            f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token)
-        )
+        client.delete(f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token))
         resp = client.get(f"/v1/web/shares/{share.id}/agent-keys", headers=auth_headers(token))
         item = next(i for i in resp.json() if i["id"] == str(ak.id))
         assert item["is_active"] is False
@@ -445,13 +444,17 @@ class TestAgentKeyCountCap:
     """Creating more than agent_key_max_per_share active keys returns 409."""
 
     def test_cap_enforced(
-        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled,
-        monkeypatch
+        self,
+        client: TestClient,
+        test_user: models.User,
+        db_session: Session,
+        web_enabled,
+        monkeypatch,
     ):
         # Set cap to 2 via env
-        import os
         monkeypatch.setenv("AGENT_KEY_MAX_PER_SHARE", "2")
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
         share = make_folder_share(db_session, test_user, slug="cap-share")

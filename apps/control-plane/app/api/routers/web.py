@@ -8,8 +8,6 @@ import logging
 import re
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from minio import Minio
 from minio.error import S3Error
@@ -24,6 +22,8 @@ from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
 from app.services.web_session_service import WebSessionService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web", tags=["web"])
 limiter = Limiter(key_func=get_remote_address)
