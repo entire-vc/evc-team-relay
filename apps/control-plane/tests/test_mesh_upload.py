@@ -294,3 +294,200 @@ class TestMeshUpload:
             headers={"X-Agent-Key": raw_key, "Content-Type": "application/octet-stream"},
         )
         assert resp.status_code == 413
+
+
+# ── Agent key security and new-field tests ────────────────────────────────────
+
+
+class TestAgentKeyAuthRestrictions:
+    """Viewer-role members must not be able to create/list/delete agent keys."""
+
+    def _make_viewer(self, db: Session, share: models.Share, user: models.User) -> models.User:
+        from app.core import security as sec
+
+        viewer = models.User(
+            email="viewer@example.com",
+            password_hash=sec.get_password_hash("viewer123"),
+            is_admin=False,
+            is_active=True,
+        )
+        db.add(viewer)
+        db.commit()
+        db.refresh(viewer)
+        member = models.ShareMember(
+            share_id=share.id,
+            user_id=viewer.id,
+            role=models.ShareMemberRole.VIEWER,
+        )
+        db.add(member)
+        db.commit()
+        return viewer
+
+    def test_viewer_cannot_create_key(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="viewer-create")
+        viewer = self._make_viewer(db_session, share, test_user)
+        token = login(client, "viewer@example.com", "viewer123")
+        resp = client.post(
+            f"/v1/web/shares/{share.id}/agent-keys",
+            json={"label": "bad"},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 403
+
+    def test_viewer_cannot_list_keys(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="viewer-list")
+        viewer = self._make_viewer(db_session, share, test_user)
+        token = login(client, "viewer@example.com", "viewer123")
+        resp = client.get(f"/v1/web/shares/{share.id}/agent-keys", headers=auth_headers(token))
+        assert resp.status_code == 403
+
+    def test_viewer_cannot_revoke_key(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="viewer-revoke")
+        _, ak = make_agent_key(db_session, share)
+        viewer = self._make_viewer(db_session, share, test_user)
+        token = login(client, "viewer@example.com", "viewer123")
+        resp = client.delete(
+            f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token)
+        )
+        assert resp.status_code == 403
+
+
+class TestAgentKeyNewFields:
+    """created_by populated; is_active and share_id present in responses."""
+
+    def test_create_populates_created_by(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="cb-share")
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.post(
+            f"/v1/web/shares/{share.id}/agent-keys",
+            json={"label": "my-key"},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 201, resp.text
+        # Verify DB row has created_by set
+        from sqlalchemy import select as sa_select
+
+        from app.db.models import ShareAgentKey
+
+        key_id = resp.json()["id"]
+        ak = db_session.execute(
+            sa_select(ShareAgentKey).where(ShareAgentKey.id == __import__("uuid").UUID(key_id))
+        ).scalar_one()
+        assert ak.created_by is not None
+
+    def test_create_response_has_share_id_and_scopes(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="fields-share")
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.post(
+            f"/v1/web/shares/{share.id}/agent-keys",
+            json={"label": "x"},
+            headers=auth_headers(token),
+        )
+        data = resp.json()
+        assert "share_id" in data
+        assert data["share_id"] == str(share.id)
+        assert "scopes" in data
+        assert "write" in data["scopes"]
+
+    def test_list_response_has_is_active_and_share_id(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="list-fields")
+        make_agent_key(db_session, share)
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.get(f"/v1/web/shares/{share.id}/agent-keys", headers=auth_headers(token))
+        assert resp.status_code == 200, resp.text
+        item = resp.json()[0]
+        assert "is_active" in item
+        assert item["is_active"] is True
+        assert "share_id" in item
+        assert item["share_id"] == str(share.id)
+
+    def test_revoked_key_is_active_false(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="active-false")
+        _, ak = make_agent_key(db_session, share)
+        token = login(client, "bootstrap@example.com", "super-secret")
+        # Revoke it
+        client.delete(f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token))
+        resp = client.get(f"/v1/web/shares/{share.id}/agent-keys", headers=auth_headers(token))
+        item = next(i for i in resp.json() if i["id"] == str(ak.id))
+        assert item["is_active"] is False
+
+    def test_revoke_returns_revoked_at(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="revoke-ts")
+        _, ak = make_agent_key(db_session, share)
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.delete(
+            f"/v1/web/shares/{share.id}/agent-keys/{ak.id}", headers=auth_headers(token)
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "revoked_at" in data
+        assert data["revoked_at"] is not None
+
+
+class TestAgentKeyCountCap:
+    """Creating more than agent_key_max_per_share active keys returns 409."""
+
+    def test_cap_enforced(
+        self,
+        client: TestClient,
+        test_user: models.User,
+        db_session: Session,
+        web_enabled,
+        monkeypatch,
+    ):
+        # Set cap to 2 via env
+        monkeypatch.setenv("AGENT_KEY_MAX_PER_SHARE", "2")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        share = make_folder_share(db_session, test_user, slug="cap-share")
+        token = login(client, "bootstrap@example.com", "super-secret")
+        headers = auth_headers(token)
+        url = f"/v1/web/shares/{share.id}/agent-keys"
+
+        r1 = client.post(url, json={"label": "k1"}, headers=headers)
+        r2 = client.post(url, json={"label": "k2"}, headers=headers)
+        r3 = client.post(url, json={"label": "k3"}, headers=headers)
+
+        assert r1.status_code == 201
+        assert r2.status_code == 201
+        assert r3.status_code == 409
+
+        get_settings.cache_clear()
+
+
+class TestAgentKeyLastUsedAt:
+    """Upload via agent key updates last_used_at on the key row."""
+
+    def test_upload_sets_last_used_at(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="last-used")
+        raw_key, ak = make_agent_key(db_session, share)
+        assert ak.last_used_at is None
+        with minio_patch():
+            resp = client.post(
+                "/v1/web/shares/last-used/upload?path=note.md",
+                content=b"hello",
+                headers={"X-Agent-Key": raw_key, "Content-Type": "text/markdown"},
+            )
+        assert resp.status_code == 200, resp.text
+        db_session.refresh(ak)
+        assert ak.last_used_at is not None

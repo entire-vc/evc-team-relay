@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import re
 from datetime import datetime
 
@@ -21,6 +22,8 @@ from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
 from app.services.web_session_service import WebSessionService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web", tags=["web"])
 limiter = Limiter(key_func=get_remote_address)
@@ -1204,6 +1207,17 @@ async def upload_mesh_artifact(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to store artifact: {e}",
         )
+
+    logger.info(
+        "agent_key.used",
+        extra={
+            "event": "agent_key.used",
+            "key_id": str(agent_key.id),
+            "share_id": str(share.id),
+            "path": path,
+            "ip": request.client.host if request.client else None,
+        },
+    )
 
     # Upsert index entry in web_folder_items
     from sqlalchemy.orm.attributes import flag_modified

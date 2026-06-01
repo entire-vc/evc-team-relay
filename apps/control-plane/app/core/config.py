@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     minio_secure: bool = Field(default=False, description="Use TLS for MinIO")
     minio_bucket: str = Field(default="relay-assets", description="MinIO bucket name")
 
+    # Agent key limits
+    agent_key_max_per_share: int = Field(default=20, description="Max active agent keys per share")
+    agent_key_creation_rate_per_hour: int = Field(
+        default=10, description="Max agent key creations per user per hour"
+    )
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
