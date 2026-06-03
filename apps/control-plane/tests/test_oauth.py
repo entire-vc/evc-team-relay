@@ -294,25 +294,27 @@ class TestOAuthEndpoints:
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_list_providers_with_env_config(self, client: TestClient):
-        """Test listing OAuth providers configured via environment."""
-        with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(
-                oauth_enabled=True,
-                oauth_provider_name="casdoor",
-                oauth_issuer_url="https://casdoor.example.com",
-                oauth_client_id="test_client_id",
-                oauth_client_secret="test_secret",
-                oauth_auto_register=True,
-                relay_public_url="https://relay.example.com",
-            )
+    def test_list_providers_with_env_config(self, client: TestClient, db_session: Session):
+        """Test listing OAuth providers that exist in the database."""
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client_id",
+            client_secret_encrypted="test_secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
 
-            response = client.get("/v1/auth/oauth/providers")
-            assert response.status_code == 200
-            data = response.json()
-            assert len(data) == 1
-            assert data[0]["name"] == "casdoor"
-            assert data[0]["display_name"] == "Casdoor"
+        response = client.get("/v1/auth/oauth/providers")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "casdoor"
+        assert data[0]["display_name"] == "Casdoor"
 
     def test_authorize_redirect(self, client: TestClient, db_session: Session):
         """Test OAuth authorize endpoint redirects to provider."""
