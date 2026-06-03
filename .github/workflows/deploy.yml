@@ -1,0 +1,91 @@
+name: Deploy
+
+# Automated deploy to tw-relay with a fail-closed migration gate.
+#
+# Sequence (CLAUDE-workflow.md §1b Deploy Discipline):
+#   1. rsync apps/control-plane/ -> tw-relay:/opt/relay/control-plane-src/
+#   2. build image on the server
+#   3. run `control-plane-migrate` (alembic upgrade head) — FAIL-CLOSED
+#   4. only on migrate exit 0: `docker compose up -d` the app services
+#
+# A failed migration fails the job BEFORE any app container is restarted; prod is
+# left running the previous image. See scripts/deploy.sh for the on-server logic
+# and docs/DEPLOY.md for the runbook + required repository secrets.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/control-plane/**'
+      - 'scripts/deploy.sh'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run the migration gate but do NOT restart the app (rehearsal)'
+        type: boolean
+        default: false
+
+# Never run two deploys to the same host concurrently. Do not cancel an
+# in-progress deploy — a half-applied migration is worse than a queued one.
+concurrency:
+  group: deploy-tw-relay
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.TW_RELAY_SSH_KEY }}
+
+      - name: Trust tw-relay host key
+        env:
+          HOST: ${{ secrets.TW_RELAY_HOST }}
+          PORT: ${{ secrets.TW_RELAY_PORT || '22' }}
+          KNOWN_HOSTS: ${{ secrets.TW_RELAY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -n "$KNOWN_HOSTS" ]; then
+            # Pinned host key (preferred — resistant to MITM).
+            printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          else
+            # Fallback: TOFU via ssh-keyscan. Set TW_RELAY_KNOWN_HOSTS to pin.
+            ssh-keyscan -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Sync control-plane source to tw-relay
+        env:
+          HOST: ${{ secrets.TW_RELAY_HOST }}
+          USER: ${{ secrets.TW_RELAY_USER }}
+          PORT: ${{ secrets.TW_RELAY_PORT || '22' }}
+          RELAY_DIR: ${{ secrets.TW_RELAY_PATH || '/opt/relay' }}
+        run: |
+          # --delete keeps the server source in lock-step with the repo; never
+          # touches the server-managed docker-compose.yml / .env (outside src dir).
+          rsync -az --delete \
+            -e "ssh -p ${PORT}" \
+            apps/control-plane/ \
+            "${USER}@${HOST}:${RELAY_DIR}/control-plane-src/"
+
+      - name: Build, migrate (fail-closed), and restart
+        env:
+          HOST: ${{ secrets.TW_RELAY_HOST }}
+          USER: ${{ secrets.TW_RELAY_USER }}
+          PORT: ${{ secrets.TW_RELAY_PORT || '22' }}
+          RELAY_DIR: ${{ secrets.TW_RELAY_PATH || '/opt/relay' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          # Run the on-server deploy script over stdin. Its exit code propagates
+          # back here: a failed migration gate (set -e + explicit exit) fails this
+          # step BEFORE `compose up`, so the app is never restarted on a bad migration.
+          ssh -p "${PORT}" "${USER}@${HOST}" \
+            "RELAY_DIR='${RELAY_DIR}' DRY_RUN='${DRY_RUN}' bash -s" \
+            < scripts/deploy.sh
