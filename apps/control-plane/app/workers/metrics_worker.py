@@ -37,6 +37,28 @@ logger = get_logger(__name__)
 COLLECT_INTERVAL_SECONDS = 60
 
 
+def _init_gauge_labels() -> None:
+    """Initialize gauge label combinations to zero so they appear in /metrics output
+    before the first collection cycle completes."""
+    for status in ("active", "inactive"):
+        USERS_TOTAL.labels(status=status).set(0)
+    USERS_ACTIVE_30D.set(0)
+    for kind_val in ("doc", "folder"):
+        for vis_val in ("private", "public", "protected"):
+            SHARES_TOTAL.labels(kind=kind_val, visibility=vis_val).set(0)
+    for role_val in ("viewer", "editor"):
+        SHARE_MEMBERS_TOTAL.labels(role=role_val).set(0)
+    SHARE_SIZE_BYTES.set(0)
+    SHARE_FILES_TOTAL.set(0)
+    for s in ("active", "revoked", "expired"):
+        AGENT_KEYS_TOTAL.labels(status=s).set(0)
+    SESSIONS_ACTIVE_TOTAL.set(0)
+    DB_HEALTH_STATUS.set(0)
+
+
+_init_gauge_labels()
+
+
 def _collect_db_metrics() -> None:
     """Run all DB aggregate queries and update gauges. Uses a fresh session."""
     db = get_sessionmaker()()
@@ -192,11 +214,18 @@ def _collect_minio_metrics() -> None:
 
 
 async def run_metrics_collector() -> None:
-    """Async loop started at app startup.  Collects metrics every 60 s."""
+    """Async loop started at app startup.  Collects metrics every 60 s.
+
+    Sleeps before the first collection so that startup DB operations (bootstrap
+    admin, test fixtures) complete before we open a competing session on the
+    shared SQLAlchemy pool connection.  Gauge labels are pre-initialised via
+    _init_gauge_labels() so they appear in /metrics immediately.
+    """
     logger.info(
         "metrics_worker: background collector started", extra={"interval": COLLECT_INTERVAL_SECONDS}
     )
     while True:
+        await asyncio.sleep(COLLECT_INTERVAL_SECONDS)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _collect_db_metrics)
@@ -209,4 +238,3 @@ async def run_metrics_collector() -> None:
             logger.warning("metrics_worker: minio timed out")
         except Exception as exc:
             logger.error("metrics_worker: unexpected error", extra={"error": str(exc)})
-        await asyncio.sleep(COLLECT_INTERVAL_SECONDS)

@@ -52,15 +52,42 @@ def engine(test_env):
 
 @pytest.fixture(autouse=True)
 def clean_database(engine):
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        Base.metadata.drop_all(conn)
+        Base.metadata.create_all(conn)
     yield
 
 
 @pytest.fixture
-def client(engine):
+def db_connection(engine):
+    """Provide a single DBAPI connection for the test.
+
+    All sessions (test setup + HTTP handlers) share this connection so that
+    changes made by either side are immediately visible to the other — no
+    cross-thread StaticPool visibility race with SQLite in-memory.
+
+    A connection-level transaction wraps the test; everything is rolled back
+    on teardown so clean_database only needs to run once per test.
+    """
+    with engine.connect() as connection:
+        yield connection
+        connection.rollback()
+
+
+@pytest.fixture
+def db_session(db_connection):
+    """Provide a database session bound to the test's shared connection."""
+    from sqlalchemy.orm import Session
+
+    with Session(bind=db_connection, autocommit=False, autoflush=True) as session:
+        yield session
+
+
+@pytest.fixture
+def client(engine, db_connection):
     # Reset rate limiters before each test to avoid cross-test pollution
     from app.api.routers import auth, invites, metrics, shares, tokens
+    from app.db.session import get_db
     from app.main import limiter as main_limiter
 
     # Clear all limiter storages
@@ -77,17 +104,19 @@ def client(engine):
             lim._storage.reset()
 
     app = build_app()
+
+    # Every HTTP request handler gets a session on the same connection as the
+    # test's db_session, so data set up by the test is immediately visible.
+    from sqlalchemy.orm import Session as _Session
+
+    def override_get_db():
+        with _Session(bind=db_connection, autocommit=False, autoflush=True) as handler_session:
+            yield handler_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
     with TestClient(app) as test_client:
         yield test_client
-
-
-@pytest.fixture
-def db_session(engine):
-    """Provide a database session for tests."""
-    from sqlalchemy.orm import Session
-
-    with Session(engine) as session:
-        yield session
 
 
 @pytest.fixture

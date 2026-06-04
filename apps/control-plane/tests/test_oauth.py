@@ -294,25 +294,27 @@ class TestOAuthEndpoints:
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_list_providers_with_env_config(self, client: TestClient):
-        """Test listing OAuth providers configured via environment."""
-        with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(
-                oauth_enabled=True,
-                oauth_provider_name="casdoor",
-                oauth_issuer_url="https://casdoor.example.com",
-                oauth_client_id="test_client_id",
-                oauth_client_secret="test_secret",
-                oauth_auto_register=True,
-                relay_public_url="https://relay.example.com",
-            )
+    def test_list_providers_with_env_config(self, client: TestClient, db_session: Session):
+        """Test listing OAuth providers that exist in the database."""
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client_id",
+            client_secret_encrypted="test_secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
 
-            response = client.get("/v1/auth/oauth/providers")
-            assert response.status_code == 200
-            data = response.json()
-            assert len(data) == 1
-            assert data[0]["name"] == "casdoor"
-            assert data[0]["display_name"] == "Casdoor"
+        response = client.get("/v1/auth/oauth/providers")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "casdoor"
+        assert data[0]["display_name"] == "Casdoor"
 
     def test_authorize_redirect(self, client: TestClient, db_session: Session):
         """Test OAuth authorize endpoint redirects to provider."""
@@ -405,52 +407,49 @@ class TestOAuthEndpoints:
         assert "state" in data
         assert "casdoor.example.com/login/oauth/authorize" in data["authorize_url"]
 
-    def test_authorize_localhost_stays_http(self, client: TestClient, db_session):
+    def test_authorize_localhost_stays_http(self, client: TestClient):
         """Test that localhost/127.0.0.1 redirect URIs are not converted to HTTPS."""
-        # Create OAuth provider
-        provider = models.OAuthProvider(
-            id=uuid.uuid4(),
-            name="casdoor",
-            provider_type=models.OAuthProviderType.OIDC,
-            issuer_url="https://casdoor.example.com",
-            client_id="test_client_id",
-            client_secret_encrypted="test_secret",
-            enabled=True,
-            auto_register=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        db_session.add(provider)
-        db_session.commit()
+        # Use mock settings so get_oauth_provider auto-creates the provider from
+        # env config within the handler's own session — no cross-session DB setup.
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                oauth_enabled=True,
+                oauth_provider_name="casdoor",
+                oauth_issuer_url="https://casdoor.example.com",
+                oauth_client_id="test_client_id",
+                oauth_client_secret="test_secret",
+                oauth_auto_register=True,
+                oauth_scopes="openid profile email",
+            )
 
-        # Test with 127.0.0.1
-        response = client.get(
-            "/v1/auth/oauth/casdoor/authorize",
-            params={"redirect_uri": "http://127.0.0.1:58548/callback"},
-            headers={
-                "Accept": "application/json",
-                "X-Forwarded-Proto": "https",  # Simulate HTTPS proxy
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        # State should contain the original HTTP redirect_uri
-        state_data = oauth_service.decode_state(data["state"])
-        assert state_data.redirect_uri == "http://127.0.0.1:58548/callback"
+            # Test with 127.0.0.1
+            response = client.get(
+                "/v1/auth/oauth/casdoor/authorize",
+                params={"redirect_uri": "http://127.0.0.1:58548/callback"},
+                headers={
+                    "Accept": "application/json",
+                    "X-Forwarded-Proto": "https",  # Simulate HTTPS proxy
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            # State should contain the original HTTP redirect_uri
+            state_data = oauth_service.decode_state(data["state"])
+            assert state_data.redirect_uri == "http://127.0.0.1:58548/callback"
 
-        # Test with localhost
-        response = client.get(
-            "/v1/auth/oauth/casdoor/authorize",
-            params={"redirect_uri": "http://localhost:58548/callback"},
-            headers={
-                "Accept": "application/json",
-                "X-Forwarded-Proto": "https",  # Simulate HTTPS proxy
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        state_data = oauth_service.decode_state(data["state"])
-        assert state_data.redirect_uri == "http://localhost:58548/callback"
+            # Test with localhost
+            response = client.get(
+                "/v1/auth/oauth/casdoor/authorize",
+                params={"redirect_uri": "http://localhost:58548/callback"},
+                headers={
+                    "Accept": "application/json",
+                    "X-Forwarded-Proto": "https",  # Simulate HTTPS proxy
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            state_data = oauth_service.decode_state(data["state"])
+            assert state_data.redirect_uri == "http://localhost:58548/callback"
 
 
 class TestOAuthGroupMapping:
