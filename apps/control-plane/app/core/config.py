@@ -99,6 +99,16 @@ class Settings(BaseSettings):
         description="Block relay token issuance for users with unverified email",
     )
 
+    # Background metrics collector
+    metrics_collector_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the in-process background metrics collector (60 s loop). "
+            "Disable in tests — its executor-thread session shares the single "
+            "in-memory SQLite connection and corrupts request transactions."
+        ),
+    )
+
     # Web publishing settings
     web_publish_domain: str | None = Field(
         default=None,

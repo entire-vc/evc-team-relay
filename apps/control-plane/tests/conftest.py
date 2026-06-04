@@ -32,6 +32,11 @@ def test_env():
     os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "bootstrap@example.com"
     os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "super-secret"
     os.environ["RELAY_PUBLIC_URL"] = "wss://relay.test"
+    # The background metrics collector runs its DB session on a worker thread,
+    # sharing the single in-memory StaticPool SQLite connection with request
+    # handlers. That concurrent access intermittently rolls back a request's
+    # just-committed rows → flaky 404 / empty-list failures. Off in tests.
+    os.environ["METRICS_COLLECTOR_ENABLED"] = "false"
 
     get_settings.cache_clear()
     yield

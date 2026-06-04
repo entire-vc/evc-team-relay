@@ -236,6 +236,9 @@ Get a token by calling `POST /auth/login` with valid credentials.
     @app.on_event("startup")
     async def _start_metrics_collector() -> None:
         """Launch background metrics collection loop (60 s interval)."""
+        if not get_settings().metrics_collector_enabled:
+            logger.info("metrics_worker: disabled via settings, not starting")
+            return
         app.state.metrics_task = asyncio.create_task(metrics_worker.run_metrics_collector())
 
     @app.on_event("shutdown")
