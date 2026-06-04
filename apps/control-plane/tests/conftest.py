@@ -86,7 +86,7 @@ def db_session(db_connection):
 @pytest.fixture
 def client(engine, db_connection):
     # Reset rate limiters before each test to avoid cross-test pollution
-    from app.api.routers import auth, invites, metrics, shares, tokens
+    from app.api.routers import agent_keys, auth, invites, metrics, shares, tokens
     from app.db.session import get_db
     from app.main import limiter as main_limiter
 
@@ -98,6 +98,7 @@ def client(engine, db_connection):
         tokens.limiter,
         invites.limiter,
         metrics._limiter,
+        agent_keys.limiter,
     ]
     for lim in limiters:
         if hasattr(lim, "_storage") and lim._storage:
