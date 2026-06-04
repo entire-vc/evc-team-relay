@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import func, select
@@ -74,7 +74,7 @@ def _require_share_owner_or_admin(
 
 
 class AgentKeyCreateRequest(BaseModel):
-    label: str | None = None
+    label: str | None = Field(default=None, min_length=1)
     expires_at: datetime | None = None
 
     @field_validator("label")
@@ -82,9 +82,10 @@ class AgentKeyCreateRequest(BaseModel):
     def trim_label(cls, v: str | None) -> str | None:
         if v is not None:
             v = v.strip()
+            if not v:
+                raise ValueError("label must not be blank")
             if len(v) > 255:
                 raise ValueError("label must be 255 characters or fewer")
-            return v or None
         return v
 
 

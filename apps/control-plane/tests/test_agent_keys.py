@@ -99,6 +99,31 @@ def test_create_agent_key_with_expiry(client: TestClient) -> None:
     assert resp.json()["expires_at"] is not None
 
 
+def test_create_agent_key_empty_label_rejected(client: TestClient) -> None:
+    """Empty string label must be rejected with 422."""
+    token = login(client, "bootstrap@example.com", "super-secret")
+    share_id = create_share(client, token, path="vault/empty-label.md")
+
+    resp = client.post(
+        f"/v1/web/shares/{share_id}/agent-keys",
+        json={"label": ""},
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_create_agent_key_blank_label_rejected(client: TestClient) -> None:
+    """Whitespace-only label must be rejected with 422."""
+    token = login(client, "bootstrap@example.com", "super-secret")
+    share_id = create_share(client, token, path="vault/blank-label.md")
+
+    resp = client.post(
+        f"/v1/web/shares/{share_id}/agent-keys",
+        json={"label": "   "},
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 422, resp.text
+
 
 def test_create_agent_key_past_expiry_rejected(client: TestClient) -> None:
     token = login(client, "bootstrap@example.com", "super-secret")
