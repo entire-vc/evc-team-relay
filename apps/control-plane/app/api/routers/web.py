@@ -1093,10 +1093,10 @@ def _validate_upload_path(path: str) -> None:
         )
 
 
-@router.post("/shares/{slug}/upload", status_code=status.HTTP_200_OK)
+@router.post("/shares/{share_identifier}/upload", status_code=status.HTTP_200_OK)
 async def upload_mesh_artifact(
     request: Request,
-    slug: str,
+    share_identifier: str,
     path: str = Query(..., description="Relative file path within share"),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -1108,8 +1108,11 @@ async def upload_mesh_artifact(
     Storage: MinIO under web-assets/{share_id}/{path} (reuses existing serve path).
     Index: upserted into share.web_folder_items with source=mesh-artifact.
     Sync trigger: bumps share.web_content_updated_at so plugin pulls on next cycle.
+
+    share_identifier: folder UUID (private/sync shares) or web_slug (web-published shares only).
     """
     import hashlib
+    import uuid as _uuid_mod
 
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -1121,15 +1124,19 @@ async def upload_mesh_artifact(
     # Path validation
     _validate_upload_path(path)
 
-    # Find share by slug (must be web-published folder share)
-    stmt = select(models.Share).where(
-        models.Share.web_slug == slug,
-        models.Share.web_published == True,  # noqa: E712
-    )
+    # Resolve share: UUID-first (private + public), slug fallback (web-published only).
+    try:
+        _share_uuid = _uuid_mod.UUID(share_identifier)
+        stmt = select(models.Share).where(models.Share.id == _share_uuid)
+    except ValueError:
+        stmt = select(models.Share).where(
+            models.Share.web_slug == share_identifier,
+            models.Share.web_published == True,  # noqa: E712
+        )
     share = db.execute(stmt).scalar_one_or_none()
     if not share:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or not published"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Share not found"
         )
     if share.kind != models.ShareKind.FOLDER:
         raise HTTPException(
