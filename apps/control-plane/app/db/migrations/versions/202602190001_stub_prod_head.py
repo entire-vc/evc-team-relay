@@ -16,8 +16,6 @@ No upgrade or downgrade actions — prod schema already reflects this state.
 
 from typing import Sequence, Union
 
-from alembic import op
-
 revision: str = "202602190001"
 down_revision: Union[str, None] = "202602030003"
 branch_labels: Union[str, Sequence[str], None] = None
