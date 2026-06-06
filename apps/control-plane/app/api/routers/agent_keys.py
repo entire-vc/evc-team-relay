@@ -73,9 +73,13 @@ def _require_share_owner_or_admin(
     return share, user_id
 
 
+_VALID_SCOPES = {"read", "write"}
+
+
 class AgentKeyCreateRequest(BaseModel):
     label: str | None = Field(default=None, min_length=1)
     expires_at: datetime | None = None
+    scopes: list[str] = Field(default_factory=lambda: ["write"])
 
     @field_validator("label")
     @classmethod
@@ -87,6 +91,16 @@ class AgentKeyCreateRequest(BaseModel):
             if len(v) > 255:
                 raise ValueError("label must be 255 characters or fewer")
         return v
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("scopes must not be empty")
+        invalid = set(v) - _VALID_SCOPES
+        if invalid:
+            raise ValueError(f"invalid scopes: {invalid}; allowed: {_VALID_SCOPES}")
+        return sorted(set(v))
 
 
 class AgentKeyCreateResponse(BaseModel):
@@ -163,7 +177,7 @@ def create_agent_key(
         share_id=share.id,
         key_hash=key_hash,
         label=payload.label,
-        scopes="write",
+        scopes=",".join(payload.scopes),
         created_by=user_id,
         expires_at=exp if payload.expires_at is not None else None,
     )
