@@ -270,6 +270,7 @@ services:
       PUBLIC_CONTROL_PLANE_URL: https://cp.${DOMAIN_BASE}
       PUBLIC_WEB_DOMAIN: ${WEB_PUBLISH_DOMAIN:-}
       ORIGIN: https://${WEB_PUBLISH_DOMAIN:-localhost}
+      WEB_FRAME_ANCESTORS: ${WEB_FRAME_ANCESTORS:-}
     depends_on:
       control-plane:
         condition: service_healthy
