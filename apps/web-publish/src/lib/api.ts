@@ -52,8 +52,10 @@ export interface RelayToken {
 /**
  * Fetch share metadata by slug.
  */
-export async function getShareBySlug(slug: string): Promise<WebShare> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}`);
+export async function getShareBySlug(slug: string, agentKey?: string): Promise<WebShare> {
+	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}`);
+	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
+	const response = await fetch(urlObj.toString());
 
 	if (!response.ok) {
 		if (response.status === 404) {
@@ -277,7 +279,8 @@ export async function getFolderFileContent(
 	slug: string,
 	path: string,
 	sessionToken?: string,
-	authToken?: string
+	authToken?: string,
+	agentKey?: string
 ): Promise<FolderFileContent> {
 	const headers: Record<string, string> = {};
 	if (sessionToken) {
@@ -287,10 +290,11 @@ export async function getFolderFileContent(
 		headers['Authorization'] = `Bearer ${authToken}`;
 	}
 
-	const response = await fetch(
-		`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/files?path=${encodeURIComponent(path)}`,
-		{ headers }
-	);
+	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/files`);
+	urlObj.searchParams.set('path', path);
+	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
+
+	const response = await fetch(urlObj.toString(), { headers });
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch file content: ${response.statusText}`);

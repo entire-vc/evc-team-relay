@@ -5,12 +5,12 @@ import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, cookies, url }) => {
 	const { slug, path } = params;
+	const agentKey = url.searchParams.get('agent_key') ?? undefined;
 
 	try {
-		// Fetch folder share metadata from Control Plane
-		const share = await getShareBySlug(slug);
+		// Fetch folder share metadata from Control Plane (agent_key forwarded so CP can expose content)
+		const share = await getShareBySlug(slug, agentKey);
 
-		// Must be a folder share
 		if (share.kind !== 'folder') {
 			throw error(404, 'Not a folder share');
 		}
@@ -26,10 +26,16 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			}
 		}
 
-		// For private shares, check OAuth token
+		// For private shares: agent_key auth — CP already validated; content non-null = accepted.
+		let isAgentAuthenticated = false;
+		if (share.visibility === 'private' && agentKey) {
+			isAgentAuthenticated = share.web_folder_items !== null;
+		}
+
+		// For private shares: OAuth/JWT auth (only when no agent_key)
 		let isOAuthAuthenticated = false;
 		let authToken: string | undefined;
-		if (share.visibility === 'private') {
+		if (share.visibility === 'private' && !isAgentAuthenticated) {
 			authToken = cookies.get('auth_token');
 			if (authToken) {
 				const validation = await validateUserToken(authToken);
@@ -37,16 +43,13 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			}
 		}
 
-		// Check authentication
 		if (share.visibility === 'protected' && !isAuthenticated) {
 			throw error(401, 'Password required');
 		}
-		if (share.visibility === 'private' && !isOAuthAuthenticated) {
+		if (share.visibility === 'private' && !isAgentAuthenticated && !isOAuthAuthenticated) {
 			throw error(401, 'Authentication required');
 		}
 
-		// Find the file in folder items
-		// Support both exact match and slugified match (spaces → hyphens in URL)
 		const folderItems = share.web_folder_items || [];
 		const file = folderItems.find(item => item.path === path)
 			|| folderItems.find(item => slugifyPath(item.path) === path);
@@ -55,26 +58,14 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			throw error(404, 'File not found in this folder');
 		}
 
-		// Use original file.path (with spaces) for API calls
 		const originalPath = file.path;
 
-		// Try to fetch file content from API
 		let content: string;
 		try {
-			const fileContent = await getFolderFileContent(slug, originalPath, sessionToken, authToken);
+			const fileContent = await getFolderFileContent(slug, originalPath, sessionToken, authToken, agentKey);
 			content = fileContent.content || '# Content not available\n\nThis file has not been synced yet.';
 		} catch (fetchError) {
-			// If file content fetch fails, show placeholder
-			content = `# ${file.name}
-
-> **Content not yet synced**
->
-> Individual document content within folder shares needs to be synced from Obsidian.
->
-> To view this document:
-> 1. Re-sync this folder share from the Obsidian plugin
-> 2. Or create a separate share for this specific document
-`;
+			content = `# ${file.name}\n\n> **Content not yet synced**`;
 		}
 
 		return {
@@ -87,10 +78,7 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			isFolder: false
 		};
 	} catch (err) {
-		// Re-throw SvelteKit errors as-is
-		if (err && typeof err === 'object' && 'status' in err) {
-			throw err;
-		}
+		if (err && typeof err === 'object' && 'status' in err) throw err;
 		console.error('Failed to load file:', err);
 		throw error(404, 'File not found');
 	}
