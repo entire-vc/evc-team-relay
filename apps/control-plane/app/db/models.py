@@ -131,6 +131,10 @@ class User(Base, TimestampMixin):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    lifecycle_states: Mapped[list["LifecycleState"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Share(Base, TimestampMixin):
@@ -547,7 +551,49 @@ class UserEmailPreferences(Base):
         nullable=False,
     )
 
+    lifecycle_emails: Mapped[bool] = mapped_column(default=True, nullable=False)
+
     user: Mapped["User"] = relationship(back_populates="email_preferences")
+
+
+class LifecycleState(Base):
+    """Idempotency-keyed state tracker for the email lifecycle engine.
+
+    One row per (user_id, trigger_key) pair. The worker upserts this table to
+    advance state and prevent double-sending. The unique constraint on
+    (user_id, trigger_key) is the primary idempotency guard.
+    """
+
+    __tablename__ = "lifecycle_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", "trigger_key", name="uq_lifecycle_state_user_trigger"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    trigger_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    suppressed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship(back_populates="lifecycle_states")
 
 
 class InstanceSetting(Base):
