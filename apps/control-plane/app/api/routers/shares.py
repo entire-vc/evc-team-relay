@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from minio import Minio
+from minio.error import S3Error
+from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
+from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
@@ -92,6 +96,116 @@ def read_share(
     response = share_schema.ShareRead.model_validate(share)
     response.web_url = share_service.get_web_url(share)
     return response
+
+
+class SyncArtifactItem(BaseModel):
+    path: str
+    sha256: str
+    size: int
+    updated_at: str
+    type: str = "sync-artifact"
+
+
+def _get_minio_client() -> Minio:
+    settings = get_settings()
+    return Minio(
+        settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        secure=settings.minio_secure,
+    )
+
+
+@router.get("/{share_id}/files-index", response_model=list[SyncArtifactItem])
+def get_share_files_index(
+    share_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+) -> list[SyncArtifactItem]:
+    """
+    List sync-artifact files for a share (plugin inbound sync, Bearer JWT).
+
+    Returns only items uploaded via sync-upload (source=sync-artifact) in
+    SyncArtifactItem format expected by the Obsidian plugin InboundFileDownloader.
+    """
+    share = share_service.get_share(db, share_id)
+    share_service.ensure_read_access(db, share, current_user)
+
+    folder_items = share.web_folder_items or []
+    result = []
+    for item in folder_items:
+        if item.get("source") != "sync-artifact":
+            continue
+        sha256 = item.get("sha256")
+        if not sha256:
+            continue
+        result.append(
+            SyncArtifactItem(
+                path=item["path"],
+                sha256=sha256,
+                size=item.get("size", 0),
+                updated_at=item.get("modified_at", ""),
+            )
+        )
+    return result
+
+
+@router.get("/{share_id}/download")
+def download_share_file(
+    share_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path within share"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+) -> Response:
+    """
+    Download a sync-artifact file by relative path (plugin inbound sync, Bearer JWT).
+
+    Resolution order: inline content in JSONB index → MinIO storage.
+    """
+    share = share_service.get_share(db, share_id)
+    share_service.ensure_read_access(db, share, current_user)
+
+    folder_items = share.web_folder_items or []
+    for item in folder_items:
+        if item.get("path") != path:
+            continue
+
+        content_str = item.get("content")
+        if content_str is not None:
+            mime = item.get("mime", "text/plain; charset=utf-8")
+            content_bytes = (
+                content_str.encode("utf-8") if isinstance(content_str, str) else content_str
+            )
+            return Response(content=content_bytes, media_type=mime)
+
+        storage_key = item.get("storage_key")
+        if storage_key:
+            settings = get_settings()
+            minio_client = _get_minio_client()
+            try:
+                resp = minio_client.get_object(settings.minio_bucket, storage_key)
+                try:
+                    data = resp.read()
+                finally:
+                    resp.close()
+                    resp.release_conn()
+            except S3Error as e:
+                if e.code == "NoSuchKey":
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="File not found in storage",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to retrieve file: {e}",
+                )
+            mime = item.get("mime", "application/octet-stream")
+            return Response(content=data, media_type=mime)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"File not found: {path}",
+    )
 
 
 @router.patch("/{share_id}", response_model=share_schema.ShareRead)

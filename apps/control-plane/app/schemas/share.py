@@ -80,6 +80,7 @@ class ShareRead(BaseModel):
     web_sync_mode: str
     web_url: str | None = None  # Computed field, set by service
     web_doc_id: str | None = None  # Y-sweet document ID for real-time sync
+    web_content_updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
