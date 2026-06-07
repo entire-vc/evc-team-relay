@@ -117,6 +117,33 @@ def test_db_metrics_collection_runs_without_error(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_db_connections_pool_gauges_emitted(client: TestClient) -> None:
+    """db_connections_* pool gauges are present and total == active + idle."""
+    from app.workers.metrics_worker import _collect_db_metrics
+
+    _collect_db_metrics()
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    content = response.text
+    assert "db_connections_active" in content
+    assert "db_connections_idle" in content
+    assert "db_connections_total" in content
+
+    def _val(name: str) -> float:
+        lines = [
+            ln
+            for ln in content.splitlines()
+            if ln.startswith(name + " ") and not ln.startswith("#")
+        ]
+        assert lines, f"{name} metric not found"
+        return float(lines[0].split()[-1])
+
+    assert _val("db_connections_total") == _val("db_connections_active") + _val(
+        "db_connections_idle"
+    )
+
+
 def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
     """Assert users_total gauge value matches seeded active-user fixture count."""
     from app.db import models
