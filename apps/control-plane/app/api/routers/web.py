@@ -1324,7 +1324,7 @@ def _resolve_share_for_agent(share_identifier: str, db: Session) -> models.Share
     if share.kind != models.ShareKind.FOLDER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Agent-key operations only supported for folder shares",
+            detail="This endpoint only supports folder shares",
         )
     return share
 
@@ -1376,6 +1376,95 @@ def _auth_agent_key(
             detail=f"Agent key does not have {required_scope} scope",
         )
     return agent_key
+
+
+def _auth_share_read_access(share: models.Share, request: Request, db: Session) -> str:
+    """Authenticate a read request for a folder share via X-Agent-Key or Bearer JWT.
+
+    Returns 'agent_key' or 'bearer' indicating which credential succeeded.
+    For agent-key auth, updates last_used_at on the key row (caller must db.commit()).
+    Raises HTTPException 401/403 if no valid credential is present.
+    """
+    import hashlib as _hl
+    from datetime import timezone as _tz
+
+    # --- Agent-key path (takes priority if header present) ---
+    raw_key = request.headers.get("X-Agent-Key")
+    if raw_key:
+        key_hash = _hl.sha256(raw_key.encode()).hexdigest()
+        agent_key = db.execute(
+            select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
+        ).scalar_one_or_none()
+        if agent_key is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+        if agent_key.share_id != share.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
+            )
+        if agent_key.revoked_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
+            )
+        if agent_key.expires_at is not None:
+            exp = agent_key.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=_tz.utc)
+            if exp < security.utcnow():
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
+                )
+        if "read" not in set(agent_key.scopes.split(",")):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agent key does not have read scope",
+            )
+        agent_key.last_used_at = security.utcnow()
+        return "agent_key"
+
+    # --- Bearer JWT path ---
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            payload = security.decode_access_token(token)
+            user_id_str = payload.get("sub")
+            if not user_id_str:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+            user_id = UUID(user_id_str)
+            user = db.execute(
+                select(models.User).where(models.User.id == user_id)
+            ).scalar_one_or_none()
+            if not user or not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive"
+                )
+            if share.owner_user_id == user_id:
+                return "bearer"
+            member = db.execute(
+                select(models.ShareMember).where(
+                    models.ShareMember.share_id == share.id,
+                    models.ShareMember.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if member is not None:
+                return "bearer"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this share"
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required: provide X-Agent-Key header or Authorization: Bearer <token>",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 @router.post("/shares/{share_id}/sync-upload", status_code=status.HTTP_200_OK)
@@ -1548,12 +1637,13 @@ def list_mesh_files(
     db: Session = Depends(get_db),
 ) -> dict:
     """
-    List files in a folder share using agent-key auth.
+    List files in a folder share.
 
     Returns the share's file index: mapping path → {type, mime, size, modified_at, source}.
     Content is never included; use /download to fetch individual file content.
 
-    Auth: X-Agent-Key header.
+    Auth: X-Agent-Key header (returns all items) or Authorization: Bearer JWT (returns
+    sync-artifact items only — for plugin inbound sync).
     share_identifier: folder UUID (private/sync shares) or web_slug (web-published only).
     """
     settings = get_settings()
@@ -1564,9 +1654,12 @@ def list_mesh_files(
         )
 
     share = _resolve_share_for_agent(share_identifier, db)
-    agent_key = _auth_agent_key(share, request, db, required_scope="read")
+    auth_method = _auth_share_read_access(share, request, db)
 
     folder_items = share.web_folder_items or []
+    if auth_method == "bearer":
+        folder_items = [item for item in folder_items if item.get("type") == "sync-artifact"]
+
     files = {
         item["path"]: {
             "type": item.get("type", "doc"),
@@ -1579,7 +1672,6 @@ def list_mesh_files(
         if item.get("path")
     }
 
-    agent_key.last_used_at = security.utcnow()
     db.commit()
 
     return {"share_id": str(share.id), "files": files}
@@ -1593,11 +1685,11 @@ def download_mesh_artifact(
     db: Session = Depends(get_db),
 ) -> Response:
     """
-    Download a file artifact from a folder share using agent-key auth.
+    Download a file artifact from a folder share.
 
     Resolution order: inline content in JSONB index → MinIO storage.
 
-    Auth: X-Agent-Key header.
+    Auth: X-Agent-Key header or Authorization: Bearer JWT.
     share_identifier: folder UUID (private/sync shares) or web_slug (web-published only).
     """
     settings = get_settings()
@@ -1610,7 +1702,7 @@ def download_mesh_artifact(
     _validate_upload_path(path)
 
     share = _resolve_share_for_agent(share_identifier, db)
-    agent_key = _auth_agent_key(share, request, db, required_scope="read")
+    _auth_share_read_access(share, request, db)
 
     folder_items = share.web_folder_items or []
     for item in folder_items:
@@ -1623,7 +1715,6 @@ def download_mesh_artifact(
             content_bytes = (
                 content_str.encode("utf-8") if isinstance(content_str, str) else content_str
             )
-            agent_key.last_used_at = security.utcnow()
             db.commit()
             return Response(content=content_bytes, media_type=mime)
 
@@ -1647,7 +1738,6 @@ def download_mesh_artifact(
                     detail=f"Failed to retrieve file: {e}",
                 )
             mime = item.get("mime", "application/octet-stream")
-            agent_key.last_used_at = security.utcnow()
             db.commit()
             return Response(content=data, media_type=mime)
 
