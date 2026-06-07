@@ -1410,15 +1410,17 @@ async def sync_upload(
 
     _validate_upload_path(path)
 
-    # UUID-only: sync writes require explicit share ID, no slug-based discovery.
+    # Resolve share by UUID or web slug.
     try:
         _share_uuid = _uuid_mod.UUID(share_id)
+        _stmt = select(models.Share).where(models.Share.id == _share_uuid)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+        _stmt = select(models.Share).where(
+            models.Share.web_slug == share_id,
+            models.Share.web_published == True,  # noqa: E712
+        )
 
-    share = db.execute(
-        select(models.Share).where(models.Share.id == _share_uuid)
-    ).scalar_one_or_none()
+    share = db.execute(_stmt).scalar_one_or_none()
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:

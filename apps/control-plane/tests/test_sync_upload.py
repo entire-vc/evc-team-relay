@@ -375,17 +375,18 @@ class TestSyncUploadValidation:
         )
         assert resp.status_code in (401, 404)
 
-    def test_slug_rejected_as_share_id(
+    def test_slug_accepted_as_share_id(
         self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
     ):
         share = make_folder_share(db_session, test_user, slug="su-slug-only")
         raw_key, _ = make_agent_key(db_session, share)
-        resp = client.post(
-            f"{BASE}/su-slug-only/sync-upload?path=file.md",
-            content=b"data",
-            headers={"X-Agent-Key": raw_key, "Content-Type": "text/plain"},
-        )
-        assert resp.status_code == 404
+        with minio_patch():
+            resp = client.post(
+                f"{BASE}/su-slug-only/sync-upload?path=file.md",
+                content=b"data",
+                headers={"X-Agent-Key": raw_key, "Content-Type": "text/plain"},
+            )
+        assert resp.status_code == 200
 
     def test_disabled_web_publish_returns_404(
         self, client: TestClient, test_user: models.User, db_session: Session
