@@ -161,6 +161,14 @@ class Settings(BaseSettings):
         default=10, description="Max agent key creations per user per hour"
     )
 
+    # Argus CRM integration (S7: contact dedup + cross-product suppression-read)
+    argus_enabled: bool = Field(default=False, description="Enable Argus CRM integration")
+    argus_api_url: str = Field(default="http://argus-api:8000", description="Argus API base URL")
+    argus_timeout_seconds: float = Field(default=5.0, description="Argus API request timeout")
+    argus_service_key: str | None = Field(
+        default=None, description="X-Argus-Service-Key for M2M auth"
+    )
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

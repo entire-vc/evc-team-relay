@@ -9,7 +9,8 @@ Idempotency: lifecycle_state table (unique on user_id, trigger_key) prevents dou
 Cap: max LIFECYCLE_CAP total nudges sent per user across all triggers.
 Pre-send: lifecycle_emails preference checked (missing row = ON).
 
-TODO(S7): add Argus suppression check pre-send (fast-follow, hook marked below).
+Argus suppression check (S7): is_suppressed() is called pre-send to enforce
+SO-3 rule-5 cross-product opt-out (opt-out anywhere → stop everywhere).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from app.db.models import (
     User,
     UserEmailPreferences,
 )
+from app.services import argus_service
 from app.services.email_service import (
     EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE,
     EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H,
@@ -199,7 +201,8 @@ def process_t1_no_share_24h(db: Session, launch_cutoff: datetime) -> int:
             continue
         if _total_sent_count(db, user.id) >= LIFECYCLE_CAP:
             continue
-        # TODO(S7): check Argus suppression here (fast-follow)
+        if argus_service.is_suppressed(user.email):
+            continue
 
         ctx = _template_context(user)
         html, text = _render_template("lifecycle-no-share-24h", ctx)
@@ -268,7 +271,8 @@ def process_t2_inactive_after_share(db: Session, launch_cutoff: datetime) -> int
             continue
         if _total_sent_count(db, user.id) >= LIFECYCLE_CAP:
             continue
-        # TODO(S7): check Argus suppression here (fast-follow)
+        if argus_service.is_suppressed(user.email):
+            continue
 
         ctx = _template_context(user)
         html, text = _render_template("lifecycle-inactive-after-share", ctx)
