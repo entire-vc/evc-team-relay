@@ -1378,6 +1378,167 @@ def _auth_agent_key(
     return agent_key
 
 
+@router.post("/shares/{share_id}/sync-upload", status_code=status.HTTP_200_OK)
+@limiter.limit("30/minute")
+async def sync_upload(
+    request: Request,
+    share_id: str,
+    path: str = Query(..., description="Relative file path within share"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Upload a file from a Mesh agent into the relay CAS and register it for sync.
+
+    Auth: X-Agent-Key header — non-revoked, non-expired key with write scope for this share.
+    Body: raw bytes. Max 25 MB.
+    Storage: MinIO under sync-uploads/{share_id}/{sha256} (CAS-style, same bucket as relay-server).
+    Index: upserted into share.web_folder_items with source=sync-artifact.
+    Sync trigger: bumps share.web_content_updated_at so plugin pulls on next cycle.
+
+    Returns sync_url (relay WebSocket URL for the share) and web_url (web-publish URL) so the
+    caller knows where the file will be reachable after the next plugin sync cycle.
+    """
+    import hashlib
+    import uuid as _uuid_mod
+
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    _validate_upload_path(path)
+
+    # UUID-only: sync writes require explicit share ID, no slug-based discovery.
+    try:
+        _share_uuid = _uuid_mod.UUID(share_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+
+    share = db.execute(
+        select(models.Share).where(models.Share.id == _share_uuid)
+    ).scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+    if share.kind != models.ShareKind.FOLDER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sync-upload only supported for folder shares",
+        )
+    agent_key = _auth_agent_key(share, request, db, required_scope="write")
+
+    body = await request.body()
+    if len(body) > MAX_MESH_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Max size: {MAX_MESH_UPLOAD_SIZE // (1024 * 1024)}MB",
+        )
+
+    mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
+    sha256 = hashlib.sha256(body).hexdigest()
+
+    # CAS storage: key is content-addressed by SHA256, stored alongside relay-server's data.
+    minio_client = _get_minio_client()
+    bucket_name = settings.minio_bucket
+    _ensure_minio_bucket(minio_client, bucket_name)
+
+    cas_key = f"sync-uploads/{share.id}/{sha256}"
+    try:
+        minio_client.put_object(
+            bucket_name,
+            cas_key,
+            io.BytesIO(body),
+            length=len(body),
+            content_type=mime,
+        )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store artifact: {e}",
+        )
+
+    logger.info(
+        "agent_key.used",
+        extra={
+            "event": "sync_upload",
+            "key_id": str(agent_key.id),
+            "share_id": str(share.id),
+            "path": path,
+            "sha256": sha256,
+            "ip": request.client.host if request.client else None,
+        },
+    )
+
+    # Upsert into web_folder_items with sync-artifact source.
+    from sqlalchemy.orm.attributes import flag_modified
+
+    now_iso = security.utcnow().isoformat()
+    is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
+    inline_content = (
+        body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+    )
+
+    folder_items = list(share.web_folder_items or [])
+    updated = False
+    for item in folder_items:
+        if item.get("path") == path:
+            item.update(
+                {
+                    "name": path.split("/")[-1],
+                    "type": "doc" if is_text else "asset",
+                    "source": "sync-artifact",
+                    "mime": mime,
+                    "size": len(body),
+                    "sha256": sha256,
+                    "modified_at": now_iso,
+                    "storage_key": cas_key,
+                    "content": inline_content,
+                }
+            )
+            updated = True
+            break
+
+    if not updated:
+        folder_items.append(
+            {
+                "path": path,
+                "name": path.split("/")[-1],
+                "type": "doc" if is_text else "asset",
+                "source": "sync-artifact",
+                "mime": mime,
+                "size": len(body),
+                "sha256": sha256,
+                "modified_at": now_iso,
+                "storage_key": cas_key,
+                "content": inline_content,
+            }
+        )
+
+    share.web_folder_items = folder_items
+    flag_modified(share, "web_folder_items")
+    share.web_content_updated_at = security.utcnow()
+    agent_key.last_used_at = security.utcnow()
+    db.commit()
+
+    # Build response URLs.
+    relay_base = str(settings.relay_public_url).rstrip("/")
+    sync_url = f"{relay_base}/{share.id}"
+
+    web_url = None
+    if share.web_published and share.web_slug and settings.web_publish_domain:
+        domain = settings.web_publish_domain
+        if not domain.startswith("http"):
+            domain = f"https://{domain}"
+        web_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+
+    return {
+        "sync_url": sync_url,
+        "web_url": web_url,
+        "path": path,
+    }
+
+
 @router.get("/shares/{share_identifier}/files-index")
 def list_mesh_files(
     request: Request,

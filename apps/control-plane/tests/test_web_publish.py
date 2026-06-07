@@ -1402,9 +1402,7 @@ class TestPrivateShareWebAuthRegression:
         return share
 
     @pytest.fixture
-    def protected_share_with_doc(
-        self, db_session: Session, test_user: models.User
-    ) -> models.Share:
+    def protected_share_with_doc(self, db_session: Session, test_user: models.User) -> models.Share:
         from app.core.security import get_password_hash
 
         share = models.Share(
