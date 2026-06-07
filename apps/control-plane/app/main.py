@@ -27,6 +27,7 @@ from app.api.routers import (
     server,
     shares,
     tokens,
+    unsubscribe,
     users,
     web,
     webhooks,
@@ -167,6 +168,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(agent_keys.router)  # Agent key management (prefix included)
     app.include_router(webhooks.router)  # Webhooks API (prefix included)
     app.include_router(webhooks.admin_router)  # Admin webhooks API (prefix included)
+    app.include_router(unsubscribe.router)  # Lifecycle email one-click unsubscribe (public)
 
     # Legacy routes (backward compatibility) - proxy to /v1 with deprecation warning
     app.include_router(health.router, deprecated=True)
