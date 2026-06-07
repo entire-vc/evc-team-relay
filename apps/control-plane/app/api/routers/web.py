@@ -1143,9 +1143,7 @@ async def upload_mesh_artifact(
         )
     share = db.execute(stmt).scalar_one_or_none()
     if not share:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Share not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1187,7 +1185,7 @@ async def upload_mesh_artifact(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
             )
 
-    if "write" not in agent_key.scopes:
+    if "write" not in set(agent_key.scopes.split(",")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope"
         )
@@ -1303,3 +1301,191 @@ async def upload_mesh_artifact(
         "modified_at": now_iso,
         "public_url": public_url,
     }
+
+
+def _resolve_share_for_agent(share_identifier: str, db: Session) -> models.Share:
+    """Resolve share by UUID (private/sync) or slug (web-published only).
+
+    Raises 404 if not found or not a folder share.
+    """
+    import uuid as _uuid_mod
+
+    try:
+        _uuid = _uuid_mod.UUID(share_identifier)
+        stmt = select(models.Share).where(models.Share.id == _uuid)
+    except ValueError:
+        stmt = select(models.Share).where(
+            models.Share.web_slug == share_identifier,
+            models.Share.web_published == True,  # noqa: E712
+        )
+    share = db.execute(stmt).scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+    if share.kind != models.ShareKind.FOLDER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent-key operations only supported for folder shares",
+        )
+    return share
+
+
+def _auth_agent_key(
+    share: models.Share, request: Request, db: Session, required_scope: str | None = None
+) -> models.ShareAgentKey:
+    """Validate X-Agent-Key header against the given share.
+
+    Returns the ShareAgentKey row on success; raises HTTPException on failure.
+    If required_scope is given, the key must have that scope (e.g. "read" or "write").
+    """
+    import hashlib
+
+    raw_key = request.headers.get("X-Agent-Key")
+    if not raw_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required"
+        )
+
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    agent_key = db.execute(
+        select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
+    ).scalar_one_or_none()
+
+    if agent_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+    if agent_key.share_id != share.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
+        )
+    if agent_key.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
+        )
+    if agent_key.expires_at is not None:
+        from datetime import timezone as _tz
+
+        exp = agent_key.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=_tz.utc)
+        if exp < security.utcnow():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
+            )
+    if required_scope and required_scope not in set(agent_key.scopes.split(",")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Agent key does not have {required_scope} scope",
+        )
+    return agent_key
+
+
+@router.get("/shares/{share_identifier}/files-index")
+def list_mesh_files(
+    request: Request,
+    share_identifier: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    List files in a folder share using agent-key auth.
+
+    Returns the share's file index: mapping path → {type, mime, size, modified_at, source}.
+    Content is never included; use /download to fetch individual file content.
+
+    Auth: X-Agent-Key header.
+    share_identifier: folder UUID (private/sync shares) or web_slug (web-published only).
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    share = _resolve_share_for_agent(share_identifier, db)
+    agent_key = _auth_agent_key(share, request, db, required_scope="read")
+
+    folder_items = share.web_folder_items or []
+    files = {
+        item["path"]: {
+            "type": item.get("type", "doc"),
+            "mime": item.get("mime"),
+            "size": item.get("size"),
+            "modified_at": item.get("modified_at"),
+            "source": item.get("source"),
+        }
+        for item in folder_items
+        if item.get("path")
+    }
+
+    agent_key.last_used_at = security.utcnow()
+    db.commit()
+
+    return {"share_id": str(share.id), "files": files}
+
+
+@router.get("/shares/{share_identifier}/download")
+def download_mesh_artifact(
+    request: Request,
+    share_identifier: str,
+    path: str = Query(..., description="Relative file path within share"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    Download a file artifact from a folder share using agent-key auth.
+
+    Resolution order: inline content in JSONB index → MinIO storage.
+
+    Auth: X-Agent-Key header.
+    share_identifier: folder UUID (private/sync shares) or web_slug (web-published only).
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    _validate_upload_path(path)
+
+    share = _resolve_share_for_agent(share_identifier, db)
+    agent_key = _auth_agent_key(share, request, db, required_scope="read")
+
+    folder_items = share.web_folder_items or []
+    for item in folder_items:
+        if item.get("path") != path:
+            continue
+
+        content_str = item.get("content")
+        if content_str is not None:
+            mime = item.get("mime", "text/plain; charset=utf-8")
+            content_bytes = (
+                content_str.encode("utf-8") if isinstance(content_str, str) else content_str
+            )
+            agent_key.last_used_at = security.utcnow()
+            db.commit()
+            return Response(content=content_bytes, media_type=mime)
+
+        storage_key = item.get("storage_key")
+        if storage_key:
+            minio_client = _get_minio_client()
+            try:
+                resp = minio_client.get_object(settings.minio_bucket, storage_key)
+                try:
+                    data = resp.read()
+                finally:
+                    resp.close()
+                    resp.release_conn()
+            except S3Error as e:
+                if e.code == "NoSuchKey":
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND, detail="File not found in storage"
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to retrieve file: {e}",
+                )
+            mime = item.get("mime", "application/octet-stream")
+            agent_key.last_used_at = security.utcnow()
+            db.commit()
+            return Response(content=data, media_type=mime)
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found: {path}")

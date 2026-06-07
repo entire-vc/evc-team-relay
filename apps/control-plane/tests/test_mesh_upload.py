@@ -39,14 +39,16 @@ def make_folder_share(db: Session, user: models.User, slug: str = "test-share") 
     return share
 
 
-def make_agent_key(db: Session, share: models.Share) -> tuple[str, models.ShareAgentKey]:
+def make_agent_key(
+    db: Session, share: models.Share, scopes: str = "write"
+) -> tuple[str, models.ShareAgentKey]:
     raw_key = "tr_agent_" + secrets.token_hex(24)
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     ak = models.ShareAgentKey(
         share_id=share.id,
         key_hash=key_hash,
         label="test key",
-        scopes="write",
+        scopes=scopes,
     )
     db.add(ak)
     db.commit()
@@ -491,3 +493,133 @@ class TestAgentKeyLastUsedAt:
         assert resp.status_code == 200, resp.text
         db_session.refresh(ak)
         assert ak.last_used_at is not None
+
+
+# ── Read scope isolation ──────────────────────────────────────────────────────
+
+
+class TestAgentKeyReadScope:
+    """Verify scope enforcement on files-index and download endpoints."""
+
+    def _upload_file(
+        self, client: TestClient, slug: str, raw_key: str, path: str = "note.md"
+    ) -> None:
+        with minio_patch():
+            client.post(
+                f"/v1/web/shares/{slug}/upload?path={path}",
+                content=b"# hello",
+                headers={"X-Agent-Key": raw_key, "Content-Type": "text/markdown"},
+            )
+
+    def test_read_write_key_can_files_index(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="rw-index")
+        write_key, _ = make_agent_key(db_session, share, scopes="write")
+        read_write_key, _ = make_agent_key(db_session, share, scopes="read,write")
+        self._upload_file(client, "rw-index", write_key)
+        resp = client.get(
+            "/v1/web/shares/rw-index/files-index",
+            headers={"X-Agent-Key": read_write_key},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "files" in data
+        assert "note.md" in data["files"]
+
+    def test_write_only_key_cannot_files_index(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="wo-index")
+        raw_key, _ = make_agent_key(db_session, share, scopes="write")
+        resp = client.get(
+            "/v1/web/shares/wo-index/files-index",
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_read_write_key_can_download(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="rw-download")
+        write_key, _ = make_agent_key(db_session, share, scopes="write")
+        read_write_key, _ = make_agent_key(db_session, share, scopes="read,write")
+        self._upload_file(client, "rw-download", write_key)
+        resp = client.get(
+            "/v1/web/shares/rw-download/download?path=note.md",
+            headers={"X-Agent-Key": read_write_key},
+        )
+        assert resp.status_code == 200, resp.text
+        assert b"hello" in resp.content
+
+    def test_write_only_key_cannot_download(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="wo-download")
+        raw_key, _ = make_agent_key(db_session, share, scopes="write")
+        resp = client.get(
+            "/v1/web/shares/wo-download/download?path=note.md",
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_read_only_key_cannot_upload(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="ro-upload")
+        raw_key, _ = make_agent_key(db_session, share, scopes="read")
+        with minio_patch():
+            resp = client.post(
+                "/v1/web/shares/ro-upload/upload?path=file.md",
+                content=b"data",
+                headers={"X-Agent-Key": raw_key, "Content-Type": "text/plain"},
+            )
+        assert resp.status_code == 403, resp.text
+
+    def test_wrong_share_key_returns_403_on_files_index(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share1 = make_folder_share(db_session, test_user, slug="rs-one")
+        share2 = make_folder_share(db_session, test_user, slug="rs-two")
+        raw_key, _ = make_agent_key(db_session, share1, scopes="read,write")
+        resp = client.get(
+            "/v1/web/shares/rs-two/files-index",
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_invalid_key_returns_401_on_files_index(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        make_folder_share(db_session, test_user, slug="bad-key-index")
+        resp = client.get(
+            "/v1/web/shares/bad-key-index/files-index",
+            headers={"X-Agent-Key": "tr_agent_totallywrong"},
+        )
+        assert resp.status_code == 401, resp.text
+
+    def test_create_key_with_read_write_scopes(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="create-rw")
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.post(
+            f"/v1/web/shares/{share.id}/agent-keys",
+            json={"label": "rw-key", "scopes": ["read", "write"]},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert set(data["scopes"]) == {"read", "write"}
+
+    def test_create_key_invalid_scope_rejected(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="bad-scope")
+        token = login(client, "bootstrap@example.com", "super-secret")
+        resp = client.post(
+            f"/v1/web/shares/{share.id}/agent-keys",
+            json={"label": "bad", "scopes": ["admin"]},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 422, resp.text
