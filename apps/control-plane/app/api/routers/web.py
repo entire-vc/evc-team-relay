@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 import re
 from datetime import datetime
+from datetime import timezone as _tz
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from minio import Minio
@@ -27,6 +30,79 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web", tags=["web"])
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _require_private_web_auth(request: Request, share: models.Share, db: Session) -> None:
+    """Raise 401 if the request carries no valid credential for a PRIVATE share.
+
+    Accepts (in order):
+    1. X-Agent-Key header — non-expired, non-revoked key for this share (read or write scope).
+    2. Authorization: Bearer <JWT> — valid user token; caller must be owner or member.
+    3. access_token cookie — same JWT validation (for browser iframes via withCredentials).
+    """
+    # --- Agent key path (header or ?agent_key= query param for iframe src embeds) ---
+    raw_key = request.headers.get("X-Agent-Key") or request.query_params.get("agent_key")
+    if raw_key:
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        agent_key = db.execute(
+            select(models.ShareAgentKey).where(
+                models.ShareAgentKey.key_hash == key_hash,
+                models.ShareAgentKey.share_id == share.id,
+            )
+        ).scalar_one_or_none()
+        if agent_key is not None and agent_key.revoked_at is None:
+            exp = agent_key.expires_at
+            if exp is not None:
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=_tz.utc)
+            if exp is None or exp >= security.utcnow():
+                scopes = {s.strip() for s in agent_key.scopes.split(",") if s.strip()}
+                if scopes & {"read", "write"}:
+                    return  # authenticated via agent key
+
+    # --- User JWT path ---
+    token: str | None = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get("access_token")
+
+    if token:
+        try:
+            payload = security.decode_access_token(token)
+            user_id_str = payload.get("sub")
+            if user_id_str:
+                user_id = UUID(user_id_str)
+                user = db.execute(
+                    select(models.User).where(models.User.id == user_id)
+                ).scalar_one_or_none()
+                if user and user.is_active:
+                    if share.owner_user_id == user_id:
+                        return  # authenticated as owner
+                    member = db.execute(
+                        select(models.ShareMember).where(
+                            models.ShareMember.share_id == share.id,
+                            models.ShareMember.user_id == user_id,
+                        )
+                    ).scalar_one_or_none()
+                    if member is not None:
+                        return  # authenticated as member
+        except Exception:
+            pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required for private share",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _private_embed_headers(settings) -> dict[str, str]:
+    """Return CSP frame-ancestors header for PRIVATE published responses, if configured."""
+    if not settings.web_frame_ancestors:
+        return {}
+    return {"Content-Security-Policy": f"frame-ancestors {settings.web_frame_ancestors.strip()}"}
 
 
 class WebFolderItem(BaseModel):
@@ -90,21 +166,22 @@ class WebAssetUploadRequest(BaseModel):
 @router.get("/shares/{slug}", response_model=WebSharePublic)
 def get_share_by_slug(
     slug: str,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> WebSharePublic:
     """
     Get share information by web slug (public API).
 
     This endpoint is used by the web publishing frontend to fetch share metadata.
-    Access control is handled separately - this only returns metadata for published shares.
 
-    Returns 404 if:
-    - Share does not exist
-    - Share is not web published
-    - Share's web_slug doesn't match
+    For PRIVATE shares:
+    - Without credentials: returns metadata only (web_content/folder_items stripped) so the
+      frontend can show an "authentication required" prompt.
+    - With valid credentials (Bearer JWT, access_token cookie, X-Agent-Key header, or
+      ?agent_key= query param): returns full metadata + frame-ancestors CSP header.
 
     For PROTECTED shares, the client must call POST /web/shares/{slug}/auth separately.
-    For PRIVATE shares, the client must authenticate via normal login flow.
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -126,9 +203,20 @@ def get_share_by_slug(
             detail="Share not found or not published",
         )
 
-    # Parse folder items if present
+    # For PRIVATE shares: attempt auth; strip content if unauthenticated rather than 401-ing,
+    # so the SPA can render a proper "login required" prompt.
+    expose_content = True
+    if share.visibility == models.ShareVisibility.PRIVATE:
+        try:
+            _require_private_web_auth(request, share, db)
+            for header_name, header_value in _private_embed_headers(settings).items():
+                response.headers[header_name] = header_value
+        except HTTPException:
+            expose_content = False
+
+    # Parse folder items if present (only for authenticated PRIVATE or non-PRIVATE shares)
     folder_items = None
-    if share.web_folder_items:
+    if expose_content and share.web_folder_items:
         folder_items = [WebFolderItem(**item) for item in share.web_folder_items]
 
     return WebSharePublic(
@@ -140,10 +228,10 @@ def get_share_by_slug(
         web_noindex=share.web_noindex,
         created_at=share.created_at,
         updated_at=share.updated_at,
-        web_content=share.web_content,
-        web_content_updated_at=share.web_content_updated_at,
+        web_content=share.web_content if expose_content else None,
+        web_content_updated_at=share.web_content_updated_at if expose_content else None,
         web_folder_items=folder_items,
-        web_doc_id=share.web_doc_id,
+        web_doc_id=share.web_doc_id if expose_content else None,
     )
 
 
@@ -282,6 +370,7 @@ class WebRelayTokenResponse(BaseModel):
 def get_web_relay_token(
     slug: str,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> WebRelayTokenResponse:
     """
@@ -291,15 +380,10 @@ def get_web_relay_token(
     Access is validated based on share visibility:
     - PUBLIC: Anyone can get a token
     - PROTECTED: Requires valid web_session cookie
-    - PRIVATE: Not supported via web (returns 403)
+    - PRIVATE: Requires Casdoor/OAuth session (Bearer or access_token cookie) or
+               a valid ShareAgentKey with read or write scope for this share
 
-    Returns 404 if:
-    - Share not found or not published
-    - Share has no web_doc_id configured
-
-    Returns 403 if:
-    - Share is private
-    - Share is protected but no valid session
+    Returns 401 if PRIVATE share and caller is unauthenticated.
     """
     from datetime import timedelta
 
@@ -332,10 +416,9 @@ def get_web_relay_token(
 
     # Check access based on visibility
     if share.visibility == models.ShareVisibility.PRIVATE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Private shares do not support web real-time sync",
-        )
+        _require_private_web_auth(request, share, db)
+        for header_name, header_value in _private_embed_headers(settings).items():
+            response.headers[header_name] = header_value
 
     if share.visibility == models.ShareVisibility.PROTECTED:
         # Validate session cookie
@@ -471,13 +554,18 @@ def get_folder_file_content(
     slug: str,
     path: str = Query(..., description="File path within folder"),
     request: Request = None,
+    response: Response = None,
     db: Session = Depends(get_db),
 ) -> dict:
     """
     Get individual file content from a folder share.
 
     Returns the content stored for a specific file within a folder share.
-    Access control is based on share visibility.
+    Access control is based on share visibility:
+    - PUBLIC: open
+    - PROTECTED: web_session cookie required
+    - PRIVATE: Casdoor/OAuth session (Bearer or access_token cookie)
+              or ShareAgentKey with read/write scope
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -521,49 +609,10 @@ def get_folder_file_content(
             )
 
     if share.visibility == models.ShareVisibility.PRIVATE:
-        # Validate user JWT token
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Private shares require user authentication",
-            )
-
-        # Validate JWT and check user has access to share
-        token = auth_header.split(" ")[1]
-        try:
-            from uuid import UUID
-
-            from app.core import security as sec_module
-
-            payload = sec_module.decode_access_token(token)
-            user_id_str = payload.get("sub")
-            if not user_id_str:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid token",
-                )
-
-            user_id = UUID(user_id_str)
-            # Check if user is owner or member of the share
-            if share.owner_user_id != user_id:
-                member_stmt = select(models.ShareMember).where(
-                    models.ShareMember.share_id == share.id,
-                    models.ShareMember.user_id == user_id,
-                )
-                member = db.execute(member_stmt).scalar_one_or_none()
-                if not member:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="You do not have access to this share",
-                    )
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or expired token",
-            )
+        _require_private_web_auth(request, share, db)
+        if response is not None:
+            for header_name, header_value in _private_embed_headers(settings).items():
+                response.headers[header_name] = header_value
 
     # Find file in folder items
     folder_items = share.web_folder_items or []
@@ -986,49 +1035,7 @@ def serve_web_asset(
             )
 
     if share.visibility == models.ShareVisibility.PRIVATE:
-        # Validate user JWT token
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Private shares require user authentication",
-            )
-
-        # Validate JWT and check user has access to share
-        token = auth_header.split(" ")[1]
-        try:
-            from uuid import UUID
-
-            from app.core import security as sec_module
-
-            payload_jwt = sec_module.decode_access_token(token)
-            user_id_str = payload_jwt.get("sub")
-            if not user_id_str:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid token",
-                )
-
-            user_id = UUID(user_id_str)
-            # Check if user is owner or member of the share
-            if share.owner_user_id != user_id:
-                member_stmt = select(models.ShareMember).where(
-                    models.ShareMember.share_id == share.id,
-                    models.ShareMember.user_id == user_id,
-                )
-                member = db.execute(member_stmt).scalar_one_or_none()
-                if not member:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="You do not have access to this share",
-                    )
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or expired token",
-            )
+        _require_private_web_auth(request, share, db)
 
     # Read from MinIO
     client = _get_minio_client()
@@ -1036,18 +1043,19 @@ def serve_web_asset(
     object_name = f"web-assets/{share.id}/{path}"
 
     try:
-        response = client.get_object(bucket_name, object_name)
+        minio_resp = client.get_object(bucket_name, object_name)
         try:
-            data = response.read()
-            content_type = response.headers.get("Content-Type", "application/octet-stream")
+            data = minio_resp.read()
+            content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
         finally:
-            response.close()
-            response.release_conn()
+            minio_resp.close()
+            minio_resp.release_conn()
 
-        # Set cache headers for public shares
-        headers = {}
+        headers: dict[str, str] = {}
         if share.visibility == models.ShareVisibility.PUBLIC:
             headers["Cache-Control"] = "public, max-age=86400"
+        elif share.visibility == models.ShareVisibility.PRIVATE:
+            headers.update(_private_embed_headers(settings))
 
         return Response(content=data, media_type=content_type, headers=headers)
     except S3Error as e:

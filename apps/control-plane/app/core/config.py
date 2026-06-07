@@ -104,6 +104,13 @@ class Settings(BaseSettings):
         default=None,
         description="Domain for web publishing. If not set, web publishing is disabled.",
     )
+    web_frame_ancestors: str | None = Field(
+        default=None,
+        description=(
+            "Space-separated origins for CSP frame-ancestors on PRIVATE share responses. "
+            "Example: 'https://mesh.entire.host https://mesh-dev.entire.host'"
+        ),
+    )
 
     @property
     def web_publish_enabled(self) -> bool:
