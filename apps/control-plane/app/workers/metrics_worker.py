@@ -17,6 +17,8 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import (
     AGENT_KEYS_TOTAL,
+    DB_CONNECTIONS_ACTIVE,
+    DB_CONNECTIONS_IDLE,
     DB_HEALTH_STATUS,
     METRICS_COLLECTION_ERRORS_TOTAL,
     MINIO_BUCKET_SIZE_BYTES,
@@ -30,7 +32,7 @@ from app.core.metrics import (
     USERS_TOTAL,
 )
 from app.db import models
-from app.db.session import get_sessionmaker
+from app.db.session import get_engine, get_sessionmaker
 
 logger = get_logger(__name__)
 
@@ -54,9 +56,25 @@ def _init_gauge_labels() -> None:
         AGENT_KEYS_TOTAL.labels(status=s).set(0)
     SESSIONS_ACTIVE_TOTAL.set(0)
     DB_HEALTH_STATUS.set(0)
+    DB_CONNECTIONS_ACTIVE.set(0)
+    DB_CONNECTIONS_IDLE.set(0)
 
 
 _init_gauge_labels()
+
+
+def _collect_pool_metrics() -> None:
+    """Read SQLAlchemy connection-pool stats and update db_connections_* gauges.
+
+    Uses the pool's in-memory counters — no DB round-trip needed.
+    Silently skips for SQLite (StaticPool has no checkedout/checkedin).
+    """
+    try:
+        pool = get_engine().pool
+        DB_CONNECTIONS_ACTIVE.set(pool.checkedout())
+        DB_CONNECTIONS_IDLE.set(pool.checkedin())
+    except AttributeError:
+        pass  # SQLite StaticPool — skip without error
 
 
 def _collect_db_metrics() -> None:
@@ -229,6 +247,7 @@ async def run_metrics_collector() -> None:
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _collect_db_metrics)
+            await loop.run_in_executor(None, _collect_pool_metrics)
             await asyncio.wait_for(
                 loop.run_in_executor(None, _collect_minio_metrics),
                 timeout=30.0,

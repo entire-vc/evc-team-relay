@@ -117,6 +117,18 @@ def test_db_metrics_collection_runs_without_error(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_pool_metrics_collection_runs_without_error(client: TestClient) -> None:
+    """Test that _collect_pool_metrics runs without raising (SQLite StaticPool silently skips)."""
+    from app.workers.metrics_worker import _collect_pool_metrics
+
+    _collect_pool_metrics()
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "db_connections_active" in response.text
+    assert "db_connections_idle" in response.text
+
+
 def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
     """Assert users_total gauge value matches seeded active-user fixture count."""
     from app.db import models

@@ -63,6 +63,16 @@ DB_HEALTH_STATUS = Gauge(
     "Database health status (1 = healthy, 0 = unhealthy)",
 )
 
+DB_CONNECTIONS_ACTIVE = Gauge(
+    "db_connections_active",
+    "Number of database connections currently checked out (in use) from the pool",
+)
+
+DB_CONNECTIONS_IDLE = Gauge(
+    "db_connections_idle",
+    "Number of database connections currently idle (checked in) in the pool",
+)
+
 # =============================================================================
 # Business Metrics
 # =============================================================================
