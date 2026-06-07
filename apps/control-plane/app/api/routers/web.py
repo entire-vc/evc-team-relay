@@ -1135,9 +1135,7 @@ async def upload_mesh_artifact(
         )
     share = db.execute(stmt).scalar_one_or_none()
     if not share:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Share not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
