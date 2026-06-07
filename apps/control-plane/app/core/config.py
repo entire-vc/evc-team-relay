@@ -110,6 +110,17 @@ class Settings(BaseSettings):
         """Check if web publishing is enabled."""
         return bool(self.web_publish_domain)
 
+    # Listmonk email list sync
+    listmonk_url: str | None = Field(default=None, description="Listmonk base URL (e.g. https://lists.entire.host)")
+    listmonk_api_user: str = Field(default="api", description="Listmonk API username")
+    listmonk_api_password: str | None = Field(default=None, description="Listmonk API password")
+    listmonk_list_id: int = Field(default=8, description="Listmonk list ID for team-relay-users")
+    listmonk_sync_interval: int = Field(default=300, description="Listmonk sync poll interval in seconds")
+
+    @property
+    def listmonk_enabled(self) -> bool:
+        return bool(self.listmonk_url and self.listmonk_api_password)
+
     # MinIO / S3 settings for asset storage
     minio_endpoint: str = Field(default="localhost:9000", description="MinIO endpoint")
     minio_access_key: str = Field(default="minioadmin", description="MinIO access key")
