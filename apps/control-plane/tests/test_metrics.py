@@ -117,6 +117,17 @@ def test_db_metrics_collection_runs_without_error(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_metrics_contains_db_connections_gauges(client: TestClient) -> None:
+    """Test that db_connections_* pool gauges appear in /metrics output."""
+    response = client.get("/metrics")
+    assert response.status_code == 200
+
+    content = response.text
+    assert "db_connections_active" in content
+    assert "db_connections_idle" in content
+    assert "db_connections_total" in content
+
+
 def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
     """Assert users_total gauge value matches seeded active-user fixture count."""
     from app.db import models

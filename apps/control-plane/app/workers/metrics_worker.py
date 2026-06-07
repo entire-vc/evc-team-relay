@@ -17,6 +17,9 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import (
     AGENT_KEYS_TOTAL,
+    DB_CONNECTIONS_ACTIVE,
+    DB_CONNECTIONS_IDLE,
+    DB_CONNECTIONS_TOTAL,
     DB_HEALTH_STATUS,
     METRICS_COLLECTION_ERRORS_TOTAL,
     MINIO_BUCKET_SIZE_BYTES,
@@ -30,7 +33,7 @@ from app.core.metrics import (
     USERS_TOTAL,
 )
 from app.db import models
-from app.db.session import get_sessionmaker
+from app.db.session import get_engine, get_sessionmaker
 
 logger = get_logger(__name__)
 
@@ -54,6 +57,9 @@ def _init_gauge_labels() -> None:
         AGENT_KEYS_TOTAL.labels(status=s).set(0)
     SESSIONS_ACTIVE_TOTAL.set(0)
     DB_HEALTH_STATUS.set(0)
+    DB_CONNECTIONS_ACTIVE.set(0)
+    DB_CONNECTIONS_IDLE.set(0)
+    DB_CONNECTIONS_TOTAL.set(0)
 
 
 _init_gauge_labels()
@@ -76,6 +82,18 @@ def _collect_db_metrics() -> None:
 def _do_collect_db(db) -> None:  # noqa: ANN001
     now = datetime.now(timezone.utc)
     thirty_days_ago = now - timedelta(days=30)
+
+    # ── db_connections (SQLAlchemy pool stats) ────────────────────────────────
+    try:
+        pool = get_engine().pool
+        active = pool.checkedout()
+        idle = pool.checkedin()
+        DB_CONNECTIONS_ACTIVE.set(active)
+        DB_CONNECTIONS_IDLE.set(idle)
+        DB_CONNECTIONS_TOTAL.set(active + idle)
+    except Exception as exc:
+        METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="pool").inc()
+        logger.warning("metrics_worker: pool stat error", extra={"error": str(exc)})
 
     # ── users_total (active / inactive) ──────────────────────────────────────
     user_rows = db.execute(
