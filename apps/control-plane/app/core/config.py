@@ -118,11 +118,15 @@ class Settings(BaseSettings):
         return bool(self.web_publish_domain)
 
     # Listmonk email list sync
-    listmonk_url: str | None = Field(default=None, description="Listmonk base URL (e.g. https://lists.entire.host)")
+    listmonk_url: str | None = Field(
+        default=None, description="Listmonk base URL (e.g. https://lists.entire.host)"
+    )
     listmonk_api_user: str = Field(default="api", description="Listmonk API username")
     listmonk_api_password: str | None = Field(default=None, description="Listmonk API password")
     listmonk_list_id: int = Field(default=8, description="Listmonk list ID for team-relay-users")
-    listmonk_sync_interval: int = Field(default=300, description="Listmonk sync poll interval in seconds")
+    listmonk_sync_interval: int = Field(
+        default=300, description="Listmonk sync poll interval in seconds"
+    )
 
     @property
     def listmonk_enabled(self) -> bool:

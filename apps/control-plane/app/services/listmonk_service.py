@@ -11,8 +11,7 @@ subscriber: casdoor (bool), registered_at (ISO), has_share (bool).
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx

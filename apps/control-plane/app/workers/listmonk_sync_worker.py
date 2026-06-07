@@ -114,9 +114,7 @@ async def _run_backfill_if_due(svc, db) -> None:
     # Log current list count for acceptance criteria verification
     try:
         list_count = await svc.get_list_subscriber_count()
-        logger.info(
-            "Backfill done: synced=%d, Listmonk list count=%s", count, list_count
-        )
+        logger.info("Backfill done: synced=%d, Listmonk list count=%s", count, list_count)
     except Exception:
         logger.warning("Could not fetch list subscriber count after backfill")
 
