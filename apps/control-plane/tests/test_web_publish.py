@@ -1205,7 +1205,7 @@ def _web_enabled_settings(extra: dict | None = None):
     return type("Settings", (), base)()
 
 
-class TestPrivateShareWebAuth:
+class TestPrivateShareWebAuthMetadata:
     """PRIVATE share web access: token endpoint + metadata content gating."""
 
     @pytest.fixture
