@@ -63,6 +63,21 @@ DB_HEALTH_STATUS = Gauge(
     "Database health status (1 = healthy, 0 = unhealthy)",
 )
 
+DB_CONNECTIONS_ACTIVE = Gauge(
+    "db_connections_active",
+    "Active (checked-out) SQLAlchemy pool connections",
+)
+
+DB_CONNECTIONS_IDLE = Gauge(
+    "db_connections_idle",
+    "Idle (checked-in) SQLAlchemy pool connections",
+)
+
+DB_CONNECTIONS_TOTAL = Gauge(
+    "db_connections_total",
+    "Total SQLAlchemy pool connections (active + idle)",
+)
+
 # =============================================================================
 # Business Metrics
 # =============================================================================
