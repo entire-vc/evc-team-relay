@@ -19,6 +19,7 @@
 	const currentSlug = $derived($page.data?.share?.web_slug);
 	// Current path for highlighting active item in file tree
 	const currentPath = $derived($page.data?.filePath || '');
+	const agentKey = $derived($page.data?.agentKey);
 
 	// Get branding from server info (from layout load)
 	const branding = $derived(data?.serverInfo?.branding);
@@ -66,7 +67,7 @@
 
 <div class="app-container">
 	{#if !isHomePage}
-		<Sidebar {isAuthenticated} {folderItems} {currentSlug} {currentPath} {branding} />
+		<Sidebar {isAuthenticated} {folderItems} {currentSlug} {currentPath} {branding} {agentKey} />
 	{/if}
 	<main class="main-content" class:collapsed={sidebarCollapsed} class:home-page={isHomePage}>
 		<div class="content-wrapper" class:home-page={isHomePage}>

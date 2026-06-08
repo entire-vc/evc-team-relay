@@ -17,6 +17,7 @@
 		currentSlug?: string;
 		currentPath?: string;
 		branding?: Branding;
+		agentKey?: string;
 	}
 
 	let {
@@ -25,7 +26,8 @@
 		folderItems = [],
 		currentSlug = '',
 		currentPath = '',
-		branding
+		branding,
+		agentKey
 	}: Props = $props();
 
 	// Menu state for mobile
@@ -118,7 +120,7 @@
 				<div class="nav-section">
 					<div class="nav-section-header">Contents</div>
 				</div>
-				<FileTree items={folderItems} {currentSlug} {currentPath} onNavigate={closeMenu} />
+				<FileTree items={folderItems} {currentSlug} {currentPath} {agentKey} onNavigate={closeMenu} />
 			{:else}
 				<!-- Collapsed: show icon-only hint -->
 				<div class="collapsed-hint" title="Expand to see contents">

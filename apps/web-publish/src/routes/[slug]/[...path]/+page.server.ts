@@ -75,7 +75,8 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			filePath: slugifyPath(originalPath),
 			parentSlug: slug,
 			folderItems,
-			isFolder: false
+			isFolder: false,
+			agentKey
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;
