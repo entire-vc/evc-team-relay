@@ -100,7 +100,8 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			needsPassword,
 			sessionToken,
 			authToken,
-			canEdit
+			canEdit,
+			agentKey
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;

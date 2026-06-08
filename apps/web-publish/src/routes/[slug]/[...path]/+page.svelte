@@ -17,7 +17,11 @@
 	let { data }: { data: PageData } = $props();
 
 	const shareUrl = $derived($page.url.href);
-	const backUrl = $derived(`/${data.parentSlug}`);
+	const backUrl = $derived(
+		data.agentKey
+			? `/${data.parentSlug}?agent_key=${encodeURIComponent(data.agentKey)}`
+			: `/${data.parentSlug}`
+	);
 	const description = $derived(
 		extractDescription(data.content || '', `View document: ${data.file.path}`)
 	);
@@ -51,7 +55,7 @@
 		<Breadcrumb class="mb-4 text-sm" style="padding-left: 0;">
 			<BreadcrumbList class="gap-1.5 pl-0">
 				<BreadcrumbItem>
-					<BreadcrumbLink href="/{data.parentSlug}" class="text-muted-foreground hover:text-foreground transition-colors">
+					<BreadcrumbLink href={backUrl} class="text-muted-foreground hover:text-foreground transition-colors">
 						{data.share.path}
 					</BreadcrumbLink>
 				</BreadcrumbItem>

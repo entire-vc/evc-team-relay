@@ -14,10 +14,11 @@
 		items: FolderItem[];
 		currentSlug: string;
 		currentPath?: string;
+		agentKey?: string;
 		onNavigate?: () => void;
 	}
 
-	let { items = [], currentSlug = '', currentPath = '', onNavigate }: Props = $props();
+	let { items = [], currentSlug = '', currentPath = '', agentKey, onNavigate }: Props = $props();
 
 	// Build tree from flat items
 	const tree = $derived(buildFileTree(items));
@@ -91,7 +92,8 @@
 	}
 
 	function getItemUrl(node: TreeNode): string {
-		return `/${currentSlug}/${slugifyPath(node.path)}`;
+		const base = `/${currentSlug}/${slugifyPath(node.path)}`;
+		return agentKey ? `${base}?agent_key=${encodeURIComponent(agentKey)}` : base;
 	}
 
 	function isActive(node: TreeNode): boolean {
