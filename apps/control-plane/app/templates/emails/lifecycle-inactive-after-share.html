@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Team Relay — как дела с шарой?{% endblock %}
+{% block content %}
+<p>Привет, {{ name }}!</p>
+
+<p>Ты создал шару, но с тех пор я не вижу активности — хотел уточнить,
+как оно в работе.</p>
+
+<p>Если что-то не пошло — расскажи. Часто вопросы возникают при
+webpublish-публикации или при совместном редактировании с командой.
+Если это стопорит — объясню, покажу.</p>
+
+<p>Что попробовал, что не получилось?</p>
+
+<p>Daedalus<br>Entire VC · Team Relay</p>
+
+<p style="font-size:12px;color:#999;margin-top:32px;padding-top:16px;border-top:1px solid #eee;">
+    Отписаться от советов:
+    <a href="{{ unsubscribe_url }}" style="color:#999;">{{ unsubscribe_url }}</a>
+</p>
+{% endblock %}

@@ -40,6 +40,8 @@ EMAIL_TYPE_PASSWORD_RESET = "password_reset"
 EMAIL_TYPE_EMAIL_VERIFICATION = "email_verification"
 EMAIL_TYPE_SECURITY_NEW_SESSION = "security_new_session"
 EMAIL_TYPE_SECURITY_PASSWORD_CHANGED = "security_password_changed"
+EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H = "lifecycle_no_share_24h"
+EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE = "lifecycle_inactive_after_share"
 
 # Retry intervals for email queue (seconds)
 EMAIL_RETRY_INTERVALS = [60, 300, 900]  # 1min, 5min, 15min

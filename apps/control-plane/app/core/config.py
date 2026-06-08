@@ -139,6 +139,22 @@ class Settings(BaseSettings):
     minio_secure: bool = Field(default=False, description="Use TLS for MinIO")
     minio_bucket: str = Field(default="relay-assets", description="MinIO bucket name")
 
+    # Lifecycle email nudge engine
+    lifecycle_enabled: bool = Field(
+        default=False, description="Feature flag — activate after E2E smoke"
+    )
+    lifecycle_launch_date: str | None = Field(
+        default=None,
+        description="ISO datetime cutoff; only users registered on/after this date are nudged",
+    )
+    lifecycle_worker_interval: int = Field(default=3600, description="Poll interval seconds")
+    lifecycle_from_name: str | None = Field(default=None, description="From-name (lead persona)")
+    lifecycle_from_email: str | None = Field(default=None, description="From-address (lead email)")
+    lifecycle_unsubscribe_secret: str = Field(
+        default="change-me-in-prod",
+        description="HMAC-SHA256 key for unsubscribe tokens",
+    )
+
     # Agent key limits
     agent_key_max_per_share: int = Field(default=20, description="Max active agent keys per share")
     agent_key_creation_rate_per_hour: int = Field(

@@ -191,6 +191,35 @@ services:
       control-plane-migrate:
         condition: service_completed_successfully
 
+  lifecycle-worker:
+    build:
+      context: ../apps/control-plane
+      dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LIFECYCLE_ENABLED: ${LIFECYCLE_ENABLED:-false}
+      LIFECYCLE_LAUNCH_DATE: ${LIFECYCLE_LAUNCH_DATE:-}
+      LIFECYCLE_WORKER_INTERVAL: ${LIFECYCLE_WORKER_INTERVAL:-3600}
+      LIFECYCLE_FROM_NAME: ${LIFECYCLE_FROM_NAME:-}
+      LIFECYCLE_FROM_EMAIL: ${LIFECYCLE_FROM_EMAIL:-}
+      LIFECYCLE_UNSUBSCRIBE_SECRET: ${LIFECYCLE_UNSUBSCRIBE_SECRET:-change-me}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
+    command: ["python", "-m", "app.workers.lifecycle_worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-plane-migrate:
+        condition: service_completed_successfully
+
   # placeholder: relay server (будет подключён/собран агентом)
   relay-server:
     build:
