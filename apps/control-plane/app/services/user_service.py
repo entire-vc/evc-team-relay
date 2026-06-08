@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core import security
 from app.db import models
 from app.schemas import user as user_schema
-from app.services import audit_service
+from app.services import argus_service, audit_service
 
 
 def _normalize_email(email: str) -> str:
@@ -48,6 +48,9 @@ def create_user(
         target_user_id=user.id,
         details={"email": user.email, "is_admin": user.is_admin},
     )
+
+    # Register in Argus CRM for cross-product ownership / suppression tracking (S7).
+    argus_service.register_product_user(email=user.email, display_name=user.email.split("@")[0])
 
     return user
 
