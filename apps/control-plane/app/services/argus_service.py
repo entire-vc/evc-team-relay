@@ -21,7 +21,6 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 _PRODUCT = "team-relay"
-_CHANNEL = "email"
 
 
 def _client() -> httpx.Client:
