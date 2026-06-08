@@ -24,11 +24,13 @@ class TestArgusServiceDisabled:
     def setup_method(self):
         os.environ["ARGUS_ENABLED"] = "false"
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def teardown_method(self):
         os.environ.pop("ARGUS_ENABLED", None)
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def test_register_product_user_noop(self):
@@ -53,12 +55,14 @@ class TestArgusServiceEnabled:
         os.environ["ARGUS_API_URL"] = "http://argus-test:8000"
         os.environ["ARGUS_SERVICE_KEY"] = "test-key"
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def teardown_method(self):
         for key in ("ARGUS_ENABLED", "ARGUS_API_URL", "ARGUS_SERVICE_KEY"):
             os.environ.pop(key, None)
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def test_is_suppressed_true(self):
@@ -155,12 +159,14 @@ class TestLifecycleArgusSuppressionT1:
         os.environ["ARGUS_ENABLED"] = "true"
         os.environ["ARGUS_API_URL"] = "http://argus-test:8000"
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def teardown_method(self):
         for key in ("ARGUS_ENABLED", "ARGUS_API_URL"):
             os.environ.pop(key, None)
         from app.core.config import get_settings
+
         get_settings.cache_clear()
 
     def test_suppressed_user_skipped(self):
@@ -172,18 +178,10 @@ class TestLifecycleArgusSuppressionT1:
         user = _make_user("suppressed@example.com")
 
         with (
-            patch(
-                "app.services.lifecycle_service._already_handled", return_value=False
-            ),
-            patch(
-                "app.services.lifecycle_service._lifecycle_opt_in", return_value=True
-            ),
-            patch(
-                "app.services.lifecycle_service._total_sent_count", return_value=0
-            ),
-            patch(
-                "app.services.argus_service.is_suppressed", return_value=True
-            ),
+            patch("app.services.lifecycle_service._already_handled", return_value=False),
+            patch("app.services.lifecycle_service._lifecycle_opt_in", return_value=True),
+            patch("app.services.lifecycle_service._total_sent_count", return_value=0),
+            patch("app.services.argus_service.is_suppressed", return_value=True),
             patch("app.services.lifecycle_service.get_email_service") as mock_email,
         ):
             # Patch the DB query to return our user
@@ -203,28 +201,16 @@ class TestLifecycleArgusSuppressionT1:
         user = _make_user("active@example.com")
 
         with (
-            patch(
-                "app.services.lifecycle_service._already_handled", return_value=False
-            ),
-            patch(
-                "app.services.lifecycle_service._lifecycle_opt_in", return_value=True
-            ),
-            patch(
-                "app.services.lifecycle_service._total_sent_count", return_value=0
-            ),
-            patch(
-                "app.services.argus_service.is_suppressed", return_value=False
-            ),
+            patch("app.services.lifecycle_service._already_handled", return_value=False),
+            patch("app.services.lifecycle_service._lifecycle_opt_in", return_value=True),
+            patch("app.services.lifecycle_service._total_sent_count", return_value=0),
+            patch("app.services.argus_service.is_suppressed", return_value=False),
             patch(
                 "app.services.lifecycle_service._render_template",
                 return_value=("<html>", "text"),
             ),
-            patch(
-                "app.services.lifecycle_service._template_context", return_value={}
-            ),
-            patch(
-                "app.services.lifecycle_service._mark_sent"
-            ),
+            patch("app.services.lifecycle_service._template_context", return_value={}),
+            patch("app.services.lifecycle_service._mark_sent"),
             patch("app.services.lifecycle_service.get_email_service") as mock_email,
         ):
             db.execute.return_value.scalars.return_value.all.return_value = [user]
