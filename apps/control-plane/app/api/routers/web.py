@@ -1141,7 +1141,7 @@ async def upload_mesh_artifact(
             models.Share.web_slug == share_identifier,
             models.Share.web_published == True,  # noqa: E712
         )
-    share = db.execute(stmt).scalar_one_or_none()
+    share = db.execute(stmt.with_for_update()).scalar_one_or_none()
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:
@@ -1423,7 +1423,7 @@ async def sync_upload(
             models.Share.web_published == True,  # noqa: E712
         )
 
-    share = db.execute(_stmt).scalar_one_or_none()
+    share = db.execute(_stmt.with_for_update()).scalar_one_or_none()
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:
