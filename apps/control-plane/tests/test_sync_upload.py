@@ -304,6 +304,53 @@ class TestSyncUploadAuth:
         assert resp.status_code == 403
 
 
+class TestSyncUploadRaceFix:
+    """Regression tests for the JSONB read-modify-write race condition fix (with_for_update).
+
+    True concurrent testing requires PostgreSQL — SQLite serializes all connections via
+    StaticPool. These tests verify that sequential uploads to the same share all appear
+    in web_folder_items (the invariant the FOR UPDATE lock preserves in production).
+    """
+
+    def test_five_sequential_uploads_all_indexed(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="su-race")
+        raw_key, _ = make_agent_key(db_session, share)
+        paths = [f"artifacts/task1/file{i}.md" for i in range(5)]
+        with minio_patch():
+            for p in paths:
+                resp = client.post(
+                    f"{BASE}/{share.id}/sync-upload?path={p}",
+                    content=f"content of {p}".encode(),
+                    headers={"X-Agent-Key": raw_key, "Content-Type": "text/markdown"},
+                )
+                assert resp.status_code == 200, f"upload failed for {p}: {resp.text}"
+        db_session.refresh(share)
+        indexed = {i["path"] for i in (share.web_folder_items or [])}
+        for p in paths:
+            assert p in indexed, f"Missing from index after sequential uploads: {p}"
+
+    def test_upload_endpoint_five_sequential_uploads_all_indexed(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="su-race-upload")
+        raw_key, _ = make_agent_key(db_session, share)
+        paths = [f"artifacts/task2/file{i}.txt" for i in range(5)]
+        with minio_patch():
+            for p in paths:
+                resp = client.post(
+                    f"/v1/web/shares/{share.id}/upload?path={p}",
+                    content=f"content {p}".encode(),
+                    headers={"X-Agent-Key": raw_key, "Content-Type": "text/plain"},
+                )
+                assert resp.status_code == 200, f"upload failed for {p}: {resp.text}"
+        db_session.refresh(share)
+        indexed = {i["path"] for i in (share.web_folder_items or [])}
+        for p in paths:
+            assert p in indexed, f"Missing from index after sequential uploads: {p}"
+
+
 class TestSyncUploadValidation:
     def test_path_traversal_returns_400(
         self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
