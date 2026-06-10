@@ -157,6 +157,40 @@ class TestMeshUpload:
         assert data["path"] == "Notes/hello.md"
         assert data["size_bytes"] == len(b"# Hello world")
 
+    def test_text_upload_public_url_no_assets_prefix(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="pub-text")
+        raw_key, _ = make_agent_key(db_session, share)
+        with minio_patch():
+            resp = client.post(
+                "/v1/web/shares/pub-text/upload?path=Notes/report.md",
+                content=b"# Report",
+                headers={"X-Agent-Key": raw_key, "Content-Type": "text/markdown"},
+            )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["public_url"] == "https://docs.test.com/pub-text/Notes/report.md"
+        assert "/_assets/" not in data["public_url"]
+
+    def test_binary_upload_public_url_has_assets_prefix(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        share = make_folder_share(db_session, test_user, slug="pub-bin")
+        raw_key, _ = make_agent_key(db_session, share)
+        with minio_patch():
+            resp = client.post(
+                "/v1/web/shares/pub-bin/upload?path=artifacts/task123/image.jpg",
+                content=b"\xff\xd8\xff",  # minimal JPEG header
+                headers={"X-Agent-Key": raw_key, "Content-Type": "image/jpeg"},
+            )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["public_url"] == (
+            "https://docs.test.com/pub-bin/_assets/artifacts/task123/image.jpg"
+        )
+        assert "/_assets/" in data["public_url"]
+
     def test_valid_upload_item_in_folder_items(
         self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
     ):
