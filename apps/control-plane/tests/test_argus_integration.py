@@ -137,6 +137,70 @@ class TestArgusServiceEnabled:
             assert mock_thread_cls.call_args.kwargs.get("daemon") is True
             mock_thread.start.assert_called_once()
 
+    def test_register_sends_registered_at_and_casdoor_id(self):
+        """_register_blocking includes registered_at + casdoor_id in JSON payload."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        ts = datetime(2024, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_resp
+
+            argus_service._register_blocking(
+                "user@example.com",
+                "User",
+                registered_at=ts,
+                casdoor_id="casdoor-sub-123",
+            )
+
+        mock_client.post.assert_called_once_with(
+            "/api/outreach/register_product_user",
+            json={
+                "email": "user@example.com",
+                "display_name": "User",
+                "product": "team-relay",
+                "registered_at": ts.isoformat(),
+                "casdoor_id": "casdoor-sub-123",
+            },
+        )
+
+    def test_register_omits_none_optional_fields(self):
+        """_register_blocking omits registered_at/casdoor_id when not provided."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_resp
+
+            argus_service._register_blocking("user@example.com", "User")
+
+        called_json = mock_client.post.call_args.kwargs["json"]
+        assert "registered_at" not in called_json
+        assert "casdoor_id" not in called_json
+
+    def test_register_sends_only_registered_at_without_casdoor_id(self):
+        """_register_blocking sends registered_at alone when casdoor_id is absent."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        ts = datetime(2024, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_resp
+
+            argus_service._register_blocking("user@example.com", "User", registered_at=ts)
+
+        called_json = mock_client.post.call_args.kwargs["json"]
+        assert called_json["registered_at"] == ts.isoformat()
+        assert "casdoor_id" not in called_json
+
 
 # ---------------------------------------------------------------------------
 # lifecycle_service suppression integration tests

@@ -185,6 +185,36 @@ class TestOAuthService:
         oauth_account = oauth_service.find_user_by_oauth(db_session, provider.id, "oauth_user_456")
         assert oauth_account is not None
 
+    def test_create_user_from_oauth_registers_argus_with_casdoor_id(self, db_session: Session):
+        """create_user_from_oauth fires register_product_user with casdoor_id + registered_at."""
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client",
+            client_secret_encrypted="secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+
+        with patch("app.services.oauth_service.argus_service.register_product_user") as mock_reg:
+            user = oauth_service.create_user_from_oauth(
+                db_session,
+                email="oauth@example.com",
+                name="OAuth User",
+                provider_id=provider.id,
+                provider_user_id="casdoor-sub-xyz",
+            )
+
+        mock_reg.assert_called_once()
+        call_kwargs = mock_reg.call_args.kwargs
+        assert call_kwargs["email"] == "oauth@example.com"
+        assert call_kwargs["casdoor_id"] == "casdoor-sub-xyz"
+        assert call_kwargs["registered_at"] == user.created_at
+
     def test_link_oauth_account(self, db_session: Session):
         """Test linking OAuth account to existing user."""
         # Create user
