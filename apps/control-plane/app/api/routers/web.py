@@ -1291,7 +1291,10 @@ async def upload_mesh_artifact(
         domain = settings.web_publish_domain
         if not domain.startswith("http"):
             domain = f"https://{domain}"
-        public_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+        if is_text:
+            public_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+        else:
+            public_url = f"{domain.rstrip('/')}/{share.web_slug}/_assets/{path}"
 
     return {
         "ok": True,
