@@ -1195,7 +1195,7 @@ async def upload_mesh_artifact(
     if len(body) > MAX_MESH_UPLOAD_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Max size: {MAX_MESH_UPLOAD_SIZE // (1024*1024)}MB",
+            detail=f"File too large. Max size: {MAX_MESH_UPLOAD_SIZE // (1024 * 1024)}MB",
         )
 
     mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()

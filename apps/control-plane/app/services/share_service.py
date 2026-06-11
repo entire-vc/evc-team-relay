@@ -265,10 +265,7 @@ def update_share(
         new_has_items = len(payload.web_folder_items) > 0
         changes["web_folder_items"] = {"old": old_has_items, "new": new_has_items}
         if payload.web_folder_items:
-            existing_by_path = {
-                item.get("path"): item
-                for item in (share.web_folder_items or [])
-            }
+            existing_by_path = {item.get("path"): item for item in (share.web_folder_items or [])}
             new_items = []
             for item in payload.web_folder_items:
                 new_item = item.model_dump()

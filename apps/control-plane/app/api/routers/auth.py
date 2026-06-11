@@ -371,8 +371,7 @@ def password_reset_form(
             context={
                 "token": token,
                 "error": (
-                    "This password reset link is invalid or has expired. "
-                    "Please request a new one."
+                    "This password reset link is invalid or has expired. Please request a new one."
                 ),
                 "success": False,
             },
@@ -426,8 +425,7 @@ async def confirm_password_reset_form(
             context={
                 "token": token,
                 "error": (
-                    "This password reset link is invalid or has expired. "
-                    "Please request a new one."
+                    "This password reset link is invalid or has expired. Please request a new one."
                 ),
                 "success": False,
             },
