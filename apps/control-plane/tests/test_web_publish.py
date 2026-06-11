@@ -1752,3 +1752,126 @@ class TestPrivateShareWebAuth:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 403
+
+
+class TestFolderItemsContentMerge:
+    """PATCH /v1/shares/{id} with web_folder_items must MERGE, not REPLACE (AC1–AC3)."""
+
+    def _login(self, client: TestClient, user: models.User) -> str:
+        r = client.post("/auth/login", json={"email": user.email, "password": "test123456"})
+        assert r.status_code == 200
+        return r.json()["access_token"]
+
+    @pytest.fixture
+    def folder_share(self, db_session: Session, test_user: models.User) -> models.Share:
+        share = models.Share(
+            kind=models.ShareKind.FOLDER,
+            path="Vault/",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="content-merge-share",
+            web_folder_items=[
+                {
+                    "path": "keep.md",
+                    "name": "keep.md",
+                    "type": "doc",
+                    "content": "# Original",
+                    "storage_key": "web-assets/keep-key",
+                    "sha256": "abc123",
+                },
+                {
+                    "path": "remove.md",
+                    "name": "remove.md",
+                    "type": "doc",
+                    "content": "# Goes away",
+                },
+            ],
+        )
+        db_session.add(share)
+        db_session.commit()
+        db_session.refresh(share)
+        return share
+
+    def test_patch_preserves_content_on_existing_path(
+        self,
+        client: TestClient,
+        db_session: Session,
+        folder_share: models.Share,
+        test_user: models.User,
+    ):
+        """AC1: PATCH with web_folder_items does not erase content/storage_key/sha256."""
+        token = self._login(client, test_user)
+
+        r = client.patch(
+            f"/v1/shares/{folder_share.id}",
+            json={
+                "web_folder_items": [
+                    {"path": "keep.md", "name": "keep.md", "type": "doc"},
+                ]
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        db_session.refresh(folder_share)
+        items = {i["path"]: i for i in (folder_share.web_folder_items or [])}
+
+        assert "keep.md" in items
+        assert items["keep.md"].get("content") == "# Original"
+        assert items["keep.md"].get("storage_key") == "web-assets/keep-key"
+        assert items["keep.md"].get("sha256") == "abc123"
+
+    def test_patch_new_path_has_no_content(
+        self,
+        client: TestClient,
+        db_session: Session,
+        folder_share: models.Share,
+        test_user: models.User,
+    ):
+        """AC2: New paths added via PATCH arrive without content."""
+        token = self._login(client, test_user)
+
+        r = client.patch(
+            f"/v1/shares/{folder_share.id}",
+            json={
+                "web_folder_items": [
+                    {"path": "new.md", "name": "new.md", "type": "doc"},
+                ]
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        db_session.refresh(folder_share)
+        items = {i["path"]: i for i in (folder_share.web_folder_items or [])}
+
+        assert "new.md" in items
+        assert "content" not in items["new.md"]
+
+    def test_patch_omitted_path_is_removed(
+        self,
+        client: TestClient,
+        db_session: Session,
+        folder_share: models.Share,
+        test_user: models.User,
+    ):
+        """AC3: Paths absent from the new payload are removed from web_folder_items."""
+        token = self._login(client, test_user)
+
+        r = client.patch(
+            f"/v1/shares/{folder_share.id}",
+            json={
+                "web_folder_items": [
+                    {"path": "keep.md", "name": "keep.md", "type": "doc"},
+                ]
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
+        db_session.refresh(folder_share)
+        paths = {i["path"] for i in (folder_share.web_folder_items or [])}
+
+        assert "remove.md" not in paths
+        assert "keep.md" in paths

@@ -259,13 +259,22 @@ def update_share(
         share.web_content = payload.web_content if payload.web_content else None
         share.web_content_updated_at = datetime.now(timezone.utc) if payload.web_content else None
 
-    # Handle web folder items update
+    # Handle web folder items update — MERGE to preserve content/source/storage_key/sha256
     if payload.web_folder_items is not None:
         old_has_items = share.web_folder_items is not None
         new_has_items = len(payload.web_folder_items) > 0
         changes["web_folder_items"] = {"old": old_has_items, "new": new_has_items}
         if payload.web_folder_items:
-            share.web_folder_items = [item.model_dump() for item in payload.web_folder_items]
+            existing_by_path = {item.get("path"): item for item in (share.web_folder_items or [])}
+            new_items = []
+            for item in payload.web_folder_items:
+                new_item = item.model_dump()
+                existing = existing_by_path.get(new_item["path"], {})
+                for key in ("content", "source", "storage_key", "sha256"):
+                    if key in existing:
+                        new_item[key] = existing[key]
+                new_items.append(new_item)
+            share.web_folder_items = new_items
         else:
             share.web_folder_items = None
 
