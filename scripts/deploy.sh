@@ -55,7 +55,7 @@ if [ "$DRY_RUN" = "true" ]; then
 fi
 
 log "restarting app services"
-docker compose up -d control-plane webhook-worker email-worker
+docker compose up -d --force-recreate control-plane webhook-worker email-worker
 
 # 5. Post-deploy health check (best-effort, non-fatal — restart already issued).
 log "waiting for control-plane health"
