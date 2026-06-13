@@ -1,8 +1,9 @@
-"""Argus CRM integration for Team Relay (S7).
+"""Argus CRM integration for Team Relay (S7/S2-3).
 
 Two public functions:
-  register_product_user(email, display_name) — fire-and-forget on TR registration.
-    Upserts the Argus contact and logs an ownership interaction (60d window).
+  register_product_user(email, display_name, registered_at, casdoor_id) —
+    fire-and-forget on TR registration. Upserts the Argus contact, logs an
+    ownership interaction with occurred_at=registered_at, and stores casdoor_id.
 
   is_suppressed(email) -> bool — blocking pre-send check in lifecycle worker.
     Returns True if the contact has a cross-product opt-out (SO-3 rule-5).
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 
 import httpx
 
@@ -35,12 +37,22 @@ def _client() -> httpx.Client:
     )
 
 
-def _register_blocking(email: str, display_name: str) -> None:
+def _register_blocking(
+    email: str,
+    display_name: str,
+    registered_at: datetime | None = None,
+    casdoor_id: str | None = None,
+) -> None:
     try:
         with _client() as client:
+            payload: dict = {"email": email, "display_name": display_name, "product": _PRODUCT}
+            if registered_at is not None:
+                payload["registered_at"] = registered_at.isoformat()
+            if casdoor_id is not None:
+                payload["casdoor_id"] = casdoor_id
             resp = client.post(
                 "/api/outreach/register_product_user",
-                json={"email": email, "display_name": display_name, "product": _PRODUCT},
+                json=payload,
             )
             if resp.status_code not in (200, 201):
                 logger.warning(
@@ -52,18 +64,36 @@ def _register_blocking(email: str, display_name: str) -> None:
         logger.warning("argus register_product_user error", exc_info=True)
 
 
-def register_product_user(email: str, display_name: str) -> None:
+def register_product_user(
+    email: str,
+    display_name: str,
+    registered_at: datetime | None = None,
+    casdoor_id: str | None = None,
+) -> None:
     """Non-blocking: register TR user in Argus CRM.
 
     Spawns a daemon thread so registration latency never blocks the HTTP response.
     Errors are logged but never raised.
+
+    Args:
+        email: User email address.
+        display_name: Display name (used as Argus contact name).
+        registered_at: Timestamp of TR/Casdoor registration; Argus uses this as
+            occurred_at for the ownership interaction. Defaults to now() in Argus.
+        casdoor_id: Casdoor subject ID (provider_user_id from UserOAuthAccount).
+            Stored as an identity in Argus to support cross-product dedup.
     """
     settings = get_settings()
     if not settings.argus_enabled:
         return
     threading.Thread(
         target=_register_blocking,
-        args=(email, display_name),
+        kwargs={
+            "email": email,
+            "display_name": display_name,
+            "registered_at": registered_at,
+            "casdoor_id": casdoor_id,
+        },
         daemon=True,
         name="argus-register",
     ).start()

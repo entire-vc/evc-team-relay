@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import models
 from app.schemas import oauth as oauth_schema
+from app.services import argus_service
 
 
 def generate_code_verifier() -> str:
@@ -442,6 +443,14 @@ def create_user_from_oauth(
     db.add(oauth_account)
     db.commit()
     db.refresh(user)
+
+    # Register in Argus CRM with casdoor_id for cross-product dedup (S2-3).
+    argus_service.register_product_user(
+        email=email,
+        display_name=name or email.split("@")[0],
+        registered_at=user.created_at,
+        casdoor_id=provider_user_id,
+    )
 
     return user
 

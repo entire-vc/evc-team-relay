@@ -49,8 +49,12 @@ def create_user(
         details={"email": user.email, "is_admin": user.is_admin},
     )
 
-    # Register in Argus CRM for cross-product ownership / suppression tracking (S7).
-    argus_service.register_product_user(email=user.email, display_name=user.email.split("@")[0])
+    # Register in Argus CRM for cross-product ownership / suppression tracking (S7/S2-3).
+    argus_service.register_product_user(
+        email=user.email,
+        display_name=user.email.split("@")[0],
+        registered_at=user.created_at,
+    )
 
     return user
 
