@@ -503,20 +503,7 @@ def sync_folder_file_content(
             detail="This endpoint is only for folder shares",
         )
 
-    # For now, require authentication via session cookie
-    # TODO: Support plugin authentication via JWT token
-    session_token = request.cookies.get("web_session")
-    if not session_token:
-        # Try to validate JWT token from Authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-            )
-        # For now, just check if token exists - proper validation would require
-        # checking user ownership of the share
-        # This will be handled by plugin sending proper JWT tokens
+    _require_private_web_auth(request, share, db)
 
     # Update folder items with content
     folder_items = share.web_folder_items or []

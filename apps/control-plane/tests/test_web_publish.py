@@ -913,6 +913,23 @@ class TestWebRelayToken:
 class TestFolderFileContentSync:
     """Test folder file content sync endpoints (v1.8)."""
 
+    def _make_agent_key(self, db, share, scopes="write"):
+        import hashlib as _hl
+        import secrets as _sec
+
+        raw = "tr_agent_" + _sec.token_hex(24)
+        key_hash = _hl.sha256(raw.encode()).hexdigest()
+        ak = models.ShareAgentKey(
+            share_id=share.id,
+            key_hash=key_hash,
+            label="test-key",
+            scopes=scopes,
+        )
+        db.add(ak)
+        db.commit()
+        db.refresh(ak)
+        return raw, ak
+
     @pytest.fixture
     def folder_share(self, db_session: Session, test_user: models.User) -> models.Share:
         """Create a folder share with some items."""
@@ -944,25 +961,42 @@ class TestFolderFileContentSync:
         assert response.status_code == 404
 
     def test_sync_folder_file_content_enabled(
-        self, client: TestClient, folder_share: models.Share, monkeypatch
+        self, client: TestClient, db_session: Session, folder_share: models.Share, monkeypatch
     ):
-        """Test syncing file content to folder share."""
-        # Enable web publishing
+        """Test syncing file content to folder share via valid X-Agent-Key."""
         monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
         from app.core.config import get_settings
 
         get_settings.cache_clear()
 
-        # Sync content (with mock auth for now)
+        raw_key, _ = self._make_agent_key(db_session, folder_share, scopes="write")
         response = client.post(
             f"/v1/web/shares/{folder_share.web_slug}/files?path=doc1.md",
             json={"content": "# Document 1\n\nThis is the content."},
-            headers={"Authorization": "Bearer mock-token"},
+            headers={"X-Agent-Key": raw_key},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["path"] == "doc1.md"
         assert "message" in data
+
+        get_settings.cache_clear()
+
+    def test_sync_folder_file_content_fake_bearer_returns_401(
+        self, client: TestClient, folder_share: models.Share, monkeypatch
+    ):
+        """Regression: POST /files with fake Bearer token must return 401 (not 200)."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        response = client.post(
+            f"/v1/web/shares/{folder_share.web_slug}/files?path=doc1.md",
+            json={"content": "injected"},
+            headers={"Authorization": "Bearer FAKE_TOKEN_INVALID"},
+        )
+        assert response.status_code == 401
 
         get_settings.cache_clear()
 
