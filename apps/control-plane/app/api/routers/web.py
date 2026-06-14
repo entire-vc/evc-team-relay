@@ -1429,17 +1429,23 @@ async def sync_upload(
 
     mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
     sha256 = hashlib.sha256(body).hexdigest()
+    is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
 
-    # CAS storage: key is content-addressed by SHA256, stored alongside relay-server's data.
+    # Storage: text files go to CAS (dedup for Obsidian plugin); binary assets go to
+    # web-assets/{share_id}/{path} so the _assets/ serve endpoint can find them by path.
     minio_client = _get_minio_client()
     bucket_name = settings.minio_bucket
     _ensure_minio_bucket(minio_client, bucket_name)
 
-    cas_key = f"sync-uploads/{share.id}/{sha256}"
+    if is_text:
+        storage_key = f"sync-uploads/{share.id}/{sha256}"
+    else:
+        storage_key = f"web-assets/{share.id}/{path}"
+
     try:
         minio_client.put_object(
             bucket_name,
-            cas_key,
+            storage_key,
             io.BytesIO(body),
             length=len(body),
             content_type=mime,
@@ -1466,7 +1472,6 @@ async def sync_upload(
     from sqlalchemy.orm.attributes import flag_modified
 
     now_iso = security.utcnow().isoformat()
-    is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
     inline_content = (
         body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
     )
@@ -1484,7 +1489,7 @@ async def sync_upload(
                     "size": len(body),
                     "sha256": sha256,
                     "modified_at": now_iso,
-                    "storage_key": cas_key,
+                    "storage_key": storage_key,
                     "content": inline_content,
                 }
             )
@@ -1502,7 +1507,7 @@ async def sync_upload(
                 "size": len(body),
                 "sha256": sha256,
                 "modified_at": now_iso,
-                "storage_key": cas_key,
+                "storage_key": storage_key,
                 "content": inline_content,
             }
         )
@@ -1522,7 +1527,10 @@ async def sync_upload(
         domain = settings.web_publish_domain
         if not domain.startswith("http"):
             domain = f"https://{domain}"
-        web_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+        if is_text:
+            web_url = f"{domain.rstrip('/')}/{share.web_slug}/{path}"
+        else:
+            web_url = f"{domain.rstrip('/')}/{share.web_slug}/_assets/{path}"
 
     return {
         "sync_url": sync_url,
