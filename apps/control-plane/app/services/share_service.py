@@ -278,6 +278,10 @@ def update_share(
         else:
             share.web_folder_items = None
 
+    # Handle explicit web_content_updated_at bump — plugin sets this after initial full-sync completes
+    if payload.web_content_updated_at is not None:
+        share.web_content_updated_at = payload.web_content_updated_at
+
     # Handle web doc_id update (y-sweet document ID for real-time sync)
     if payload.web_doc_id is not None:
         old_doc_id = share.web_doc_id
