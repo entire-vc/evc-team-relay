@@ -168,13 +168,13 @@ def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
     lines = [
         ln
         for ln in content.splitlines()
-        if 'users_total{' in ln
+        if "users_total{" in ln
         and 'status="active"' in ln
         and 'role="user"' in ln
         and 'twofa_enabled="false"' in ln
         and not ln.startswith("#")
     ]
-    assert lines, 'users_total with status=active,role=user,twofa_enabled=false not found'
+    assert lines, "users_total with status=active,role=user,twofa_enabled=false not found"
     assert float(lines[0].split()[-1]) >= 1
 
 
