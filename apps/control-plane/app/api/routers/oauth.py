@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.metrics import OAUTH_LOGINS_TOTAL
 from app.db import models
 from app.db.session import get_db
 from app.schemas import oauth as oauth_schema
@@ -197,6 +198,7 @@ async def callback(
                 },
             )
         else:
+            OAUTH_LOGINS_TOTAL.labels(provider=provider, status="failure").inc()
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Auto-registration is disabled. Please contact administrator.",
@@ -222,6 +224,7 @@ async def callback(
 
     # Check if user is active
     if not user.is_active:
+        OAUTH_LOGINS_TOTAL.labels(provider=provider, status="failure").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
@@ -241,6 +244,8 @@ async def callback(
         ip_address=request.client.host if request.client else None,
         expires_days=settings.refresh_token_expire_days,
     )
+
+    OAUTH_LOGINS_TOTAL.labels(provider=provider, status="success").inc()
 
     # Log OAuth login
     audit_service.log_action(

@@ -85,7 +85,7 @@ DB_CONNECTIONS_TOTAL = Gauge(
 USERS_TOTAL = Gauge(
     "users_total",
     "Total number of users",
-    ["status"],  # active, inactive
+    ["status", "role", "twofa_enabled"],  # active/inactive, admin/user, true/false
 )
 
 USERS_ACTIVE_30D = Gauge(
@@ -161,12 +161,14 @@ SESSION_OPERATIONS_TOTAL = Counter(
 
 SHARE_FILES_TOTAL = Gauge(
     "share_files_total",
-    "Total number of items in web-published folder shares",
+    "Number of items in a web-published folder share (top-20 by count)",
+    ["share_id"],
 )
 
 SHARE_SIZE_BYTES = Gauge(
     "share_size_bytes",
-    "Total content size in bytes of web-published doc shares",
+    "Content size in bytes of a web-published doc share (top-20 by size)",
+    ["share_id"],
 )
 
 AGENT_KEYS_TOTAL = Gauge(

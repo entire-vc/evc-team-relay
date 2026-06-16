@@ -57,7 +57,7 @@ class ShareUpdate(BaseModel):
     web_content: str | None = None  # Document content for web publishing
     web_folder_items: list[FolderItem] | None = None  # Folder contents for web publishing
     web_doc_id: str | None = None  # Y-sweet document ID for real-time sync
-    web_content_updated_at: datetime | None = None  # Plugin sets this after initial full-sync completes
+    web_content_updated_at: datetime | None = None  # set by plugin after initial full-sync
 
     @field_validator("web_sync_mode")
     @classmethod

@@ -458,7 +458,7 @@ def get_web_relay_token(
 
 
 @router.post("/shares/{slug}/files", status_code=status.HTTP_200_OK)
-@limiter.limit("300/minute")  # Rate limit for content sync — raised for bulk initial full-sync (was 30/min)
+@limiter.limit("300/minute")  # raised for bulk initial full-sync (was 30/min)
 def sync_folder_file_content(
     request: Request,
     slug: str,

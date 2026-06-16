@@ -278,7 +278,7 @@ def update_share(
         else:
             share.web_folder_items = None
 
-    # Handle explicit web_content_updated_at bump — plugin sets this after initial full-sync completes
+    # Handle explicit web_content_updated_at bump (set by plugin after initial full-sync)
     if payload.web_content_updated_at is not None:
         share.web_content_updated_at = payload.web_content_updated_at
 
