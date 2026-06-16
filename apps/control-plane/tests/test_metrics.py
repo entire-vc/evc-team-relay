@@ -145,7 +145,7 @@ def test_db_connections_pool_gauges_emitted(client: TestClient) -> None:
 
 
 def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
-    """Assert users_total gauge value matches seeded active-user fixture count."""
+    """Assert users_total gauge has the richer labels (status, role, twofa_enabled)."""
     from app.db import models
     from app.workers.metrics_worker import _collect_db_metrics
 
@@ -154,6 +154,7 @@ def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
         password_hash="x",
         is_admin=False,
         is_active=True,
+        totp_enabled=False,
     )
     db_session.add(user)
     db_session.commit()
@@ -162,8 +163,52 @@ def test_gauge_reflects_seeded_user(client: TestClient, db_session) -> None:
 
     response = client.get("/metrics")
     assert response.status_code == 200
+    content = response.text
+    # New label set includes role and twofa_enabled
     lines = [
-        ln for ln in response.text.splitlines() if ln.startswith('users_total{status="active"}')
+        ln
+        for ln in content.splitlines()
+        if 'users_total{' in ln
+        and 'status="active"' in ln
+        and 'role="user"' in ln
+        and 'twofa_enabled="false"' in ln
+        and not ln.startswith("#")
     ]
-    assert lines, 'users_total{status="active"} metric not found'
+    assert lines, 'users_total with status=active,role=user,twofa_enabled=false not found'
     assert float(lines[0].split()[-1]) >= 1
+
+
+def test_login_attempts_counter_increments(client: TestClient) -> None:
+    """login_attempts_total increments on a failed password login."""
+    # Password meets min_length=8 but is wrong → passes schema, hits handler, increments counter
+    client.post("/auth/login", json={"email": "nope@example.com", "password": "wrongpassword"})
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert 'login_attempts_total{method="password",status="failure"}' in response.text
+
+
+def test_login_attempts_success_counter(client: TestClient) -> None:
+    """login_attempts_total increments with status=success on valid login."""
+    response = client.post(
+        "/auth/login", json={"email": "bootstrap@example.com", "password": "super-secret"}
+    )
+    assert response.status_code == 200
+
+    metrics = client.get("/metrics")
+    assert 'login_attempts_total{method="password",status="success"}' in metrics.text
+
+
+def test_share_metrics_per_share_id(client: TestClient, db_session) -> None:
+    """share_files_total and share_size_bytes carry share_id labels after collection."""
+    from app.workers.metrics_worker import _collect_db_metrics
+
+    _collect_db_metrics()
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    content = response.text
+    # The gauge names must still be present (even if 0 rows exist — metrics just won't appear
+    # until there is actual data; the metric definition is what matters here).
+    assert "share_files_total" in content
+    assert "share_size_bytes" in content

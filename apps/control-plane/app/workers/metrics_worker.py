@@ -43,16 +43,17 @@ COLLECT_INTERVAL_SECONDS = 60
 def _init_gauge_labels() -> None:
     """Initialize gauge label combinations to zero so they appear in /metrics output
     before the first collection cycle completes."""
-    for status in ("active", "inactive"):
-        USERS_TOTAL.labels(status=status).set(0)
+    for status_val in ("active", "inactive"):
+        for role_val in ("admin", "user"):
+            for twofa_val in ("true", "false"):
+                USERS_TOTAL.labels(status=status_val, role=role_val, twofa_enabled=twofa_val).set(0)
     USERS_ACTIVE_30D.set(0)
     for kind_val in ("doc", "folder"):
         for vis_val in ("private", "public", "protected"):
             SHARES_TOTAL.labels(kind=kind_val, visibility=vis_val).set(0)
     for role_val in ("viewer", "editor"):
         SHARE_MEMBERS_TOTAL.labels(role=role_val).set(0)
-    SHARE_SIZE_BYTES.set(0)
-    SHARE_FILES_TOTAL.set(0)
+    # SHARE_FILES_TOTAL and SHARE_SIZE_BYTES use dynamic share_id labels — no pre-init
     for s in ("active", "revoked", "expired"):
         AGENT_KEYS_TOTAL.labels(status=s).set(0)
     SESSIONS_ACTIVE_TOTAL.set(0)
@@ -97,15 +98,26 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="pool").inc()
         logger.warning("metrics_worker: pool stat error", extra={"error": str(exc)})
 
-    # ── users_total (active / inactive) ──────────────────────────────────────
+    # ── users_total (status × role × twofa_enabled) ──────────────────────────
     user_rows = db.execute(
-        select(models.User.is_active, func.count(models.User.id)).group_by(models.User.is_active)
+        select(
+            models.User.is_active,
+            models.User.is_admin,
+            models.User.totp_enabled,
+            func.count(models.User.id),
+        ).group_by(models.User.is_active, models.User.is_admin, models.User.totp_enabled)
     ).all()
-    # Reset before setting to catch edge case of all users being one status
-    USERS_TOTAL.labels(status="active").set(0)
-    USERS_TOTAL.labels(status="inactive").set(0)
-    for is_active, cnt in user_rows:
-        USERS_TOTAL.labels(status="active" if is_active else "inactive").set(cnt)
+    # Reset all label combinations before setting to handle edge cases
+    for status_val in ("active", "inactive"):
+        for role_val in ("admin", "user"):
+            for twofa_val in ("true", "false"):
+                USERS_TOTAL.labels(status=status_val, role=role_val, twofa_enabled=twofa_val).set(0)
+    for is_active, is_admin, totp_enabled, cnt in user_rows:
+        USERS_TOTAL.labels(
+            status="active" if is_active else "inactive",
+            role="admin" if is_admin else "user",
+            twofa_enabled="true" if totp_enabled else "false",
+        ).set(cnt)
 
     # ── users_active_30d ──────────────────────────────────────────────────────
     active_30d = (
@@ -143,38 +155,45 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
     for role, cnt in member_rows:
         SHARE_MEMBERS_TOTAL.labels(role=role.value).set(cnt)
 
-    # ── share_files_total: sum of folder-share item counts ───────────────────
-    # Uses jsonb_array_length on web_folder_items; skips rows where it is NULL.
-    # Falls back gracefully for SQLite (no jsonb_array_length).
+    # ── share_files_total{share_id}: per-share folder item counts, top-20 ─────
+    # Uses jsonb_array_length; falls back gracefully for SQLite (no jsonb support).
+    # Clears stale share_id labels each cycle before setting new values.
+    SHARE_FILES_TOTAL.clear()
     try:
-        share_files = (
-            db.execute(
-                select(
-                    func.coalesce(
-                        func.sum(func.jsonb_array_length(models.Share.web_folder_items)), 0
-                    )
-                ).where(
-                    models.Share.kind == models.ShareKind.FOLDER,
-                    models.Share.web_folder_items.is_not(None),
-                )
-            ).scalar()
-            or 0
-        )
-    except Exception:
-        share_files = 0  # SQLite / no jsonb support
-    SHARE_FILES_TOTAL.set(share_files)
-
-    # ── share_size_bytes: total length of web_content for doc shares ──────────
-    share_size = (
-        db.execute(
-            select(func.coalesce(func.sum(func.length(models.Share.web_content)), 0)).where(
-                models.Share.kind == models.ShareKind.DOC,
-                models.Share.web_content.is_not(None),
+        share_file_rows = db.execute(
+            select(
+                models.Share.id,
+                func.jsonb_array_length(models.Share.web_folder_items).label("cnt"),
             )
-        ).scalar()
-        or 0
-    )
-    SHARE_SIZE_BYTES.set(share_size)
+            .where(
+                models.Share.kind == models.ShareKind.FOLDER,
+                models.Share.web_folder_items.is_not(None),
+            )
+            .order_by(func.jsonb_array_length(models.Share.web_folder_items).desc())
+            .limit(20)
+        ).all()
+        for share_id, cnt in share_file_rows:
+            SHARE_FILES_TOTAL.labels(share_id=str(share_id)).set(cnt or 0)
+    except Exception:
+        pass  # SQLite / no jsonb support — metric stays cleared
+
+    # ── share_size_bytes{share_id}: per-share doc content size, top-20 ────────
+    # Clears stale share_id labels each cycle before setting new values.
+    SHARE_SIZE_BYTES.clear()
+    share_size_rows = db.execute(
+        select(
+            models.Share.id,
+            func.length(models.Share.web_content).label("sz"),
+        )
+        .where(
+            models.Share.kind == models.ShareKind.DOC,
+            models.Share.web_content.is_not(None),
+        )
+        .order_by(func.length(models.Share.web_content).desc())
+        .limit(20)
+    ).all()
+    for share_id, sz in share_size_rows:
+        SHARE_SIZE_BYTES.labels(share_id=str(share_id)).set(sz or 0)
 
     # ── agent_keys_total (status: active / revoked / expired) ────────────────
     status_expr = case(

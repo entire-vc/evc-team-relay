@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.core import security
 from app.core.config import get_settings
+from app.core.metrics import LOGIN_ATTEMPTS_TOTAL
 from app.db import models
 from app.db.session import get_db
 from app.schemas import auth as auth_schema
@@ -54,15 +55,15 @@ async def login(
     ip_address = request.client.host if request.client else None
 
     # First authenticate to check if 2FA is enabled
-    user = auth_service.authenticate_user(db, payload.email, payload.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+    try:
+        user = auth_service.authenticate_user(db, payload.email, payload.password)
+    except HTTPException:
+        LOGIN_ATTEMPTS_TOTAL.labels(status="failure", method="password").inc()
+        raise
 
     # Check if 2FA is enabled - require /auth/login/2fa endpoint
     if user.totp_enabled:
+        LOGIN_ATTEMPTS_TOTAL.labels(status="2fa_required", method="password").inc()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="2FA is enabled. Use /auth/login/2fa endpoint with totp_code.",
@@ -76,6 +77,8 @@ async def login(
         user_agent=user_agent,
         ip_address=ip_address,
     )
+
+    LOGIN_ATTEMPTS_TOTAL.labels(status="success", method="password").inc()
 
     # Log successful login
     audit_service.log_action(
@@ -775,14 +778,14 @@ async def login_with_2fa(
     settings = get_settings()
 
     # Authenticate with email and password first
-    user = auth_service.authenticate_user(db, payload.email, payload.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+    try:
+        user = auth_service.authenticate_user(db, payload.email, payload.password)
+    except HTTPException:
+        LOGIN_ATTEMPTS_TOTAL.labels(status="failure", method="2fa").inc()
+        raise
 
     if not user.totp_enabled:
+        LOGIN_ATTEMPTS_TOTAL.labels(status="failure", method="2fa").inc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA is not enabled for this account. Use /auth/login instead.",
@@ -791,6 +794,7 @@ async def login_with_2fa(
     # Verify 2FA code
     is_valid, was_backup = totp_service.verify_user_totp(db, user.id, payload.totp_code)
     if not is_valid:
+        LOGIN_ATTEMPTS_TOTAL.labels(status="failure", method="2fa").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid 2FA code",
@@ -822,6 +826,8 @@ async def login_with_2fa(
 
     # Create access token with session_id
     access_token = security.create_access_token(str(user.id), session_id=str(session.id))
+
+    LOGIN_ATTEMPTS_TOTAL.labels(status="success", method="2fa").inc()
 
     # Log login
     audit_service.log_action(
