@@ -85,7 +85,7 @@ DB_CONNECTIONS_TOTAL = Gauge(
 USERS_TOTAL = Gauge(
     "users_total",
     "Total number of users",
-    ["status", "role", "twofa_enabled"],  # status: active/inactive, role: admin/user, twofa_enabled: true/false
+    ["status", "role", "twofa_enabled"],  # active/inactive, admin/user, true/false
 )
 
 USERS_ACTIVE_30D = Gauge(
