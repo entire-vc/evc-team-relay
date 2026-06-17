@@ -9,7 +9,7 @@
 #
 # All baseline findings (CI 1.8, 2026-05-23) have been remediated — task 1bf42b38:
 # - pillow 12.2.0 (constraint relaxed from >=10.0,<11.0 to >=12.2.0,<13.0)
-# - cryptography 46.0.7 (constraint updated to >=46.0.5,<47.0)
+# - cryptography 48.0.1 (constraint bumped to >=48.0.1,<49.0 — fixes HIGH CVE not present in 46.x baseline)
 # - authlib 1.6.12 (constraint updated to >=1.6.12)
 # - cbor2 5.9.0, pyjwt 2.13.0, mako 1.3.12, python-multipart 0.0.29
 # - lodash-es 4.18.1 (package.json override >=4.18.1, PRs #14 #16 #17)
