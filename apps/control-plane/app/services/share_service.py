@@ -274,6 +274,12 @@ def update_share(
                     if key in existing:
                         new_item[key] = existing[key]
                 new_items.append(new_item)
+            # Preserve sync-artifacts not yet pulled to vault (absent from vault payload)
+            new_paths = {item["path"] for item in new_items}
+            for existing_item in (share.web_folder_items or []):
+                if (existing_item.get("source") == "sync-artifact"
+                        and existing_item.get("path") not in new_paths):
+                    new_items.append(existing_item)
             share.web_folder_items = new_items
         else:
             share.web_folder_items = None
