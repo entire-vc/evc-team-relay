@@ -42,8 +42,14 @@ docker build -t "$IMAGE" control-plane-src/
 # 3. Migration gate — FAIL-CLOSED.
 #    docker compose run returns the migrate container's exit code; alembic failure
 #    => non-zero => we abort here and the app is NEVER restarted.
+#
+#    -T:        disable pseudo-TTY (non-interactive CI run).
+#    </dev/null: prevent docker compose run from inheriting bash's stdin.
+#               Without this, when the script is fed via 'bash -s < deploy.sh'
+#               over SSH, docker compose run consumes the rest of the file from
+#               stdin — bash hits EOF and exits before 'compose up' ever runs.
 log "running migration gate (alembic upgrade head)"
-if ! docker compose run --rm control-plane-migrate; then
+if ! docker compose run --rm -T control-plane-migrate </dev/null; then
   die "MIGRATION GATE FAILED — app NOT restarted, prod left on previous image. Investigate before retrying."
 fi
 log "migration gate passed (schema at head)"
