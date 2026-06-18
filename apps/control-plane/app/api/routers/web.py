@@ -203,15 +203,24 @@ def get_share_by_slug(
             detail="Share not found or not published",
         )
 
-    # For PRIVATE shares: attempt auth; strip content if unauthenticated rather than 401-ing,
-    # so the SPA can render a proper "login required" prompt.
+    # For PRIVATE shares: attempt auth.
+    # - No credentials → 200 with content stripped so SPA can render a "login required" prompt.
+    # - Credentials present but invalid → re-raise 401 (don't silently expose metadata on failed auth).
     expose_content = True
     if share.visibility == models.ShareVisibility.PRIVATE:
+        has_credentials = bool(
+            request.headers.get("X-Agent-Key")
+            or request.query_params.get("agent_key")
+            or (request.headers.get("Authorization") or "").startswith("Bearer ")
+            or request.cookies.get("access_token")
+        )
         try:
             _require_private_web_auth(request, share, db)
             for header_name, header_value in _private_embed_headers(settings).items():
                 response.headers[header_name] = header_value
         except HTTPException:
+            if has_credentials:
+                raise  # invalid credentials → propagate 401
             expose_content = False
 
     # Parse folder items if present (only for authenticated PRIVATE or non-PRIVATE shares)
