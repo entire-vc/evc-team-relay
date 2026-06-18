@@ -758,6 +758,90 @@ class TestPrivateShareAuth:
         # The frontend then shows "login required" message
         assert response.status_code == 404
 
+    @pytest.fixture
+    def private_folder_share(self, db_session: Session, test_user: models.User) -> models.Share:
+        import json as _json
+        share = models.Share(
+            kind=models.ShareKind.FOLDER,
+            path="Private/Folder/",
+            visibility=models.ShareVisibility.PRIVATE,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="private-folder-auth",
+            web_folder_items=[{"path": "note.md", "name": "note.md", "type": "doc"}],
+        )
+        db_session.add(share)
+        db_session.commit()
+        db_session.refresh(share)
+        return share
+
+    def _make_agent_key(self, db, share, scopes="read"):
+        import hashlib as _hl
+        import secrets as _sec
+        raw = "tr_agent_" + _sec.token_hex(24)
+        key_hash = _hl.sha256(raw.encode()).hexdigest()
+        ak = models.ShareAgentKey(
+            share_id=share.id, key_hash=key_hash, label="test-key", scopes=scopes
+        )
+        db.add(ak)
+        db.commit()
+        db.refresh(ak)
+        return raw, ak
+
+    def _web_settings(self):
+        return type("S", (), {"web_publish_enabled": True, "web_publish_domain": "docs.test.com",
+                               "web_frame_ancestors": None})()
+
+    def test_get_private_share_no_credentials_returns_200_stripped(
+        self, client: TestClient, private_folder_share: models.Share, monkeypatch
+    ):
+        """No credentials on PRIVATE share → 200 with web_folder_items=null (SPA shows login prompt)."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
+        r = client.get(f"/v1/web/shares/{private_folder_share.web_slug}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["visibility"] == "private"
+        assert data["web_folder_items"] is None
+
+    def test_get_private_share_invalid_agent_key_returns_401(
+        self, client: TestClient, private_folder_share: models.Share, monkeypatch
+    ):
+        """Invalid ?agent_key on PRIVATE share → 401 (not 200 with stripped content)."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
+        r = client.get(
+            f"/v1/web/shares/{private_folder_share.web_slug}?agent_key=invalid_garbage_key"
+        )
+        assert r.status_code == 401
+
+    def test_get_private_share_invalid_bearer_returns_401(
+        self, client: TestClient, private_folder_share: models.Share, monkeypatch
+    ):
+        """Invalid Bearer token on PRIVATE share → 401."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
+        r = client.get(
+            f"/v1/web/shares/{private_folder_share.web_slug}",
+            headers={"Authorization": "Bearer TOTALLY_FAKE_TOKEN"},
+        )
+        assert r.status_code == 401
+
+    def test_get_private_share_valid_agent_key_returns_200_with_content(
+        self,
+        client: TestClient,
+        db_session: Session,
+        private_folder_share: models.Share,
+        monkeypatch,
+    ):
+        """Valid agent_key on PRIVATE share → 200 with web_folder_items populated."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
+        raw_key, _ = self._make_agent_key(db_session, private_folder_share, scopes="read")
+        r = client.get(
+            f"/v1/web/shares/{private_folder_share.web_slug}?agent_key={raw_key}"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["web_folder_items"] is not None
+        assert len(data["web_folder_items"]) == 1
+
 
 class TestWebRelayToken:
     """Test web relay token endpoint for real-time sync."""
