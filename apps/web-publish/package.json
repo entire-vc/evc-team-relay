@@ -31,7 +31,7 @@
   "dependencies": {
     "@entire-vc/tokens": "^0.1.0",
     "@entire-vc/ui-svelte": "^0.1.0",
-    "bits-ui": "^1.8.0",
+    "bits-ui": "^2.18.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dompurify": "^3.2.2",
