@@ -205,7 +205,7 @@ def get_share_by_slug(
 
     # For PRIVATE shares: attempt auth.
     # - No credentials → 200 with content stripped so SPA can render a "login required" prompt.
-    # - Credentials present but invalid → re-raise 401 (don't silently expose metadata on failed auth).
+    # - Credentials present but invalid → re-raise 401 (don't expose metadata on failed auth).
     expose_content = True
     if share.visibility == models.ShareVisibility.PRIVATE:
         has_credentials = bool(
