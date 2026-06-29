@@ -368,9 +368,11 @@ class TestSyncArtifactPreservedDuringVaultPatch:
         resp = client.patch(
             f"/v1/shares/{share.id}",
             headers=auth_headers(token),
-            json={"web_folder_items": [
-                {"path": "notes/vault-file.md", "name": "vault-file.md", "type": "doc"}
-            ]},
+            json={
+                "web_folder_items": [
+                    {"path": "notes/vault-file.md", "name": "vault-file.md", "type": "doc"}
+                ]
+            },
         )
 
         assert resp.status_code == 200, resp.text

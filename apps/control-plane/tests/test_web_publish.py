@@ -777,6 +777,7 @@ class TestPrivateShareAuth:
     def _make_agent_key(self, db, share, scopes="read"):
         import hashlib as _hl
         import secrets as _sec
+
         raw = "tr_agent_" + _sec.token_hex(24)
         key_hash = _hl.sha256(raw.encode()).hexdigest()
         ak = models.ShareAgentKey(
@@ -788,8 +789,15 @@ class TestPrivateShareAuth:
         return raw, ak
 
     def _web_settings(self):
-        return type("S", (), {"web_publish_enabled": True, "web_publish_domain": "docs.test.com",
-                               "web_frame_ancestors": None})()
+        return type(
+            "S",
+            (),
+            {
+                "web_publish_enabled": True,
+                "web_publish_domain": "docs.test.com",
+                "web_frame_ancestors": None,
+            },
+        )()
 
     def test_get_private_share_no_credentials_returns_200_stripped(
         self, client: TestClient, private_folder_share: models.Share, monkeypatch
@@ -833,9 +841,7 @@ class TestPrivateShareAuth:
         """Valid agent_key on PRIVATE share → 200 with web_folder_items populated."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
         raw_key, _ = self._make_agent_key(db_session, private_folder_share, scopes="read")
-        r = client.get(
-            f"/v1/web/shares/{private_folder_share.web_slug}?agent_key={raw_key}"
-        )
+        r = client.get(f"/v1/web/shares/{private_folder_share.web_slug}?agent_key={raw_key}")
         assert r.status_code == 200
         data = r.json()
         assert data["web_folder_items"] is not None
