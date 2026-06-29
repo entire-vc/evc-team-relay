@@ -345,3 +345,36 @@ class TestShareReadIncludesWebContentUpdatedAt:
 
         assert resp.status_code == 200, resp.text
         assert resp.json()["web_content_updated_at"] is None
+
+
+# ── Bug 3: sync-artifact lost after vault PATCH (race condition fix) ──────────
+
+
+class TestSyncArtifactPreservedDuringVaultPatch:
+    """Regression: sync_upload commits artifact, plugin sends _initialFullSync PATCH
+    with vault files — db.refresh(share) must reload DB state before merge so the
+    artifact is not lost when the SQLAlchemy identity map was stale."""
+
+    def test_artifact_survives_vault_patch(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        """Sync-artifact already in web_folder_items must not be dropped when plugin
+        patches with a full vault-file list that does not include the artifact path."""
+        artifact = sync_artifact_item()
+        share = make_folder_share(db_session, test_user, folder_items=[artifact])
+        token = login(client, "testuser@example.com", "test123456")
+
+        # Plugin sends _initialFullSync: vault-only list, artifact path absent
+        resp = client.patch(
+            f"/v1/shares/{share.id}",
+            headers=auth_headers(token),
+            json={"web_folder_items": [{"path": "notes/vault-file.md", "name": "vault-file.md", "type": "doc"}]},
+        )
+
+        assert resp.status_code == 200, resp.text
+
+        # Verify via files-index (returns sync-artifacts) that the artifact survived
+        idx_resp = client.get(f"/v1/shares/{share.id}/files-index", headers=auth_headers(token))
+        assert idx_resp.status_code == 200, idx_resp.text
+        paths = {item["path"] for item in idx_resp.json()}
+        assert artifact["path"] in paths, "sync-artifact must be preserved after vault PATCH"
