@@ -760,7 +760,6 @@ class TestPrivateShareAuth:
 
     @pytest.fixture
     def private_folder_share(self, db_session: Session, test_user: models.User) -> models.Share:
-        import json as _json
         share = models.Share(
             kind=models.ShareKind.FOLDER,
             path="Private/Folder/",
@@ -795,7 +794,7 @@ class TestPrivateShareAuth:
     def test_get_private_share_no_credentials_returns_200_stripped(
         self, client: TestClient, private_folder_share: models.Share, monkeypatch
     ):
-        """No credentials on PRIVATE share → 200 with web_folder_items=null (SPA shows login prompt)."""
+        """No credentials on PRIVATE share → 200 stripped (SPA shows login prompt)."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
         r = client.get(f"/v1/web/shares/{private_folder_share.web_slug}")
         assert r.status_code == 200
