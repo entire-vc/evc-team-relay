@@ -32,13 +32,20 @@ router = APIRouter(prefix="/v1/web", tags=["web"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-def _require_private_web_auth(request: Request, share: models.Share, db: Session) -> None:
-    """Raise 401 if the request carries no valid credential for a PRIVATE share.
+def _require_private_web_auth(
+    request: Request,
+    share: models.Share,
+    db: Session,
+    required_scope: str = "read",
+) -> None:
+    """Raise 401/403 if the request carries no valid credential for a PRIVATE share.
 
     Accepts (in order):
-    1. X-Agent-Key header — non-expired, non-revoked key for this share (read or write scope).
+    1. X-Agent-Key header — non-expired, non-revoked key for this share.
     2. Authorization: Bearer <JWT> — valid user token; caller must be owner or member.
     3. access_token cookie — same JWT validation (for browser iframes via withCredentials).
+
+    required_scope: "read" (default) accepts read or write keys; "write" rejects read-only keys.
     """
     # --- Agent key path (header or ?agent_key= query param for iframe src embeds) ---
     raw_key = request.headers.get("X-Agent-Key") or request.query_params.get("agent_key")
@@ -57,8 +64,19 @@ def _require_private_web_auth(request: Request, share: models.Share, db: Session
                     exp = exp.replace(tzinfo=_tz.utc)
             if exp is None or exp >= security.utcnow():
                 scopes = {s.strip() for s in agent_key.scopes.split(",") if s.strip()}
-                if scopes & {"read", "write"}:
-                    return  # authenticated via agent key
+                has_any = bool(scopes & {"read", "write"})
+                # write implies read: a write-scoped key satisfies a read requirement
+                if required_scope == "read":
+                    has_required = bool(scopes & {"read", "write"})
+                else:
+                    has_required = required_scope in scopes
+                if has_any and not has_required:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Agent key does not have {required_scope} scope",
+                    )
+                if has_any:
+                    return  # authenticated via agent key with sufficient scope
 
     # --- User JWT path ---
     token: str | None = None
@@ -512,7 +530,8 @@ def sync_folder_file_content(
             detail="This endpoint is only for folder shares",
         )
 
-    _require_private_web_auth(request, share, db)
+    # H-M scope-gate: write endpoint must reject read-only agent keys
+    _require_private_web_auth(request, share, db, required_scope="write")
 
     # Update folder items with content
     folder_items = share.web_folder_items or []
@@ -730,6 +749,8 @@ def update_share_content(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Editor role required to edit this share",
                     )
+        except HTTPException:
+            raise  # re-raise 401/403 as-is; don't swallow 403 into a 401
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1048,6 +1069,14 @@ def serve_web_asset(
             minio_resp.release_conn()
 
         headers: dict[str, str] = {}
+        # SVG XSS mitigation: block script execution for SVG assets regardless of visibility.
+        # SVG is XML that the browser renders and executes inline JS from — treat like HTML.
+        headers["X-Content-Type-Options"] = "nosniff"
+        if content_type == "image/svg+xml":
+            headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
+
         if share.visibility == models.ShareVisibility.PUBLIC:
             headers["Cache-Control"] = "public, max-age=86400"
         elif share.visibility == models.ShareVisibility.PRIVATE:
@@ -1419,7 +1448,8 @@ async def sync_upload(
             models.Share.web_published == True,  # noqa: E712
         )
 
-    share = db.execute(_stmt.with_for_update()).scalar_one_or_none()
+    # H-M pool-lock: fetch without row lock for read + auth; MinIO upload runs unlocked.
+    share = db.execute(_stmt).scalar_one_or_none()
     if not share:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
     if share.kind != models.ShareKind.FOLDER:
@@ -1477,9 +1507,14 @@ async def sync_upload(
         },
     )
 
-    # Upsert into web_folder_items with sync-artifact source.
+    # H-M pool-lock: now acquire the row lock only for the JSONB mutation (no I/O under lock).
     from sqlalchemy.orm.attributes import flag_modified
 
+    share = db.execute(_stmt.with_for_update()).scalar_one_or_none()
+    if not share:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+
+    # Upsert into web_folder_items with sync-artifact source.
     now_iso = security.utcnow().isoformat()
     inline_content = (
         body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
