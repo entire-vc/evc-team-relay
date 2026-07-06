@@ -89,41 +89,27 @@ def load_or_generate_relay_keypair(
     Returns:
         tuple: (private_key_object, public_key_base64, key_id)
     """
-    if settings.relay_private_key:
-        # Load existing private key from PEM
-        # Support both base64-encoded (from .env) and PEM format
-        private_key_str = settings.relay_private_key
-        if not private_key_str.startswith("-----BEGIN"):
-            # Base64-encoded - decode to PEM
-            import base64 as b64
-
-            private_key_str = b64.b64decode(private_key_str).decode("utf-8")
-
-        private_key = serialization.load_pem_private_key(
-            private_key_str.encode("utf-8"), password=None
+    if not settings.relay_private_key:
+        raise RuntimeError(
+            "RELAY_PRIVATE_KEY is required but not set. "
+            "Generate an Ed25519 key and set the RELAY_PRIVATE_KEY environment variable "
+            "(Base64-encoded PEM). See docs/setup.md for instructions."
         )
-        public_bytes = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
-        )
-        public_base64 = base64.b64encode(public_bytes).decode("utf-8")
-        key_id = settings.relay_key_id
-    else:
-        # Generate new keypair on first run
-        private_pem, public_base64 = generate_ed25519_keypair()
-        private_key = serialization.load_pem_private_key(private_pem.encode("utf-8"), password=None)
-        key_id = f"relay_cp_{datetime.now(timezone.utc).strftime('%Y_%m_%d')}"
 
-        # Log for operator to save (not logging private key for security)
-        logger.warning(
-            f"Generated new Ed25519 keypair:\n"
-            f"Key ID: {key_id}\n"
-            f"Public Key: {public_base64}\n"
-            f"Add to relay.toml:\n"
-            f"[[auth]]\n"
-            f'key_id = "{key_id}"\n'
-            f'public_key = "{public_base64}"\n\n'
-            f"To persist, set RELAY_PRIVATE_KEY and RELAY_KEY_ID environment variables"
-        )
+    # Load private key — supports both Base64-encoded (from .env) and raw PEM formats
+    private_key_str = settings.relay_private_key
+    if not private_key_str.startswith("-----BEGIN"):
+        import base64 as b64
+        private_key_str = b64.b64decode(private_key_str).decode("utf-8")
+
+    private_key = serialization.load_pem_private_key(
+        private_key_str.encode("utf-8"), password=None
+    )
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
+    public_base64 = base64.b64encode(public_bytes).decode("utf-8")
+    key_id = settings.relay_key_id
 
     return (private_key, public_base64, key_id)
 
