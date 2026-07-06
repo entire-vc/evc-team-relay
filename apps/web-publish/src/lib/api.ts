@@ -23,6 +23,15 @@ const CONTROL_PLANE_URL =
 		? process.env.CONTROL_PLANE_URL
 		: 'http://control-plane:8000';
 
+// H-M SSR timeouts: all control-plane fetches abort after 5 s to prevent SSR hangs.
+const SSR_TIMEOUT_MS = 5000;
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), SSR_TIMEOUT_MS);
+	return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export interface FolderItem {
 	path: string;
 	name: string;
