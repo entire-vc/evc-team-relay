@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
+import socket
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -120,19 +121,27 @@ def validate_webhook_url(url: str, allow_localhost: bool = False) -> tuple[bool,
         if not host:
             return False, "Invalid URL: missing hostname"
 
-        # Check for private/localhost IPs in production
+        # H-M SSRF: check both literal IP and DNS-resolved addresses to block DNS rebinding.
         if not allow_localhost:
             try:
                 ip = ipaddress.ip_address(host)
                 if ip.is_private or ip.is_loopback or ip.is_reserved:
                     return False, "Webhook URL cannot point to private or localhost addresses"
             except ValueError:
-                # Not an IP address, could be a hostname
+                # Not a literal IP — check well-known internal hostnames first.
                 if host in ("localhost", "127.0.0.1", "::1"):
                     return False, "Webhook URL cannot point to localhost"
-                # Check for common internal hostnames
                 if host.endswith(".local") or host.endswith(".internal"):
                     return False, "Webhook URL cannot point to internal addresses"
+                # Resolve via DNS and verify none of the returned IPs are private.
+                try:
+                    resolved = socket.getaddrinfo(host, None)
+                    for _family, _type, _proto, _canon, sockaddr in resolved:
+                        rip = ipaddress.ip_address(sockaddr[0])
+                        if rip.is_private or rip.is_loopback or rip.is_reserved:
+                            return False, "Webhook URL resolves to a private or reserved address"
+                except OSError:
+                    return False, "Webhook URL hostname could not be resolved"
 
         return True, None
 
