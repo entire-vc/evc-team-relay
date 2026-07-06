@@ -36,11 +36,20 @@ def issue_relay_token(
     expires_in = timedelta(minutes=settings.relay_token_ttl_minutes)
     expires_at = security.utcnow() + expires_in
 
-    # Generate Ed25519-signed CWT token (y-sweet expects CWT, not JWT)
+    # Generate Ed25519-signed CWT token for relay-server authentication.
+    #
+    # H6 — Confused-deputy notes:
+    # Authorization is checked against share_id (above), but the issued token
+    # is scoped to payload.doc_id which is CLIENT-PROVIDED. This allows an
+    # authorized-for-share-A client to request a token for an arbitrary doc_id.
+    #
+    # Mitigation applied here: share_id is embedded as CWT_CLAIM_SHARE (-80203)
+    # so the relay-server CAN enforce the share→doc binding if it supports that
+    # claim. Full prevention requires relay-server (System3) to validate that the
+    # requested doc_id belongs to the presented share_id.
+    # TODO(H6-System3): verify relay-server enforces CWT_CLAIM_SHARE and scope.
     private_key = request.app.state.relay_private_key
     key_id = request.app.state.relay_key_id
-
-    # Include relay URL as audience for relay-server validation
     relay_url = str(settings.relay_public_url).rstrip("/")
 
     token = security.create_relay_token_cwt(
@@ -50,6 +59,7 @@ def issue_relay_token(
         mode=payload.mode.value,
         expires_minutes=settings.relay_token_ttl_minutes,
         audience=relay_url,
+        share_id=str(share.id),
     )
 
     # Log token issuance with file path for folder shares

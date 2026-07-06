@@ -158,6 +158,9 @@ CWT_CLAIM_IAT = 6  # issued at
 # y-sweet custom claims (private use range)
 CWT_CLAIM_SCOPE = -80201
 CWT_CLAIM_CHANNEL = -80202
+# Control-plane extension: share binding for confused-deputy mitigation (H6).
+# Relay-server (System3) must be verified to enforce this claim.
+CWT_CLAIM_SHARE = -80203
 
 # CBOR tags
 CWT_TAG = 61  # CWT wrapper tag (RFC 8392)
@@ -172,14 +175,23 @@ def create_relay_token_cwt(
     expires_minutes: int,
     audience: str | None = None,
     issuer: str = "relay-control-plane",
+    share_id: str | None = None,
 ) -> str:
-    """Create CWT (CBOR Web Token) for y-sweet relay-server authentication.
+    """Create CWT (CBOR Web Token) for relay-server authentication.
 
-    y-sweet expects CWT tokens with:
+    Token structure:
     - CWT tag 61 wrapper
     - COSE_Sign1 with Ed25519 signature (EdDSA algorithm)
-    - Claims: iss, aud, exp, iat, scope (-80201)
+    - Claims: iss, iat, exp, scope (-80201), share (-80203)
     - Scope format: "doc:{doc_id}:rw" or "doc:{doc_id}:r"
+
+    Security notes (H6):
+    - exp is included for TTL enforcement; relay-server (System3) MUST be verified
+      to accept and enforce exp. If System3 rejects exp, file a System3 bug.
+    - share_id (-80203) binds the token to the issuing share for confused-deputy
+      mitigation. Relay-server enforcement of this claim is a System3 requirement
+      (currently unverified — track in H6 System3 follow-up task).
+    - aud is omitted: y-sweet rejects tokens with the aud claim.
 
     Args:
         private_key: Ed25519 private key object
@@ -187,8 +199,9 @@ def create_relay_token_cwt(
         doc_id: Document ID for relay access
         mode: Access mode ("read" or "write")
         expires_minutes: Token TTL in minutes
-        audience: Relay server URL for 'aud' claim
+        audience: Relay server URL (reserved, not added to claims — y-sweet rejects aud)
         issuer: Token issuer (default: "relay-control-plane")
+        share_id: Share UUID the token was issued against (added as CWT_CLAIM_SHARE)
 
     Returns:
         Base64url-encoded CWT token string
@@ -199,14 +212,17 @@ def create_relay_token_cwt(
     auth_code = "rw" if mode == "write" else "r"
     scope = f"doc:{doc_id}:{auth_code}"
 
-    # Build claims map with integer keys (RFC 8392)
-    # Note: y-sweet expects minimal claims - only iss, iat, scope
-    # Do NOT include exp or aud - y-sweet native tokens don't have them
     claims = {
         CWT_CLAIM_ISS: issuer,
         CWT_CLAIM_IAT: int(now.timestamp()),
+        CWT_CLAIM_EXP: int((now + timedelta(minutes=expires_minutes)).timestamp()),
         CWT_CLAIM_SCOPE: scope,
     }
+
+    # Bind token to the issuing share — confused-deputy mitigation (H6).
+    # Full enforcement requires relay-server (System3) to validate this claim.
+    if share_id:
+        claims[CWT_CLAIM_SHARE] = share_id
 
     # Encode claims to CBOR
     claims_cbor = cbor2.dumps(claims)

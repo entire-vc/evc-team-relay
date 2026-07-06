@@ -121,8 +121,10 @@ class TestRelayTokenHappyPath:
         assert claims["iss"] == "relay-control-plane"
         assert claims["scope"] == f"doc:{share_id}:rw"
         assert "iat" in claims
-        # y-sweet requirements: no exp, no aud
-        assert "exp" not in claims
+        # H6: exp is now required for TTL enforcement
+        assert "exp" in claims, "exp missing — H6 security regression"
+        assert claims["exp"] > claims["iat"]
+        # aud must NOT appear — y-sweet rejects it
         assert "aud" not in claims
 
     def test_read_mode_scope(self, client: TestClient):
