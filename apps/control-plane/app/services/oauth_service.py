@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import secrets
 import uuid
 from typing import Any
@@ -30,17 +31,49 @@ def generate_code_challenge(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
+_STATE_HMAC_SEP = "."
+
+
+def _compute_state_hmac(payload_b64: str, secret: str) -> str:
+    """Return HMAC-SHA256 hex digest for a base64-encoded state payload.
+
+    Uses constant-time comparison in decode_state to prevent timing attacks.
+    The separator '.' is safe because urlsafe_b64 only uses A-Z a-z 0-9 - _.
+    """
+    return hmac.new(
+        secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
 def encode_state(state_data: oauth_schema.OAuthStateData) -> str:
-    """Encode state data as base64 JSON (not encrypted, just encoded)."""
-    json_str = state_data.model_dump_json()
-    return base64.urlsafe_b64encode(json_str.encode("utf-8")).decode("utf-8")
+    """Encode state data as base64 JSON, appending an HMAC-SHA256 signature when configured."""
+    settings = get_settings()
+    payload_b64 = base64.urlsafe_b64encode(
+        state_data.model_dump_json().encode("utf-8")
+    ).decode("utf-8")
+    if settings.oauth_state_secret:
+        sig = _compute_state_hmac(payload_b64, settings.oauth_state_secret)
+        return f"{payload_b64}{_STATE_HMAC_SEP}{sig}"
+    return payload_b64
 
 
 def decode_state(state: str) -> oauth_schema.OAuthStateData:
-    """Decode state data from base64 JSON."""
+    """Decode and verify state data. Rejects unsigned or tampered state when HMAC is configured."""
+    settings = get_settings()
     try:
-        json_str = base64.urlsafe_b64decode(state.encode("utf-8")).decode("utf-8")
+        if settings.oauth_state_secret:
+            if _STATE_HMAC_SEP not in state:
+                raise ValueError("Missing HMAC signature in state parameter")
+            payload_b64, received_sig = state.rsplit(_STATE_HMAC_SEP, 1)
+            expected_sig = _compute_state_hmac(payload_b64, settings.oauth_state_secret)
+            if not hmac.compare_digest(received_sig, expected_sig):
+                raise ValueError("State HMAC signature mismatch — possible CSRF attempt")
+        else:
+            payload_b64 = state
+        json_str = base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8")
         return oauth_schema.OAuthStateData.model_validate_json(json_str)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

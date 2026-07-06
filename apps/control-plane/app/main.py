@@ -120,9 +120,10 @@ Get a token by calling `POST /auth/login` with valid credentials.
     # Add middlewares (order matters - first added = outermost)
     app.add_middleware(PrometheusMiddleware)  # Metrics collection
     app.add_middleware(logging.RequestLoggingMiddleware)
+    cors_origins = [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -223,6 +224,16 @@ Get a token by calling `POST /auth/login` with valid credentials.
                 settings.oauth_scopes,
                 settings.oauth_auto_register,
                 settings.oauth_admin_groups,
+            )
+
+    @app.on_event("startup")
+    def _validate_oauth_state_secret() -> None:
+        """Require OAUTH_STATE_SECRET when OAuth is enabled."""
+        settings = get_settings()
+        if settings.oauth_enabled and not settings.oauth_state_secret:
+            raise ValueError(
+                "OAUTH_STATE_SECRET is required when OAuth is enabled. "
+                "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
 
     @app.on_event("startup")
