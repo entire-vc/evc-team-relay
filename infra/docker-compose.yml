@@ -220,10 +220,8 @@ services:
       control-plane-migrate:
         condition: service_completed_successfully
 
-  # placeholder: relay server (будет подключён/собран агентом)
   relay-server:
-    build:
-      context: ../forks/relay-server-template
+    image: ghcr.io/entire-vc/evc-relay-server:0.9.7
     depends_on:
       minio:
         condition: service_healthy
@@ -237,8 +235,7 @@ services:
       - "8080"
       - "9090"
     healthcheck:
-      # Note: Container has minimal shell without curl/pgrep. Using /proc check.
-      test: ["CMD-SHELL", "grep -q relay /proc/1/cmdline || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
       interval: 15s
       timeout: 5s
       retries: 5

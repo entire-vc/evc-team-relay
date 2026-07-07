@@ -14,15 +14,6 @@ level = "info"                   # RUST_LOG
 format = "pretty"                # RELAY_SERVER_LOG_FORMAT: "json" or "pretty"
 
 
-# Relay.md public keys
-[[auth]]
-key_id = "relay_2025_10_22"
-public_key = "/6OgBTHaRdWLogewMdyE+7AxnI0/HP3WGqRs/bYBlFg="
-
-[[auth]]
-key_id = "relay_2025_10_23"
-public_key = "fbm9JLHrwPpST5HAYORTQR/i1VbZ1kdp2ZEy0XpMbf0="
-
 
 # Storage backend configuration
 # NOTE: S3-compatible storage is required for attachment storage, and highly
