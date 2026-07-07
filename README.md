@@ -28,6 +28,7 @@ You want your team in Obsidian, editing together, publishing docs — without gi
 
 ### Real-time Collaboration
 - **Live editing** — CRDT-based sync via y-sweet (Yjs), no merge conflicts
+  <!-- relay-server runs our own y-sweet fork: ghcr.io/entire-vc/evc-relay-server (see docs/adr-relay-server-own-fork.md), not the System3 binary. -->
 - **Offline-first** — edit without connection, sync seamlessly when back online
 - **Folder sharing** — share entire folders with viewer/editor permissions
 

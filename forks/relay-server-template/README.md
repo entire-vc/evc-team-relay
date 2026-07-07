@@ -1,3 +1,7 @@
+> ⚠️ **Entire VC note:** we do NOT deploy the `docker.system3.md/relay-server` image referenced
+> throughout this template. We build our own from a y-sweet fork and run `ghcr.io/entire-vc/evc-relay-server`
+> (see `infra/docker-compose.yml` and `docs/adr-relay-server-own-fork.md`). Treat this folder as upstream reference only.
+
 # Hosting an on-premise Relay Server
 
 [Relay](https://relay.md) supports self-hosting your Relay Server for added privacy.
