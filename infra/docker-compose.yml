@@ -51,6 +51,13 @@ services:
       BACKUP_S3_ENABLED: ${BACKUP_S3_ENABLED:-false}
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
       RUN_ON_STARTUP: ${BACKUP_RUN_ON_STARTUP:-true}
+      OFFSITE_S3_ENABLED: ${OFFSITE_S3_ENABLED:-false}
+      OFFSITE_S3_ENDPOINT: ${OFFSITE_S3_ENDPOINT:-}
+      OFFSITE_S3_ACCESS: ${OFFSITE_S3_ACCESS:-}
+      OFFSITE_S3_SECRET: ${OFFSITE_S3_SECRET:-}
+      OFFSITE_S3_BUCKET: ${OFFSITE_S3_BUCKET:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-relay}
     volumes:
       - ./data/backups:/backups
     depends_on:
