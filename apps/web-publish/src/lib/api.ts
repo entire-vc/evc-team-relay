@@ -2,6 +2,22 @@
  * Control Plane API client for web publishing.
  */
 
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+export async function fetchWithTimeout(
+	url: string | URL,
+	init: RequestInit = {},
+	timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		return await fetch(url, { ...init, signal: controller.signal });
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 const CONTROL_PLANE_URL =
 	typeof process !== 'undefined' && process.env.CONTROL_PLANE_URL
 		? process.env.CONTROL_PLANE_URL
@@ -55,7 +71,7 @@ export interface RelayToken {
 export async function getShareBySlug(slug: string, agentKey?: string): Promise<WebShare> {
 	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}`);
 	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
-	const response = await fetch(urlObj.toString());
+	const response = await fetchWithTimeout(urlObj.toString());
 
 	if (!response.ok) {
 		if (response.status === 404) {
@@ -74,7 +90,7 @@ export async function authenticateShare(
 	slug: string,
 	password: string
 ): Promise<ShareAuthResponse> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/auth`, {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/auth`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json'
@@ -97,7 +113,7 @@ export async function authenticateShare(
  * Used server-side to check if user has access to protected share.
  */
 export async function validateSession(slug: string, token: string): Promise<SessionValidation> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/validate`, {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/validate`, {
 		headers: {
 			Cookie: `web_session=${token}`
 		}
@@ -114,7 +130,7 @@ export async function validateSession(slug: string, token: string): Promise<Sess
  * Fetch robots.txt content from Control Plane.
  */
 export async function getRobotsTxt(): Promise<string> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/robots.txt`);
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/robots.txt`);
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch robots.txt: ${response.statusText}`);
@@ -133,7 +149,7 @@ export async function getRelayToken(slug: string, sessionToken?: string): Promis
 		headers['Cookie'] = `web_session=${sessionToken}`;
 	}
 
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/token`, {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/token`, {
 		headers
 	});
 
@@ -194,7 +210,7 @@ export interface OAuthCallbackResponse {
  * Get server info including OAuth configuration.
  */
 export async function getServerInfo(): Promise<ServerInfo> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/server/info`);
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/server/info`);
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch server info: ${response.statusText}`);
@@ -211,7 +227,7 @@ export async function getOAuthAuthorizeUrl(
 	provider: string,
 	redirectUri: string
 ): Promise<OAuthAuthorizeResponse> {
-	const response = await fetch(
+	const response = await fetchWithTimeout(
 		`${CONTROL_PLANE_URL}/v1/auth/oauth/${provider}/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`,
 		{
 			headers: {
@@ -235,7 +251,7 @@ export async function exchangeOAuthCode(
 	code: string,
 	state: string
 ): Promise<OAuthCallbackResponse> {
-	const response = await fetch(
+	const response = await fetchWithTimeout(
 		`${CONTROL_PLANE_URL}/v1/auth/oauth/${provider}/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`
 	);
 
@@ -251,7 +267,7 @@ export async function exchangeOAuthCode(
  * Validate user JWT token with control plane.
  */
 export async function validateUserToken(token: string): Promise<{ valid: boolean; user_id?: string }> {
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/auth/me`, {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/auth/me`, {
 		headers: {
 			Authorization: `Bearer ${token}`
 		}
@@ -294,7 +310,7 @@ export async function getFolderFileContent(
 	urlObj.searchParams.set('path', path);
 	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
 
-	const response = await fetch(urlObj.toString(), { headers });
+	const response = await fetchWithTimeout(urlObj.toString(), { headers });
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch file content: ${response.statusText}`);
@@ -323,7 +339,7 @@ export async function updateShareContent(
 		headers['Authorization'] = `Bearer ${authToken}`;
 	}
 
-	const response = await fetch(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/content`, {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/content`, {
 		method: 'PUT',
 		headers,
 		body: JSON.stringify({ content })

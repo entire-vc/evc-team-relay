@@ -127,7 +127,7 @@
 </svelte:head>
 
 {#if showPasswordModal}
-	<Dialog bind:open={dialogOpen}>
+	<Dialog open={dialogOpen} onOpenChange={(v) => { dialogOpen = v; }}>
 		<DialogContent class="sm:max-w-md">
 			<DialogHeader>
 				<DialogTitle>Protected Document</DialogTitle>
@@ -148,7 +148,8 @@
 					<Input
 						id="password"
 						type="password"
-						bind:value={password}
+						value={password}
+						oninput={(e) => { password = (e.currentTarget as HTMLInputElement).value; }}
 						placeholder="Enter password"
 						disabled={isAuthenticating}
 					/>
