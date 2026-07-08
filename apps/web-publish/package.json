@@ -39,7 +39,7 @@
     "bits-ui": "^1.8.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dompurify": "^3.2.2",
+    "dompurify": "^3.4.11",
     "highlight.js": "^11.10.0",
     "isomorphic-dompurify": "^2.18.0",
     "katex": "^0.16.28",
