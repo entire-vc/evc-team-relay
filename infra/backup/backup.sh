@@ -127,7 +127,7 @@ cleanup_old_backups() {
     log_info "Deleted ${count} old backups"
 }
 
-# Upload to S3 (optional)
+# Upload to S3 (optional, legacy single-file upload)
 upload_to_s3() {
     if [ "${BACKUP_S3_ENABLED}" != "true" ]; then
         return 0
@@ -142,7 +142,6 @@ upload_to_s3() {
 
     local s3_path="s3://${BACKUP_S3_BUCKET}/${BACKUP_S3_PREFIX}$(basename "$BACKUP_FILE")"
 
-    # Use MinIO client (mc) if available, otherwise aws cli
     if command -v mc &> /dev/null; then
         if mc cp "$BACKUP_FILE" "minio/${BACKUP_S3_BUCKET}/${BACKUP_S3_PREFIX}"; then
             log_success "Uploaded to MinIO: ${s3_path}"
@@ -160,6 +159,19 @@ upload_to_s3() {
     else
         log_error "No S3 client available (mc or aws cli required)"
         return 1
+    fi
+}
+
+# Off-site mirror: full MinIO bucket → external S3 (optional)
+run_offsite_mirror() {
+    if [ "${OFFSITE_S3_ENABLED:-false}" != "true" ]; then
+        return 0
+    fi
+    log_info "Running off-site MinIO mirror"
+    if /usr/local/bin/minio-mirror.sh; then
+        log_success "Off-site mirror completed"
+    else
+        log_error "Off-site mirror failed (non-fatal — backup itself succeeded)"
     fi
 }
 
@@ -190,6 +202,7 @@ main() {
     verify_backup
     cleanup_old_backups
     upload_to_s3
+    run_offsite_mirror
 
     log_success "Backup process completed successfully"
 }
