@@ -34,6 +34,11 @@ concurrency:
 
 jobs:
   deploy:
+    # OSS deploy to prod is DISABLED — prod control-plane is built from relay-onprem-enterprise
+    # (enterprise edition with billing_enabled). The OSS source hardcodes edition=community which
+    # breaks the billing button in the plugin. Re-enable only when the OSS and enterprise
+    # migration trees are reconciled. See Mesh task e5b4a3d6 for context.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     environment: production
     steps:

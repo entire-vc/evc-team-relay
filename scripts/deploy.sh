@@ -76,4 +76,31 @@ for i in $(seq 1 20); do
   fi
 done
 
+# 6. Edition smoke gate — FAIL-CLOSED.
+#    Hits /server/info after a successful health-check to verify the running image
+#    is the enterprise build (edition=enterprise + billing_enabled=true).
+#    If not, rolls back to the :prev image automatically.
+#    Override SMOKE_URL if the server info endpoint is at a different URL.
+SMOKE_URL="${SMOKE_URL:-https://cp.tr.entire.vc/server/info}"
+log "checking edition smoke gate ($SMOKE_URL)"
+_EDITION=""
+_BILLING="False"
+for _i in $(seq 1 5); do
+  _RESP=$(curl -sf --max-time 10 "$SMOKE_URL" 2>/dev/null || true)
+  if [ -n "$_RESP" ]; then
+    _EDITION=$(printf '%s' "$_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('edition',''))" 2>/dev/null || true)
+    _BILLING=$(printf '%s' "$_RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('features',{}).get('billing_enabled','False')))" 2>/dev/null || true)
+    break
+  fi
+  sleep 3
+done
+if [ "$_EDITION" != "enterprise" ] || [ "$_BILLING" != "True" ]; then
+  printf '\n\033[1;31m!! EDITION SMOKE GATE FAILED: edition=%s billing_enabled=%s\033[0m\n' "$_EDITION" "$_BILLING" >&2
+  printf '\033[1;31m!! Rolling back to infra-control-plane:prev\033[0m\n' >&2
+  docker tag infra-control-plane:prev "$IMAGE" 2>/dev/null || true
+  docker compose up -d --force-recreate control-plane webhook-worker email-worker 2>/dev/null || true
+  die "Edition smoke gate failed — rolled back to prev image. Prod /server/info must return edition=enterprise + billing_enabled=true. Check that prod source is from relay-onprem-enterprise, not OSS."
+fi
+log "smoke gate PASSED: edition=enterprise billing_enabled=true"
+
 log "deploy complete — image $IMAGE live, prev image retained as infra-control-plane:prev"
