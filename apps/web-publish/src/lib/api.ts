@@ -2,12 +2,13 @@
  * Control Plane API client for web publishing.
  */
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+// H-M SSR timeouts: all control-plane fetches abort after 5 s to prevent SSR hangs.
+const SSR_TIMEOUT_MS = 5000;
 
 export async function fetchWithTimeout(
 	url: string | URL,
 	init: RequestInit = {},
-	timeoutMs = DEFAULT_TIMEOUT_MS
+	timeoutMs = SSR_TIMEOUT_MS
 ): Promise<Response> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
