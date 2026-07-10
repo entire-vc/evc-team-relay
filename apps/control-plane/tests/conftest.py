@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.config import get_settings
+from app.core.security import generate_ed25519_keypair
 from app.db import session as session_module
 from app.db.models import Base
 from app.main import build_app
@@ -32,6 +33,10 @@ def test_env():
     os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "bootstrap@example.com"
     os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "super-secret"
     os.environ["RELAY_PUBLIC_URL"] = "wss://relay.test"
+    # RELAY_PRIVATE_KEY is required at startup (fail-closed, no ephemeral fallback) —
+    # seed a throwaway keypair so the app lifespan can boot in tests.
+    private_pem, _public_b64 = generate_ed25519_keypair()
+    os.environ["RELAY_PRIVATE_KEY"] = private_pem
 
     get_settings.cache_clear()
     yield
