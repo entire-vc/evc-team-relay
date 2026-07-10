@@ -1,9 +1,11 @@
 name: Deploy
 
-# Automated deploy to tw-relay with a fail-closed migration gate.
+# Automated deploy to tr-relay-vm (10.10.10.40, Helsinki — canonical prod since the
+# 2026-07-09 cutover; tw-relay/64.188.59.168 is standby/rollback-only) with a
+# fail-closed migration gate.
 #
 # Sequence (CLAUDE-workflow.md §1b Deploy Discipline):
-#   1. rsync apps/control-plane/ -> tw-relay:/opt/relay/control-plane-src/
+#   1. rsync apps/control-plane/ -> tr-relay-vm:/opt/relay/control-plane-src/
 #   2. build image on the server
 #   3. run `control-plane-migrate` (alembic upgrade head) — FAIL-CLOSED
 #   4. only on migrate exit 0: `docker compose up -d` the app services

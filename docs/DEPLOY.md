@@ -5,15 +5,19 @@
 
 ## Overview
 
-Team Relay is deployed on `tw-relay` via Docker Compose. Production images are built locally
-on the server from synced source (`/opt/relay/control-plane-src/`), not pulled from a registry.
+Team Relay is deployed on `tr-relay-vm` (`10.10.10.40`, Helsinki) via Docker Compose. Production
+images are built locally on the server from synced source (`/opt/relay/control-plane-src/`), not
+pulled from a registry.
+
+> `tw-relay` (`64.188.59.168`) is **standby/rollback-only** since the 2026-07-09 Helsinki cutover —
+> it is not a deploy target. Do not `ssh tw-relay` and run the deploy recipe there.
 
 The `control-plane-migrate` service in `docker-compose.yml` is the **fail-closed gate**: it runs
 `alembic upgrade head` and must exit 0 before `control-plane` (or any worker) starts.
 
 Two ways to deploy:
 - **[Automated (GitHub Actions)](#automated-deploy-github-actions)** — the default path. Push to
-  `main` (or manual dispatch) runs the gated sequence on `tw-relay`.
+  `main` (or manual dispatch) runs the gated sequence on `tr-relay-vm`.
 - **[Manual (SSH)](#manual-upgrade-fallback)** — the emergency fallback, also the underlying
   procedure the pipeline automates.
 
@@ -29,8 +33,8 @@ On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh).
 - `workflow_dispatch` (manual), with a `dry_run` boolean input.
 
 **What it does** (one job, `environment: production`):
-1. Loads an SSH key and trusts the `tw-relay` host key.
-2. `rsync -az --delete apps/control-plane/ → tw-relay:/opt/relay/control-plane-src/`
+1. Loads an SSH key and trusts the `tr-relay-vm` host key.
+2. `rsync -az --delete apps/control-plane/ → tr-relay-vm:/opt/relay/control-plane-src/`
    (syncs only the app source; never touches the server-managed `docker-compose.yml` / `.env`).
 3. Runs `scripts/deploy.sh` over SSH, which on the server: tags the current image as
    `:prev`, builds `infra-control-plane:latest`, runs the **migration gate**, and — only on
@@ -62,17 +66,17 @@ environment, which also lets you add a manual-approval protection rule):
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `TW_RELAY_SSH_KEY` | ✅ | Private SSH key (PEM) whose public half is in `tw-relay:~/.ssh/authorized_keys`. Use a dedicated deploy key, not a personal one. |
-| `TW_RELAY_HOST` | ✅ | `tw-relay` address (e.g. `64.188.59.168`). |
+| `TW_RELAY_SSH_KEY` | ✅ | Private SSH key (PEM) whose public half is in `tr-relay-vm:~/.ssh/authorized_keys`. Use a dedicated deploy key, not a personal one. |
+| `TW_RELAY_HOST` | ✅ | Deploy host address (e.g. `10.10.10.40` for `tr-relay-vm`, current prod). Unset — this job is currently disabled (`if: ${{ false }}`, see below). |
 | `TW_RELAY_USER` | ✅ | SSH user with permission to run `docker` (e.g. `root`). |
 | `TW_RELAY_PORT` | — | SSH port. Defaults to `22`. |
 | `TW_RELAY_PATH` | — | Deploy root on the server. Defaults to `/opt/relay`. |
-| `TW_RELAY_KNOWN_HOSTS` | — | Pinned host key line(s) from `ssh-keyscan tw-relay`. If unset, the workflow falls back to TOFU `ssh-keyscan` at run time. **Pinning is recommended.** |
+| `TW_RELAY_KNOWN_HOSTS` | — | Pinned host key line(s) from `ssh-keyscan tr-relay-vm`. If unset, the workflow falls back to TOFU `ssh-keyscan` at run time. **Pinning is recommended.** |
 
-> **Network note.** The workflow runs on GitHub-hosted runners and SSHes to `tw-relay` over its
-> public IP. If the server's firewall restricts inbound SSH to known source IPs, GitHub's dynamic
-> runner ranges will be blocked — in that case add a `tailscale/github-action` step before the
-> SSH steps (the fleet's standard), or move the job to a self-hosted runner on the tailnet.
+> **Network note.** The workflow runs on GitHub-hosted runners and would SSH to `tr-relay-vm`
+> (`10.10.10.40`), a private IP reachable only via `ProxyJump hel01` — GitHub-hosted runners cannot
+> reach it directly. Re-enabling this job requires a `tailscale/github-action` step before the SSH
+> steps (the fleet's standard), or moving the job to a self-hosted runner on the tailnet.
 
 ---
 
@@ -83,7 +87,7 @@ automated pipeline runs.
 
 ```bash
 # 1. SSH to server
-ssh tw-relay
+ssh tr-relay-vm
 cd /opt/relay
 
 # 2. Tag the current image BEFORE overwriting (enables fast rollback)
@@ -175,7 +179,7 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
 
 ## Notes & limitations
 
-- **Server-managed compose.** The production `docker-compose.yml` lives on `tw-relay`
+- **Server-managed compose.** The production `docker-compose.yml` lives on `tr-relay-vm`
   (`/opt/relay/`) and uses `image: infra-control-plane:latest` (built locally), whereas the
   repo's `infra/docker-compose.yml` is the `build:`-context variant of the same gate. The deploy
   pipeline deliberately syncs **only** `apps/control-plane/` → `control-plane-src/` and leaves
@@ -183,7 +187,7 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
 - **web-publish / relay-server** are not (re)built by the deploy pipeline — it covers the
   control-plane and its workers only. Rebuild those manually if their source changes.
 - **Firewall.** See the network note under [Automated deploy](#required-repository-secrets) if
-  GitHub-hosted runners can't reach `tw-relay`.
+  GitHub-hosted runners can't reach `tr-relay-vm`.
 
 ---
 
