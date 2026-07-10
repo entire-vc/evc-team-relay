@@ -245,7 +245,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
             raise RuntimeError(
                 "JWT_SECRET is set to an insecure default. "
                 "Generate a random value and set it in the environment: "
-                "python -c \"import secrets; print(secrets.token_hex(32))\""
+                'python -c "import secrets; print(secrets.token_hex(32))"'
             )
         # Only enforce MinIO credential check in production (non-SQLite) deployments.
         # SQLite is only used in tests and local development.

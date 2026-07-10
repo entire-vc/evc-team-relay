@@ -328,6 +328,71 @@ class TestRelayTokenFolderShares:
         assert resp.status_code == 200
 
 
+# ── H6 Confused-Deputy Tests ─────────────────────────────────
+
+
+class TestRelayTokenConfusedDeputy:
+    """A client authorized for share A must not be able to obtain a
+    write-scoped token for a DIFFERENT share's real document by supplying
+    that other share's own id as doc_id — the documented convention for
+    "sync the whole share" is doc_id == share_id, so a client that only has
+    access to share A cannot use share B's id as a skeleton-key doc_id."""
+
+    def test_cross_share_doc_id_rejected_without_foreign_access(self, client: TestClient):
+        """Editor of share A + doc_id = share B's id (no access to B) -> 403."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_a = create_share(client, admin_token, kind="doc", path="vault/a.md")
+        share_b = create_share(client, admin_token, kind="doc", path="vault/b.md")
+
+        user_id = create_user(client, admin_token, "attacker@example.com", "pass12345")
+        add_member(client, admin_token, share_a, user_id, "editor")
+
+        attacker_token = login(client, "attacker@example.com", "pass12345")
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_a, "doc_id": share_b, "mode": "write"},
+            headers=auth_headers(attacker_token),
+        )
+        assert resp.status_code == 403
+
+    def test_cross_share_doc_id_allowed_with_foreign_access(self, client: TestClient):
+        """Owner has access to both shares -> requesting B's id as doc_id under A is fine."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_a = create_share(client, admin_token, kind="doc", path="vault/a.md")
+        share_b = create_share(client, admin_token, kind="doc", path="vault/b.md")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_a, "doc_id": share_b, "mode": "write"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+
+    def test_doc_share_own_id_as_doc_id_still_works(self, client: TestClient):
+        """Sanity: the fix doesn't break the whole-share sync happy path (doc_id == share_id)."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token, kind="doc", path="vault/note.md")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+
+    def test_arbitrary_non_share_doc_id_still_accepted(self, client: TestClient):
+        """A doc_id that isn't any real share's id (path or per-file UUID) is unaffected."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token, kind="doc", path="vault/note.md")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": "attacker-chosen-doc-id", "mode": "read"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+
+
 # ── Error Cases ──────────────────────────────────────────────
 
 
