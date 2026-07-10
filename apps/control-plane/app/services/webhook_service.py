@@ -149,6 +149,52 @@ def validate_webhook_url(url: str, allow_localhost: bool = False) -> tuple[bool,
         return False, f"Invalid URL: {e}"
 
 
+def resolve_pinned_ip(host: str) -> str:
+    """Resolve a webhook host to a single IP, rejecting private/loopback/reserved
+    addresses, and return that IP for the caller to connect to directly.
+
+    validate_webhook_url() only runs at create/update time; the actual delivery
+    (deliver_webhook, including retries hours later) must independently re-check
+    on EVERY attempt and then connect to the exact IP it validated — otherwise a
+    hostname that resolves to a public IP at creation time can be re-pointed
+    (DNS rebinding) to a private/internal address before delivery, and letting
+    httpx do its own fresh DNS lookup at send time would connect to whatever the
+    attacker's DNS server answers with at that instant.
+
+    Raises:
+        ValueError: if the host is a private/loopback/reserved address or
+            cannot be resolved.
+    """
+    try:
+        literal_ip = ipaddress.ip_address(host)
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
+        if literal_ip.is_private or literal_ip.is_loopback or literal_ip.is_reserved:
+            raise ValueError("Host is a private, loopback, or reserved address")
+        return str(literal_ip)
+
+    if host in ("localhost", "127.0.0.1", "::1"):
+        raise ValueError("Host is localhost")
+    if host.endswith(".local") or host.endswith(".internal"):
+        raise ValueError("Host is an internal address")
+
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except OSError as e:
+        raise ValueError(f"Host could not be resolved: {e}") from e
+
+    for _family, _type, _proto, _canon, sockaddr in resolved:
+        rip = ipaddress.ip_address(sockaddr[0])
+        if rip.is_private or rip.is_loopback or rip.is_reserved:
+            raise ValueError("Host resolves to a private or reserved address")
+
+    # Pin the connection to the first resolved address — every subsequent
+    # DNS lookup for this delivery attempt (including httpx's own) is skipped.
+    return resolved[0][4][0]
+
+
 def validate_event_types(events: list[str], is_admin: bool = False) -> tuple[bool, str | None]:
     """Validate event types list.
 
@@ -603,9 +649,42 @@ async def deliver_webhook(
 
     delivery.attempt_count += 1
 
+    # SSRF guard: re-validate + pin on every delivery attempt (not just at
+    # create/update time). See resolve_pinned_ip() for why re-validating alone
+    # is insufficient — the connection itself must go to the exact IP we just
+    # checked, not to whatever httpx's own DNS lookup returns a moment later.
+    parsed_url = urlparse(webhook.url)
+    host = parsed_url.hostname
+    try:
+        if host is None:
+            raise ValueError("Webhook URL has no hostname")
+        pinned_ip = resolve_pinned_ip(host)
+    except ValueError as e:
+        delivery.response_body = f"Delivery blocked: {e}"[:1024]
+        logger.warning(
+            "Webhook delivery blocked by SSRF guard",
+            extra={
+                "delivery_id": str(delivery.id),
+                "webhook_id": str(webhook.id),
+                "reason": str(e),
+            },
+        )
+        _schedule_retry(db, delivery, webhook)
+        return False
+
+    port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    pinned_netloc = f"[{pinned_ip}]:{port}" if ":" in pinned_ip else f"{pinned_ip}:{port}"
+    pinned_url = parsed_url._replace(netloc=pinned_netloc).geturl()
+    headers["Host"] = host
+
     try:
         async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT) as client:
-            response = await client.post(webhook.url, content=payload_bytes, headers=headers)
+            response = await client.post(
+                pinned_url,
+                content=payload_bytes,
+                headers=headers,
+                extensions={"sni_hostname": host},
+            )
 
         delivery.response_status_code = response.status_code
         # Truncate response body to 1KB
