@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         description=(
             "HMAC-SHA256 secret for signing OAuth state parameters. "
             "Required when oauth_enabled=True. "
-            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            'Generate with: python -c "import secrets; print(secrets.token_hex(32))"'
         ),
     )
     oauth_enabled: bool = Field(default=False, description="Enable OAuth authentication")

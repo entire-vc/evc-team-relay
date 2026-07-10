@@ -40,17 +40,15 @@ def _compute_state_hmac(payload_b64: str, secret: str) -> str:
     Uses constant-time comparison in decode_state to prevent timing attacks.
     The separator '.' is safe because urlsafe_b64 only uses A-Z a-z 0-9 - _.
     """
-    return hmac.new(
-        secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def encode_state(state_data: oauth_schema.OAuthStateData) -> str:
     """Encode state data as base64 JSON, appending an HMAC-SHA256 signature when configured."""
     settings = get_settings()
-    payload_b64 = base64.urlsafe_b64encode(
-        state_data.model_dump_json().encode("utf-8")
-    ).decode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(state_data.model_dump_json().encode("utf-8")).decode(
+        "utf-8"
+    )
     if settings.oauth_state_secret:
         sig = _compute_state_hmac(payload_b64, settings.oauth_state_secret)
         return f"{payload_b64}{_STATE_HMAC_SEP}{sig}"

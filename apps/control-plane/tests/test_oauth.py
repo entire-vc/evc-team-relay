@@ -809,6 +809,9 @@ class TestOAuthGroupMapping:
             assert oauth_service.should_be_admin(["org/admin"]) is True
 
 
+_TEST_STATE_SECRET = "testsecret32bytes00000000000000x"
+
+
 class TestOAuthHmacState:
     """Tests for H5 — OAuth state HMAC signing (login-CSRF prevention)."""
 
@@ -822,7 +825,7 @@ class TestOAuthHmacState:
         )
 
         with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(oauth_state_secret="testsecret32bytes00000000000000x")
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
             encoded = oauth_service.encode_state(state_data)
             # Signed state must contain separator
             assert "." in encoded, "HMAC-signed state must contain a separator"
@@ -833,8 +836,9 @@ class TestOAuthHmacState:
 
     def test_decode_state_rejects_tampered_payload(self):
         """State with a valid signature but altered payload must be rejected (400)."""
-        from app.schemas.oauth import OAuthStateData
         from fastapi import HTTPException
+
+        from app.schemas.oauth import OAuthStateData
 
         state_data = OAuthStateData(
             code_verifier="test_verifier",
@@ -842,18 +846,22 @@ class TestOAuthHmacState:
         )
 
         with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(oauth_state_secret="testsecret32bytes00000000000000x")
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
             encoded = oauth_service.encode_state(state_data)
             payload_b64, sig = encoded.rsplit(".", 1)
             # Replace payload with a different one (attacker's state) but keep original sig
-            import base64, json
+            import base64
+            import json
+
             evil_payload = base64.urlsafe_b64encode(
-                json.dumps({"code_verifier": "evil", "redirect_uri": "https://attacker.com"}).encode()
+                json.dumps(
+                    {"code_verifier": "evil", "redirect_uri": "https://attacker.com"}
+                ).encode()
             ).decode()
             tampered = f"{evil_payload}.{sig}"
 
         with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(oauth_state_secret="testsecret32bytes00000000000000x")
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
             with pytest.raises(HTTPException) as exc_info:
                 oauth_service.decode_state(tampered)
 
@@ -862,8 +870,10 @@ class TestOAuthHmacState:
 
     def test_decode_state_rejects_missing_signature(self):
         """State without HMAC signature is rejected (400) when secret is configured."""
+        import base64
+        import json
+
         from fastapi import HTTPException
-        import base64, json
 
         # Craft an unsigned state (plain base64 JSON, no sig)
         unsigned = base64.urlsafe_b64encode(
@@ -871,14 +881,14 @@ class TestOAuthHmacState:
         ).decode()
 
         with patch("app.services.oauth_service.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(oauth_state_secret="testsecret32bytes00000000000000x")
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
             with pytest.raises(HTTPException) as exc_info:
                 oauth_service.decode_state(unsigned)
 
         assert exc_info.value.status_code == 400
 
     def test_decode_state_unsigned_allowed_without_secret(self):
-        """When oauth_state_secret is None, unsigned states are still accepted (backwards compat)."""
+        """When oauth_state_secret is None, unsigned states are still accepted (backcompat)."""
         from app.schemas.oauth import OAuthStateData
 
         state_data = OAuthStateData(

@@ -233,7 +233,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
         if settings.oauth_enabled and not settings.oauth_state_secret:
             raise ValueError(
                 "OAUTH_STATE_SECRET is required when OAuth is enabled. "
-                "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+                'Generate with: python -c "import secrets; print(secrets.token_hex(32))"'
             )
 
     @app.on_event("startup")
