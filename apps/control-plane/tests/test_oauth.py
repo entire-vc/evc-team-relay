@@ -450,6 +450,7 @@ class TestOAuthEndpoints:
                 oauth_client_secret="test_secret",
                 oauth_auto_register=True,
                 oauth_scopes="openid profile email",
+                oauth_state_secret=None,
             )
 
             # Test with 127.0.0.1
@@ -806,3 +807,139 @@ class TestOAuthGroupMapping:
             # Only exact match or org/exact_match should work
             assert oauth_service.should_be_admin(["admin"]) is True
             assert oauth_service.should_be_admin(["org/admin"]) is True
+
+
+_TEST_STATE_SECRET = "testsecret32bytes00000000000000x"
+
+
+class TestOAuthHmacState:
+    """Tests for H5 — OAuth state HMAC signing (login-CSRF prevention)."""
+
+    def test_encode_decode_state_with_hmac(self):
+        """encode_state + decode_state round-trip when OAUTH_STATE_SECRET is set."""
+        from app.schemas.oauth import OAuthStateData
+
+        state_data = OAuthStateData(
+            code_verifier="test_verifier",
+            redirect_uri="https://example.com/callback",
+        )
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
+            encoded = oauth_service.encode_state(state_data)
+            # Signed state must contain separator
+            assert "." in encoded, "HMAC-signed state must contain a separator"
+            decoded = oauth_service.decode_state(encoded)
+
+        assert decoded.code_verifier == state_data.code_verifier
+        assert decoded.redirect_uri == state_data.redirect_uri
+
+    def test_decode_state_rejects_tampered_payload(self):
+        """State with a valid signature but altered payload must be rejected (400)."""
+        from fastapi import HTTPException
+
+        from app.schemas.oauth import OAuthStateData
+
+        state_data = OAuthStateData(
+            code_verifier="test_verifier",
+            redirect_uri="https://example.com/callback",
+        )
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
+            encoded = oauth_service.encode_state(state_data)
+            payload_b64, sig = encoded.rsplit(".", 1)
+            # Replace payload with a different one (attacker's state) but keep original sig
+            import base64
+            import json
+
+            evil_payload = base64.urlsafe_b64encode(
+                json.dumps(
+                    {"code_verifier": "evil", "redirect_uri": "https://attacker.com"}
+                ).encode()
+            ).decode()
+            tampered = f"{evil_payload}.{sig}"
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
+            with pytest.raises(HTTPException) as exc_info:
+                oauth_service.decode_state(tampered)
+
+        assert exc_info.value.status_code == 400
+        assert "Invalid state parameter" in exc_info.value.detail
+
+    def test_decode_state_rejects_missing_signature(self):
+        """State without HMAC signature is rejected (400) when secret is configured."""
+        import base64
+        import json
+
+        from fastapi import HTTPException
+
+        # Craft an unsigned state (plain base64 JSON, no sig)
+        unsigned = base64.urlsafe_b64encode(
+            json.dumps({"code_verifier": "v", "redirect_uri": "https://evil.com"}).encode()
+        ).decode()
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(oauth_state_secret=_TEST_STATE_SECRET)
+            with pytest.raises(HTTPException) as exc_info:
+                oauth_service.decode_state(unsigned)
+
+        assert exc_info.value.status_code == 400
+
+    def test_decode_state_unsigned_allowed_without_secret(self):
+        """When oauth_state_secret is None, unsigned states are still accepted (backcompat)."""
+        from app.schemas.oauth import OAuthStateData
+
+        state_data = OAuthStateData(
+            code_verifier="test_verifier",
+            redirect_uri="https://example.com/callback",
+        )
+
+        with patch("app.services.oauth_service.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(oauth_state_secret=None)
+            encoded = oauth_service.encode_state(state_data)
+            assert "." not in encoded, "Unsigned state must not contain a separator"
+            decoded = oauth_service.decode_state(encoded)
+
+        assert decoded.code_verifier == state_data.code_verifier
+
+    def test_compute_state_hmac_deterministic(self):
+        """_compute_state_hmac returns same value for same inputs (deterministic)."""
+        sig1 = oauth_service._compute_state_hmac("payload", "secret")
+        sig2 = oauth_service._compute_state_hmac("payload", "secret")
+        assert sig1 == sig2
+
+    def test_compute_state_hmac_differs_on_different_payload(self):
+        """_compute_state_hmac returns different values for different payloads."""
+        sig1 = oauth_service._compute_state_hmac("payload_a", "secret")
+        sig2 = oauth_service._compute_state_hmac("payload_b", "secret")
+        assert sig1 != sig2
+
+
+class TestCorsAllowlistConfig:
+    """Tests for H4 — CORS_ALLOWED_ORIGINS parsing."""
+
+    def test_single_origin_parsed(self):
+        """Single origin string is correctly parsed into a list."""
+        from app.core.config import Settings
+
+        s = Settings(cors_allowed_origins="https://cp.tr.entire.vc")
+        origins = [o.strip() for o in s.cors_allowed_origins.split(",") if o.strip()]
+        assert origins == ["https://cp.tr.entire.vc"]
+
+    def test_multiple_origins_parsed(self):
+        """Comma-separated origins are correctly split."""
+        from app.core.config import Settings
+
+        s = Settings(cors_allowed_origins="https://app.example.com, https://admin.example.com")
+        origins = [o.strip() for o in s.cors_allowed_origins.split(",") if o.strip()]
+        assert origins == ["https://app.example.com", "https://admin.example.com"]
+
+    def test_default_is_production_origin(self):
+        """Default CORS origin is the production control-plane URL, not wildcard."""
+        from app.core.config import Settings
+
+        s = Settings()
+        assert "*" not in s.cors_allowed_origins
+        assert "cp.tr.entire.vc" in s.cors_allowed_origins

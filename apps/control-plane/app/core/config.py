@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     relay_public_url: AnyUrl = Field(default="wss://relay.localhost")
     relay_token_ttl_minutes: int = Field(default=30)
 
+    # CORS settings
+    cors_allowed_origins: str = Field(
+        default="https://cp.tr.entire.vc",
+        description=(
+            "Comma-separated list of allowed CORS origins. "
+            "Set to '*' only for local development (never in production)."
+        ),
+    )
+
     # Relay Ed25519 authentication
     relay_private_key: str | None = Field(
         default=None, description="Ed25519 private key in PEM format for signing relay tokens"
@@ -44,6 +53,14 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str | None = Field(default=None)
 
     # OAuth/OIDC settings (simple single provider via env vars)
+    oauth_state_secret: str | None = Field(
+        default=None,
+        description=(
+            "HMAC-SHA256 secret for signing OAuth state parameters. "
+            "Required when oauth_enabled=True. "
+            'Generate with: python -c "import secrets; print(secrets.token_hex(32))"'
+        ),
+    )
     oauth_enabled: bool = Field(default=False, description="Enable OAuth authentication")
     oauth_provider_name: str = Field(
         default="casdoor", description="OAuth provider name (e.g., 'casdoor', 'keycloak')"
