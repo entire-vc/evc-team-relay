@@ -79,18 +79,15 @@ class TestEd25519Keypair:
         _, pub2 = generate_ed25519_keypair()
         assert pub1 != pub2
 
-    def test_load_or_generate_without_existing_key(self):
-        """When no private key is set, generates a new keypair."""
+    def test_load_or_generate_without_existing_key_fails_closed(self):
+        """When no private key is set, startup must fail closed — no ephemeral fallback."""
 
         class FakeSettings:
             relay_private_key = None
             relay_key_id = "test_key"
 
-        private_key, public_b64, key_id = load_or_generate_relay_keypair(FakeSettings())
-
-        assert isinstance(private_key, ed25519.Ed25519PrivateKey)
-        assert len(base64.b64decode(public_b64)) == 32
-        assert key_id.startswith("relay_cp_")
+        with pytest.raises(RuntimeError, match="RELAY_PRIVATE_KEY is required"):
+            load_or_generate_relay_keypair(FakeSettings())
 
     def test_load_or_generate_with_pem_key(self):
         """When PEM private key is provided, loads it correctly."""
