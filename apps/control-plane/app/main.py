@@ -237,6 +237,33 @@ Get a token by calling `POST /auth/login` with valid credentials.
             )
 
     @app.on_event("startup")
+    def _validate_secrets() -> None:
+        """H7: Fail-closed on known-insecure default credentials."""
+        settings = get_settings()
+        bad_jwt = ("dev-secret-change-me", "")
+        if settings.jwt_secret in bad_jwt:
+            raise RuntimeError(
+                "JWT_SECRET is set to an insecure default. "
+                "Generate a random value and set it in the environment: "
+                'python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+        # Only enforce MinIO credential check in production (non-SQLite) deployments.
+        # SQLite is only used in tests and local development.
+        is_sqlite = "sqlite" in settings.database_url
+        if not is_sqlite:
+            bad_minio = ("minioadmin", "")
+            if settings.minio_secret_key in bad_minio:
+                raise RuntimeError(
+                    "MINIO_SECRET_KEY is set to the insecure default 'minioadmin'. "
+                    "Change it before running in production."
+                )
+            if settings.minio_access_key in bad_minio:
+                raise RuntimeError(
+                    "MINIO_ACCESS_KEY is set to the insecure default 'minioadmin'. "
+                    "Change it before running in production."
+                )
+
+    @app.on_event("startup")
     def _bootstrap_relay_keys() -> None:
         """Load or generate Ed25519 keypair for relay token signing."""
         settings = get_settings()

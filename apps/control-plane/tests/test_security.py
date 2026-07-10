@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -178,6 +179,57 @@ def test_audit_logging_on_login(client: TestClient) -> None:
     # Should have at least one user_login event
     login_logs = [log for log in logs if log["action"] == "user_login"]
     assert len(login_logs) > 0, "No login events in audit log"
+
+
+# ── H7: Default-credential startup validation ────────────────
+
+
+class TestH7SecretValidation:
+    """Startup check rejects known-insecure default credentials (H7)."""
+
+    def test_insecure_jwt_secret_raises(self, monkeypatch):
+        """build_app() must raise when JWT_SECRET is the hardcoded default."""
+        from app.core.config import get_settings
+        from app.main import build_app
+
+        monkeypatch.setenv("JWT_SECRET", "dev-secret-change-me")
+        get_settings.cache_clear()
+        try:
+            app = build_app()
+            with pytest.raises(RuntimeError, match="JWT_SECRET"):
+                with TestClient(app):
+                    pass
+        finally:
+            get_settings.cache_clear()
+
+    def test_empty_jwt_secret_raises(self, monkeypatch):
+        """build_app() must raise when JWT_SECRET is empty."""
+        from app.core.config import get_settings
+        from app.main import build_app
+
+        monkeypatch.setenv("JWT_SECRET", "")
+        get_settings.cache_clear()
+        try:
+            app = build_app()
+            with pytest.raises(RuntimeError, match="JWT_SECRET"):
+                with TestClient(app):
+                    pass
+        finally:
+            get_settings.cache_clear()
+
+    def test_safe_jwt_secret_passes(self, monkeypatch):
+        """build_app() must not raise when JWT_SECRET is a non-default value."""
+        from app.core.config import get_settings
+        from app.main import build_app
+
+        monkeypatch.setenv("JWT_SECRET", "safe-random-value-for-test-only")
+        get_settings.cache_clear()
+        try:
+            app = build_app()
+            with TestClient(app):
+                pass  # no exception expected
+        finally:
+            get_settings.cache_clear()
 
 
 def test_audit_logging_on_logout(client: TestClient) -> None:

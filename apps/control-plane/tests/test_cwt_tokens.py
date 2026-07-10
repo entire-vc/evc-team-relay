@@ -14,9 +14,12 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from app.core.security import (
     COSE_SIGN1_TAG,
+    CWT_CLAIM_AUD,
+    CWT_CLAIM_EXP,
     CWT_CLAIM_IAT,
     CWT_CLAIM_ISS,
     CWT_CLAIM_SCOPE,
+    CWT_CLAIM_SHARE,
     CWT_TAG,
     create_relay_token_cwt,
     generate_ed25519_keypair,
@@ -202,23 +205,46 @@ class TestCWTTokenStructure:
 class TestCWTClaims:
     """Verify the claims payload matches y-sweet requirements."""
 
-    def test_contains_only_iss_iat_scope(self):
-        """y-sweet expects ONLY iss, iat, scope — no exp, no aud."""
+    def test_contains_required_claims(self):
+        """Tokens must include iss, iat, exp, scope. aud must NOT be present."""
         private_key, _ = _make_keypair()
         token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
 
         _, claims, _, _ = _decode_cwt_raw(token)
 
-        expected_keys = {CWT_CLAIM_ISS, CWT_CLAIM_IAT, CWT_CLAIM_SCOPE}
-        assert set(claims.keys()) == expected_keys, f"Unexpected claims: {claims}"
+        assert CWT_CLAIM_ISS in claims
+        assert CWT_CLAIM_IAT in claims
+        assert CWT_CLAIM_EXP in claims, "exp is required for TTL enforcement (H6)"
+        assert CWT_CLAIM_SCOPE in claims
 
-    def test_no_exp_claim(self):
-        """exp (4) must NOT be present — y-sweet rejects it."""
+    def test_has_exp_claim(self):
+        """exp (4) must be present for TTL enforcement (H6 security requirement).
+
+        NOTE: relay-server (System3) MUST be verified to accept and enforce exp.
+        If System3 rejects exp, file a System3 bug — do NOT remove exp from here.
+        """
         private_key, _ = _make_keypair()
         token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
 
         _, claims, _, _ = _decode_cwt_raw(token)
-        assert 4 not in claims, f"exp claim found: {claims}"
+        assert CWT_CLAIM_EXP in claims, "exp missing — H6 security regression"
+
+    def test_exp_is_after_iat(self):
+        """exp must be strictly greater than iat."""
+        private_key, _ = _make_keypair()
+        token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 30)
+
+        _, claims, _, _ = _decode_cwt_raw(token)
+        assert claims[CWT_CLAIM_EXP] > claims[CWT_CLAIM_IAT]
+
+    def test_exp_reflects_ttl(self):
+        """exp - iat should approximate expires_minutes * 60 (within 5 s tolerance)."""
+        private_key, _ = _make_keypair()
+        for ttl in (5, 30, 1440):
+            token = create_relay_token_cwt(private_key, "k1", "doc-ttl", "read", ttl)
+            _, claims, _, _ = _decode_cwt_raw(token)
+            delta = claims[CWT_CLAIM_EXP] - claims[CWT_CLAIM_IAT]
+            assert abs(delta - ttl * 60) <= 5, f"TTL {ttl} min gave delta={delta}s"
 
     def test_no_aud_claim(self):
         """aud (3) must NOT be present — y-sweet rejects it."""
@@ -229,7 +255,25 @@ class TestCWTClaims:
         )
 
         _, claims, _, _ = _decode_cwt_raw(token)
-        assert 3 not in claims, f"aud claim found: {claims}"
+        assert CWT_CLAIM_AUD not in claims, f"aud claim found: {claims}"
+
+    def test_share_claim_present_when_provided(self):
+        """share_id (-80203) must be present when share_id is passed (H6 confused-deputy)."""
+        private_key, _ = _make_keypair()
+        sid = "550e8400-e29b-41d4-a716-446655440000"
+        token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60, share_id=sid)
+
+        _, claims, _, _ = _decode_cwt_raw(token)
+        assert CWT_CLAIM_SHARE in claims, "share claim missing — H6 security regression"
+        assert claims[CWT_CLAIM_SHARE] == sid
+
+    def test_share_claim_absent_when_not_provided(self):
+        """share_id claim must be absent when share_id is not passed."""
+        private_key, _ = _make_keypair()
+        token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
+
+        _, claims, _, _ = _decode_cwt_raw(token)
+        assert CWT_CLAIM_SHARE not in claims
 
     def test_iss_claim(self):
         private_key, _ = _make_keypair()
