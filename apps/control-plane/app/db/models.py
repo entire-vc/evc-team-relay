@@ -248,7 +248,9 @@ class AuditLog(Base):
         ForeignKey("shares.id", ondelete="SET NULL"),
         nullable=True,
     )
-    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    details: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
@@ -450,7 +452,9 @@ class Webhook(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     secret: Mapped[str] = mapped_column(String(64), nullable=False)
-    events: Mapped[list] = mapped_column(JSON, nullable=False)  # Array of event types
+    events: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )  # Array of event types
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     failure_count: Mapped[int] = mapped_column(default=0, nullable=False)
 
@@ -473,7 +477,9 @@ class WebhookDelivery(Base, TimestampMixin):
     )
     event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )
     status: Mapped[WebhookDeliveryStatus] = mapped_column(
         PgEnum(
             WebhookDeliveryStatus,
