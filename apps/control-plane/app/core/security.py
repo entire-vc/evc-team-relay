@@ -100,11 +100,10 @@ def load_or_generate_relay_keypair(
     private_key_str = settings.relay_private_key
     if not private_key_str.startswith("-----BEGIN"):
         import base64 as b64
+
         private_key_str = b64.b64decode(private_key_str).decode("utf-8")
 
-    private_key = serialization.load_pem_private_key(
-        private_key_str.encode("utf-8"), password=None
-    )
+    private_key = serialization.load_pem_private_key(private_key_str.encode("utf-8"), password=None)
     public_bytes = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
