@@ -30,7 +30,7 @@ HTTP_REQUEST_DURATION_SECONDS = Histogram(
 HTTP_REQUESTS_IN_PROGRESS = Gauge(
     "http_requests_in_progress",
     "Number of HTTP requests currently being processed",
-    ["method", "endpoint"],
+    ["method"],
 )
 
 HTTP_REQUEST_SIZE_BYTES = Histogram(

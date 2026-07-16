@@ -636,7 +636,7 @@
             "uid": "prometheus"
           },
           "expr": "http_requests_in_progress",
-          "legendFormat": "{{endpoint}}",
+          "legendFormat": "{{method}}",
           "refId": "A"
         }
       ],

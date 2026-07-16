@@ -199,6 +199,43 @@ def test_login_attempts_success_counter(client: TestClient) -> None:
     assert 'login_attempts_total{method="password",status="success"}' in metrics.text
 
 
+def test_unmatched_path_collapses_to_single_bucket(client: TestClient) -> None:
+    """Scanner probes on nonexistent paths must not create per-path series."""
+    client.get("/.env")
+    client.get("/.aws/credentials")
+    client.get("/wp-admin")
+
+    response = client.get("/metrics")
+    content = response.text
+
+    assert 'endpoint="/.env"' not in content
+    assert 'endpoint="/.aws/credentials"' not in content
+    assert 'endpoint="/wp-admin"' not in content
+    assert 'endpoint="__unmatched__"' in content
+
+
+def test_matched_route_labeled_by_template_not_raw_path(client: TestClient) -> None:
+    """A request with a dynamic segment is labeled by the route template."""
+    client.get("/health")
+
+    response = client.get("/metrics")
+    content = response.text
+
+    # /health is excluded from HTTP metrics entirely (EXCLUDED_PATHS)
+    assert 'endpoint="/health"' not in content
+
+
+def test_in_progress_gauge_has_no_endpoint_label(client: TestClient) -> None:
+    """http_requests_in_progress is labeled by method only (endpoint unknown pre-route)."""
+    response = client.get("/metrics")
+    content = response.text
+
+    lines = [ln for ln in content.splitlines() if ln.startswith("http_requests_in_progress{")]
+    assert lines, "http_requests_in_progress metric not found"
+    for ln in lines:
+        assert "endpoint=" not in ln
+
+
 def test_share_metrics_per_share_id(client: TestClient, db_session) -> None:
     """share_files_total and share_size_bytes carry share_id labels after collection."""
     from app.workers.metrics_worker import _collect_db_metrics
