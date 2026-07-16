@@ -215,14 +215,14 @@ def test_unmatched_path_collapses_to_single_bucket(client: TestClient) -> None:
 
 
 def test_matched_route_labeled_by_template_not_raw_path(client: TestClient) -> None:
-    """A request with a dynamic segment is labeled by the route template."""
-    client.get("/health")
+    """A request with a dynamic segment is labeled by the route template, not the raw path."""
+    client.get("/auth/password-reset/some-bogus-token-xyz-12345")
 
     response = client.get("/metrics")
     content = response.text
 
-    # /health is excluded from HTTP metrics entirely (EXCLUDED_PATHS)
-    assert 'endpoint="/health"' not in content
+    assert 'endpoint="/auth/password-reset/some-bogus-token-xyz-12345"' not in content
+    assert 'endpoint="/auth/password-reset/{token}"' in content
 
 
 def test_in_progress_gauge_has_no_endpoint_label(client: TestClient) -> None:
