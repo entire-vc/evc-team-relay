@@ -17,29 +17,10 @@ from app.core.metrics import (
     HTTP_RESPONSE_SIZE_BYTES,
 )
 
-
-def normalize_path(path: str) -> str:
-    """Normalize path for metrics labels to avoid cardinality explosion.
-
-    Replaces dynamic path segments (UUIDs, numeric IDs) with placeholders.
-    """
-    import re
-
-    # Replace UUIDs
-    path = re.sub(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        "{id}",
-        path,
-        flags=re.IGNORECASE,
-    )
-    # Replace numeric IDs
-    path = re.sub(r"/\d+(?=/|$)", "/{id}", path)
-    # Replace tokens (64 char hex strings)
-    path = re.sub(r"/[0-9a-f]{64}(?=/|$)", "/{token}", path, flags=re.IGNORECASE)
-    # Replace email verification tokens (shorter tokens)
-    path = re.sub(r"/[0-9a-f]{32}(?=/|$)", "/{token}", path, flags=re.IGNORECASE)
-
-    return path
+# Label value for any request that never matched a route (scanner/bot probes on
+# arbitrary paths). Without this, every probed path becomes its own permanent
+# Prometheus time series — see task #4b0eac5c.
+UNMATCHED_ENDPOINT = "__unmatched__"
 
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
@@ -57,17 +38,10 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         method = request.method
-        normalized_path = normalize_path(path)
 
-        # Track request size
-        content_length = request.headers.get("content-length")
-        if content_length:
-            HTTP_REQUEST_SIZE_BYTES.labels(method=method, endpoint=normalized_path).observe(
-                int(content_length)
-            )
-
-        # Track in-progress requests
-        HTTP_REQUESTS_IN_PROGRESS.labels(method=method, endpoint=normalized_path).inc()
+        # Track in-progress requests. The matched route isn't known until routing
+        # runs inside call_next, so this gauge is labeled by method only.
+        HTTP_REQUESTS_IN_PROGRESS.labels(method=method).inc()
 
         start_time = time.perf_counter()
         try:
@@ -77,24 +51,30 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             status_code = 500
             raise
         finally:
-            # Record duration
-            duration = time.perf_counter() - start_time
-            HTTP_REQUEST_DURATION_SECONDS.labels(method=method, endpoint=normalized_path).observe(
-                duration
-            )
+            # Routing has resolved by the time call_next returns — label by the
+            # matched route template, or a single bucket for anything unmatched.
+            route = request.scope.get("route")
+            endpoint = getattr(route, "path", None) or UNMATCHED_ENDPOINT
 
-            # Decrement in-progress counter
-            HTTP_REQUESTS_IN_PROGRESS.labels(method=method, endpoint=normalized_path).dec()
+            duration = time.perf_counter() - start_time
+            HTTP_REQUEST_DURATION_SECONDS.labels(method=method, endpoint=endpoint).observe(duration)
+
+            HTTP_REQUESTS_IN_PROGRESS.labels(method=method).dec()
 
         # Record request count
-        HTTP_REQUESTS_TOTAL.labels(
-            method=method, endpoint=normalized_path, status=str(status_code)
-        ).inc()
+        HTTP_REQUESTS_TOTAL.labels(method=method, endpoint=endpoint, status=str(status_code)).inc()
+
+        # Track request size
+        content_length = request.headers.get("content-length")
+        if content_length:
+            HTTP_REQUEST_SIZE_BYTES.labels(method=method, endpoint=endpoint).observe(
+                int(content_length)
+            )
 
         # Track response size
         response_size = response.headers.get("content-length")
         if response_size:
-            HTTP_RESPONSE_SIZE_BYTES.labels(method=method, endpoint=normalized_path).observe(
+            HTTP_RESPONSE_SIZE_BYTES.labels(method=method, endpoint=endpoint).observe(
                 int(response_size)
             )
 
