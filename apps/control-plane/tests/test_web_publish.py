@@ -1179,31 +1179,96 @@ class TestWebContentEditing:
         )
         assert response.status_code == 404
 
-    def test_update_content_protected_share_with_session(
+    def test_update_content_protected_share_session_alone_is_rejected(
         self, client: TestClient, doc_share: models.Share, monkeypatch
     ):
-        """Test updating content with valid session for protected share."""
-        # Enable web publishing
+        """TR-13 (#7d32a104): a valid web_session cookie proves only that the
+        caller knows the share's VIEW password — it must never be sufficient
+        for write on its own. Regression test for the exact vulnerability:
+        this used to return 200."""
         monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
         from app.core.config import get_settings
 
         get_settings.cache_clear()
 
-        # Authenticate to get session
         from app.services.web_session_service import WebSessionService
 
         session_token = WebSessionService.create_web_session(doc_share.id, hours=24)
 
-        # Update content
+        response = client.put(
+            f"/v1/web/shares/{doc_share.web_slug}/content",
+            json={"content": "# Attacker-controlled content"},
+            cookies={"web_session": session_token},
+        )
+        assert response.status_code == 403
+        body = response.json()
+        # Error may be wrapped by middleware (see test_update_content_folder_share_rejected).
+        detail = body.get("detail") or body.get("error", {}).get("message", "")
+        assert detail == "Editor role required to edit this share"
+
+        get_settings.cache_clear()
+
+    def test_update_content_protected_share_owner_with_jwt_still_works(
+        self, client: TestClient, db_session: Session, doc_share: models.Share, monkeypatch
+    ):
+        """The legitimate case must keep working: the share owner, real JWT
+        session, can still edit their own protected share — with or without
+        also presenting the web_session cookie."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        owner = db_session.get(models.User, doc_share.owner_user_id)
+        login_response = client.post(
+            "/auth/login", json={"email": owner.email, "password": "test123456"}
+        )
+        token = login_response.json()["access_token"]
+
         response = client.put(
             f"/v1/web/shares/{doc_share.web_slug}/content",
             json={"content": "# Updated Content\n\nNew text here."},
-            cookies={"web_session": session_token},
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
         assert "updated_at" in data
+
+        get_settings.cache_clear()
+
+    def test_update_content_protected_share_non_editor_jwt_rejected(
+        self, client: TestClient, db_session: Session, doc_share: models.Share, monkeypatch
+    ):
+        """A real logged-in user who is neither owner nor an editor member
+        must still be rejected, even with a valid JWT."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        stranger = models.User(
+            email="stranger-tr13@example.com",
+            password_hash=get_password_hash("test123456"),
+            is_active=True,
+        )
+        db_session.add(stranger)
+        db_session.commit()
+
+        login_response = client.post(
+            "/auth/login", json={"email": stranger.email, "password": "test123456"}
+        )
+        token = login_response.json()["access_token"]
+
+        response = client.put(
+            f"/v1/web/shares/{doc_share.web_slug}/content",
+            json={"content": "# Should be rejected"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+        body = response.json()
+        detail = body.get("detail") or body.get("error", {}).get("message", "")
+        assert detail == "Editor role required to edit this share"
 
         get_settings.cache_clear()
 

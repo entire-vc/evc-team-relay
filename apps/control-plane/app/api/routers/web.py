@@ -710,8 +710,11 @@ def update_share_content(
     Only works for document shares (not folders).
 
     Access control:
-    - Requires authentication via session cookie (for protected shares) or JWT token
-    - User must have editor role on the share
+    - Requires a JWT (Bearer token) proving the caller is the share owner or
+      an editor-role member — for BOTH protected and private shares. A
+      protected share's web_session cookie (knowledge of the view password)
+      is a read-only credential and is never sufficient for write (TR-13,
+      #7d32a104).
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -740,26 +743,35 @@ def update_share_content(
             detail="Only document shares can be edited via web",
         )
 
-    # Check authentication and editor role
-    # For protected shares, validate session
-    if share.visibility == models.ShareVisibility.PROTECTED:
-        session_token = request.cookies.get("web_session")
-        if not session_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-            )
-        if not WebSessionService.validate_web_session(session_token, share.id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or expired session",
-            )
-        # For protected shares with password, we can't determine editor role
-        # So we allow editing if authenticated
-    elif share.visibility == models.ShareVisibility.PRIVATE:
-        # For private shares, require JWT token and check editor role
+    # Check authentication and editor role.
+    #
+    # TR-13 (#7d32a104): PROTECTED shares used to be allowed to write here
+    # just by presenting a valid web_session cookie — i.e. by knowing the
+    # share's view password. The old comment even said the quiet part
+    # aloud: "we can't determine editor role [from a password alone], so
+    # we allow editing if authenticated" — but knowing a share's password
+    # is proof of VIEW access, not of editor identity. A protected share's
+    # password only ever governed read visibility; write has always
+    # required a real user account with owner/editor role, exactly like
+    # PRIVATE shares — the visibility distinction is irrelevant for write,
+    # so both now go through the identical JWT + owner-or-editor check.
+    if share.visibility in (
+        models.ShareVisibility.PROTECTED,
+        models.ShareVisibility.PRIVATE,
+    ):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
+            # A PROTECTED share's web_session cookie proves only that the
+            # caller knows the view password — distinguish "presented a
+            # credential, just not a strong enough one" (403) from "no
+            # credential of any kind" (401) for clearer client feedback.
+            if share.visibility == models.ShareVisibility.PROTECTED and request.cookies.get(
+                "web_session"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Editor role required to edit this share",
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
