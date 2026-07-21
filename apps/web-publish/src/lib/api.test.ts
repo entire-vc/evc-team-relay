@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession } from './api.js';
+import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession, getFolderFileContent } from './api.js';
 
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — timeout behaviour
@@ -102,18 +102,72 @@ describe('getShareBySlug', () => {
 		expect(result.web_slug).toBe('my-share');
 	});
 
-	it('appends agent_key query param when provided', async () => {
+	it('sends agent key as the X-Agent-Key header, never a query param (TR-14)', async () => {
 		let capturedUrl = '';
+		let capturedHeaders: Record<string, string> = {};
 		vi.stubGlobal(
 			'fetch',
-			vi.fn((url: string) => {
+			vi.fn((url: string, init?: RequestInit) => {
 				capturedUrl = url;
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
 				return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
 			})
 		);
 
 		await getShareBySlug('my-share', 'secret-key').catch(() => {});
-		expect(capturedUrl).toContain('agent_key=secret-key');
+		expect(capturedHeaders['X-Agent-Key']).toBe('secret-key');
+		expect(capturedUrl).not.toContain('secret-key');
+		expect(capturedUrl).not.toContain('agent_key');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getFolderFileContent — agent key transport
+// ---------------------------------------------------------------------------
+
+describe('getFolderFileContent', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('sends agent key as the X-Agent-Key header, never a query param (TR-14)', async () => {
+		let capturedUrl = '';
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((url: string, init?: RequestInit) => {
+				capturedUrl = url;
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(
+					new Response(JSON.stringify({ path: 'a.md', name: 'a.md', type: 'doc', content: '' }), {
+						status: 200
+					})
+				);
+			})
+		);
+
+		await getFolderFileContent('my-share', 'a.md', undefined, undefined, 'secret-key');
+		expect(capturedHeaders['X-Agent-Key']).toBe('secret-key');
+		expect(capturedUrl).not.toContain('secret-key');
+		expect(capturedUrl).not.toContain('agent_key');
+	});
+
+	it('omits the X-Agent-Key header when no agent key is provided', async () => {
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((_url: string, init?: RequestInit) => {
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(
+					new Response(JSON.stringify({ path: 'a.md', name: 'a.md', type: 'doc', content: '' }), {
+						status: 200
+					})
+				);
+			})
+		);
+
+		await getFolderFileContent('my-share', 'a.md');
+		expect(capturedHeaders['X-Agent-Key']).toBeUndefined();
 	});
 });
 
