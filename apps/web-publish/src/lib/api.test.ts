@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession } from './api.js';
+import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession, ShareNotFoundError } from './api.js';
 
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — timeout behaviour
@@ -73,22 +73,24 @@ describe('getShareBySlug', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('throws "Share not found" on 404', async () => {
+	it('throws ShareNotFoundError on 404', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('not found', { status: 404 })))
 		);
 
 		await expect(getShareBySlug('missing-slug')).rejects.toThrow('Share not found or not published');
+		await expect(getShareBySlug('missing-slug')).rejects.toBeInstanceOf(ShareNotFoundError);
 	});
 
-	it('throws generic error on other non-ok status', async () => {
+	it('throws a plain (non-ShareNotFoundError) error on other non-ok status', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
 		);
 
 		await expect(getShareBySlug('some-slug')).rejects.toThrow('Failed to fetch share');
+		await expect(getShareBySlug('some-slug')).rejects.not.toBeInstanceOf(ShareNotFoundError);
 	});
 
 	it('returns parsed share on 200', async () => {

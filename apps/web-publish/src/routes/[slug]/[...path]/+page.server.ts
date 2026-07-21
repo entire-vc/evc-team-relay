@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
-import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent } from '$lib/api';
+import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
 import { slugifyPath } from '$lib/file-tree';
 import { verifyEmbedToken } from '$lib/embed-token';
 import type { PageServerLoad } from './$types';
@@ -105,7 +105,11 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;
-		console.error('Failed to load file:', err);
-		throw error(404, 'File not found');
+		if (err instanceof ShareNotFoundError) {
+			console.error('Share not found:', err);
+			throw error(404, 'File not found');
+		}
+		console.error('Upstream error loading file:', err);
+		throw error(503, 'Service temporarily unavailable. Please try again shortly.');
 	}
 };
