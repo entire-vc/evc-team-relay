@@ -159,7 +159,8 @@ CWT_CLAIM_IAT = 6  # issued at
 CWT_CLAIM_SCOPE = -80201
 CWT_CLAIM_CHANNEL = -80202
 # Control-plane extension: share binding for confused-deputy mitigation (H6).
-# Relay-server (System3) must be verified to enforce this claim.
+# Confirmed NOT enforced by relay-server as of 2026-07-21 (TR-22 investigation) —
+# our fork's cwt.rs/auth.rs never reads claim -80203. Emitted for forward-compat only.
 CWT_CLAIM_SHARE = -80203
 
 # CBOR tags
@@ -185,12 +186,23 @@ def create_relay_token_cwt(
     - Claims: iss, iat, exp, scope (-80201), share (-80203)
     - Scope format: "doc:{doc_id}:rw" or "doc:{doc_id}:r"
 
-    Security notes (H6):
-    - exp is included for TTL enforcement; relay-server (System3) MUST be verified
-      to accept and enforce exp. If System3 rejects exp, file a System3 bug.
-    - share_id (-80203) binds the token to the issuing share for confused-deputy
-      mitigation. Relay-server enforcement of this claim is a System3 requirement
-      (currently unverified — track in H6 System3 follow-up task).
+    Security notes (H6, re-verified TR-22 2026-07-21 against our own fork —
+    ghcr.io/entire-vc/evc-relay-server, see docs/adr-relay-server-own-fork.md):
+    - exp is included for TTL enforcement and IS enforced by relay-server, both at
+      WS-connect (auth.rs verify_token_with_channel) and on every subsequent message
+      (y-sweet-core/src/doc_connection.rs DocConnection::send checks expiration_time
+      and closes the socket with "Token expired" — not a connect-only check). This is
+      no longer a System3 unknown; it's our own code, covered by
+      crates/relay/tests/token_expiration_integration_test.rs.
+    - share_id (-80203) is still NOT read or enforced by relay-server — confirmed by
+      inspection of crates/y-sweet-core/src/cwt.rs parse_claims_map and
+      crates/y-sweet-core/src/auth.rs (neither references claim -80203). It is emitted
+      here for forward-compat but provides no confused-deputy protection today. Real
+      fix requires relay-server changes — track separately, do NOT assume this claim
+      does anything yet.
+    - Because there is no jti/revocation-list, remove_member cannot invalidate a
+      token already handed to the ex-member — settings.relay_token_ttl_minutes (see
+      config.py) is the only lever bounding that exposure window (TR-22, #f63a2bea).
     - aud is omitted: y-sweet rejects tokens with the aud claim.
 
     Args:
