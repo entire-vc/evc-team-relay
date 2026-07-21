@@ -32,7 +32,14 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(default=30)
 
     relay_public_url: AnyUrl = Field(default="wss://relay.localhost")
-    relay_token_ttl_minutes: int = Field(default=30)
+    # TR-22: relay-token is a stateless CWT with no jti/revocation-list — remove_member
+    # cannot invalidate an already-issued token, so this TTL is the entire exposure
+    # window during which a removed member can still write to the CRDT doc. Keep this
+    # short; relay-server enforces exp per-message (not just at connect), confirmed in
+    # ghcr.io/entire-vc/evc-relay-server (crates/y-sweet-core/src/doc_connection.rs
+    # DocConnection::send + crates/relay/src/server.rs handle_socket), so shrinking this
+    # value directly shrinks the write-after-removal window.
+    relay_token_ttl_minutes: int = Field(default=5)
 
     # CORS settings
     cors_allowed_origins: str = Field(
