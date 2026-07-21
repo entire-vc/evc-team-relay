@@ -151,9 +151,7 @@ class TestAdminUiLoginWith2FA:
         )
         pending_value = step1.cookies["admin_2fa_pending"]
 
-        page = client.get(
-            "/admin-ui/login/2fa", cookies={"admin_2fa_pending": pending_value}
-        )
+        page = client.get("/admin-ui/login/2fa", cookies={"admin_2fa_pending": pending_value})
         assert page.status_code == 200
 
         totp = pyotp.TOTP(secret)
@@ -201,9 +199,7 @@ class TestAdminUiLoginWith2FA:
         secret = enable_resp.json()["secret"]
         backup_codes = enable_resp.json()["backup_codes"]
         totp = pyotp.TOTP(secret)
-        client.post(
-            "/auth/2fa/verify", json={"code": totp.now()}, headers=auth_headers(user_token)
-        )
+        client.post("/auth/2fa/verify", json={"code": totp.now()}, headers=auth_headers(user_token))
         db_session.refresh(user)
 
         step1 = client.post(
@@ -223,9 +219,7 @@ class TestAdminUiLoginWith2FA:
         assert step2.status_code == 302
         assert "admin_token" in step2.cookies
 
-    def test_REGRESSION_pending_token_is_single_use(
-        self, db_session: Session, client: TestClient
-    ):
+    def test_REGRESSION_pending_token_is_single_use(self, db_session: Session, client: TestClient):
         """A completed pending token must not be replayable for a second
         session — otherwise a captured (but already-used) cookie value would
         still be able to mint fresh admin sessions indefinitely."""
