@@ -9,6 +9,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -18,11 +20,13 @@ from app.db.session import get_db
 from app.schemas import share as share_schema
 from app.schemas import user as user_schema
 from app.services import (
+    audit_service,
     auth_service,
     dashboard_service,
     instance_settings_service,
     oauth_service,
     share_service,
+    totp_service,
     user_service,
 )
 
@@ -30,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/templates")
+limiter = Limiter(key_func=get_remote_address)
 
 
 # Custom exception for admin auth redirect
@@ -108,6 +113,28 @@ def login_page(request: Request, error: str | None = None):
     return render_template(request, "admin/login.html", {"error": error})
 
 
+def _issue_admin_session(request: Request, db: Session, user: models.User) -> RedirectResponse:
+    """Log the login and issue the real admin_token cookie. Only ever called
+    after password AND (if enabled) TOTP have both verified — see TR-06."""
+    token = auth_service.create_access_token(user.id)
+    auth_service.log_login(
+        db,
+        user,
+        request.client.host if request.client else None,
+        request.headers.get("user-agent"),
+    )
+    response = RedirectResponse("/admin-ui/dashboard", status_code=302)
+    response.set_cookie(
+        key="admin_token",
+        value=token,
+        httponly=True,
+        max_age=3600,  # 1 hour
+        samesite="lax",
+    )
+    response.delete_cookie("admin_2fa_pending")
+    return response
+
+
 @router.post("/login", response_class=HTMLResponse)
 def login_submit(
     request: Request,
@@ -126,27 +153,23 @@ def login_submit(
                 {"error": "Invalid credentials or insufficient privileges", "email": email},
             )
 
-        # Generate token
-        token = auth_service.create_access_token(user.id)
+        # TR-06 (#fceefc4f): this used to issue the admin_token cookie right
+        # here regardless of TOTP status — a full 2FA bypass. Password alone
+        # is no longer sufficient for an account with TOTP enabled; hand off
+        # to the /admin-ui/login/2fa step instead of issuing a session.
+        if user.totp_enabled:
+            pending_token = auth_service.create_admin_2fa_pending_token(db, user.id)
+            response = RedirectResponse("/admin-ui/login/2fa", status_code=302)
+            response.set_cookie(
+                key="admin_2fa_pending",
+                value=pending_token,
+                httponly=True,
+                max_age=auth_service.ADMIN_2FA_PENDING_TOKEN_EXPIRE_MINUTES * 60,
+                samesite="lax",
+            )
+            return response
 
-        # Log the login
-        auth_service.log_login(
-            db,
-            user,
-            request.client.host if request.client else None,
-            request.headers.get("user-agent"),
-        )
-
-        # Set cookie and redirect
-        response = RedirectResponse("/admin-ui/dashboard", status_code=302)
-        response.set_cookie(
-            key="admin_token",
-            value=token,
-            httponly=True,
-            max_age=3600,  # 1 hour
-            samesite="lax",
-        )
-        return response
+        return _issue_admin_session(request, db, user)
 
     except Exception as e:
         logger.error(f"Login failed for {email}: {type(e).__name__}: {e}", exc_info=True)
@@ -155,6 +178,65 @@ def login_submit(
             "admin/login.html",
             {"error": "Login failed. Please try again.", "email": email},
         )
+
+
+@router.get("/login/2fa", response_class=HTMLResponse)
+def login_2fa_page(request: Request, db: Session = Depends(get_db)):
+    """Show the TOTP code form — reachable only with a valid pending-2FA cookie."""
+    pending_token = request.cookies.get("admin_2fa_pending")
+    user = auth_service.validate_admin_2fa_pending_token(db, pending_token or "")
+    if not user:
+        response = RedirectResponse(
+            "/admin-ui/login?error=Session+expired%2C+please+log+in+again", status_code=302
+        )
+        response.delete_cookie("admin_2fa_pending")
+        return response
+    return render_template(request, "admin/login_2fa.html", {})
+
+
+@router.post("/login/2fa", response_class=HTMLResponse)
+@limiter.limit("10/minute")
+def login_2fa_submit(
+    request: Request,
+    totp_code: Annotated[str, Form()],
+    db: Session = Depends(get_db),
+):
+    """Verify the TOTP code and, on success, issue the real admin session."""
+    pending_token = request.cookies.get("admin_2fa_pending")
+    user = auth_service.validate_admin_2fa_pending_token(db, pending_token or "")
+    if not user:
+        response = RedirectResponse(
+            "/admin-ui/login?error=Session+expired%2C+please+log+in+again", status_code=302
+        )
+        response.delete_cookie("admin_2fa_pending")
+        return response
+
+    # Re-check totp_enabled: guards the race where 2FA was disabled on this
+    # account after step 1 issued the pending token but before step 2 ran.
+    if not user.totp_enabled:
+        return _issue_admin_session(request, db, user)
+
+    is_valid, was_backup = totp_service.verify_user_totp(db, user.id, totp_code)
+    if not is_valid:
+        return render_template(
+            request,
+            "admin/login_2fa.html",
+            {"error": "Invalid code. Please try again."},
+        )
+
+    auth_service.mark_admin_2fa_pending_token_used(db, pending_token)
+
+    if was_backup:
+        audit_service.log_action(
+            db=db,
+            action=models.AuditAction.TOTP_BACKUP_USED,
+            actor_user_id=user.id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.commit()
+
+    return _issue_admin_session(request, db, user)
 
 
 @router.post("/logout", response_class=RedirectResponse)

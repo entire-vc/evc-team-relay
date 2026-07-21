@@ -439,6 +439,48 @@ class EmailVerificationToken(Base):
     user: Mapped["User"] = relationship()
 
 
+class AdminLoginPendingToken(Base):
+    """Second factor of the admin-ui login flow (TR-06, #fceefc4f).
+
+    /admin-ui/login used to issue the full admin_token cookie on password
+    alone, never checking totp_enabled — a completely separate code path
+    from the JSON /auth/login, which does gate on it. This table holds the
+    short-lived, single-use handle for "password verified, TOTP still
+    required" state between the two admin-ui login steps, deliberately NOT
+    a JWT: a JWT sharing the same signing scheme as admin_token risks being
+    replayable as a real session token if any consuming code doesn't
+    explicitly reject its purpose claim. A separate table with its own
+    token_hash can't be confused with admin_token by construction.
+    """
+
+    __tablename__ = "admin_login_pending_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped["User"] = relationship()
+
+
 class Webhook(Base, TimestampMixin):
     __tablename__ = "webhooks"
 
