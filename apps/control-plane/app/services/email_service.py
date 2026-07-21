@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -46,6 +46,13 @@ EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE = "lifecycle_inactive_after_share"
 # Retry intervals for email queue (seconds)
 EMAIL_RETRY_INTERVALS = [60, 300, 900]  # 1min, 5min, 15min
 MAX_EMAIL_RETRIES = len(EMAIL_RETRY_INTERVALS)
+
+# TR-11 (#8a509876): a claimed (SENDING) row older than this is assumed
+# abandoned — the worker that claimed it died before marking SENT/FAILED —
+# and becomes eligible for another worker to re-claim. Generous relative to
+# SMTP's own connect+send timeout so a merely-slow send is never reclaimed
+# out from under a worker that's still actively processing it.
+EMAIL_CLAIM_LEASE_SECONDS = 300
 
 # Template directory
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "emails"
@@ -312,6 +319,7 @@ class EmailService:
             email.status = EmailStatus.SENT
             email.sent_at = datetime.now(timezone.utc)
             email.next_retry_at = None
+            email.claimed_at = None
             db.add(email)
             db.commit()
             return True
@@ -326,16 +334,23 @@ class EmailService:
             email.status = EmailStatus.SENT
             email.sent_at = datetime.now(timezone.utc)
             email.next_retry_at = None
+            email.claimed_at = None
         else:
             if email.attempt_count >= MAX_EMAIL_RETRIES:
                 email.status = EmailStatus.FAILED
                 email.error_message = "Max retries exceeded"
                 email.next_retry_at = None
+                email.claimed_at = None
                 logger.warning(
                     "Email max retries exceeded",
                     extra={"email_id": str(email.id), "attempts": email.attempt_count},
                 )
             else:
+                # TR-11: back to PENDING (it was flipped to SENDING at claim
+                # time by claim_pending_emails, not here) so the next claim
+                # cycle picks it up again at next_retry_at.
+                email.status = EmailStatus.PENDING
+                email.claimed_at = None
                 retry_interval = EMAIL_RETRY_INTERVALS[email.attempt_count - 1]
                 email.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=retry_interval)
                 email.error_message = "SMTP delivery failed, scheduled for retry"
@@ -353,29 +368,62 @@ class EmailService:
 
         return success
 
-    def get_pending_emails(self, db: Session, limit: int = 100) -> list[EmailQueue]:
-        """Get pending emails ready for processing.
+    def claim_pending_emails(self, db: Session, limit: int = 100) -> list[EmailQueue]:
+        """Atomically claim up to `limit` pending emails for processing.
+
+        TR-11 (#8a509876): root cause of the 08-09.07 duplicate-email
+        incident — two worker instances (split-brain) both read the same
+        PENDING rows and both sent, since nothing marked a row as "claimed"
+        before delivery. `SELECT ... FOR UPDATE SKIP LOCKED` means two
+        workers racing the same poll cycle can never claim the same row —
+        one gets it, the other silently skips past the locked row instead
+        of blocking or double-claiming. Claimed rows are flipped to SENDING
+        and committed in THIS transaction, before any SMTP attempt — so a
+        SIGKILL between claim and send leaves the row safely stuck in
+        SENDING (never actually sent), not back in PENDING where the next
+        poll would blindly resend it.
+
+        Also reclaims rows stuck in SENDING past EMAIL_CLAIM_LEASE_SECONDS —
+        the recovery path for a worker that claimed a row and then died
+        before process_queued_email could mark it SENT/FAILED/retry-PENDING.
 
         Args:
             db: Database session
-            limit: Maximum number of emails to return
+            limit: Maximum number of emails to claim
 
         Returns:
-            List of EmailQueue instances
+            List of claimed EmailQueue instances (status now SENDING)
         """
         now = datetime.now(timezone.utc)
+        lease_cutoff = now - timedelta(seconds=EMAIL_CLAIM_LEASE_SECONDS)
 
         stmt = (
             select(EmailQueue)
             .where(
-                EmailQueue.status == EmailStatus.PENDING,
-                EmailQueue.next_retry_at <= now,
+                or_(
+                    and_(
+                        EmailQueue.status == EmailStatus.PENDING,
+                        EmailQueue.next_retry_at <= now,
+                    ),
+                    and_(
+                        EmailQueue.status == EmailStatus.SENDING,
+                        EmailQueue.claimed_at <= lease_cutoff,
+                    ),
+                )
             )
             .order_by(EmailQueue.next_retry_at)
             .limit(limit)
+            .with_for_update(skip_locked=True)
         )
 
-        return list(db.execute(stmt).scalars().all())
+        claimed = list(db.execute(stmt).scalars().all())
+        for email in claimed:
+            email.status = EmailStatus.SENDING
+            email.claimed_at = now
+            db.add(email)
+        db.commit()
+
+        return claimed
 
     def get_user_email_preferences(
         self, db: Session, user_id: uuid.UUID
