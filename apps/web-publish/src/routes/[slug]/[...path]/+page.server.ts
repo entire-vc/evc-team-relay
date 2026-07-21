@@ -3,6 +3,7 @@ import { env } from '$env/dynamic/private';
 import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
 import { slugifyPath } from '$lib/file-tree';
 import { verifyEmbedToken } from '$lib/embed-token';
+import { renderMarkdown } from '$lib/markdown';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, cookies, url }) => {
@@ -92,10 +93,15 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			content = `# ${file.name}\n\n> **Content not yet synced**`;
 		}
 
+		// Render markdown to HTML server-side so the document body is present in the
+		// SSR output, not only after client-side hydration (TR-37).
+		const contentHtml = await renderMarkdown(content, { slug: share.web_slug, folderItems });
+
 		return {
 			share,
 			file,
 			content,
+			contentHtml,
 			filePath: slugifyPath(originalPath),
 			parentSlug: slug,
 			folderItems,

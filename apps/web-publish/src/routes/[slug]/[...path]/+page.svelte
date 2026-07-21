@@ -79,7 +79,7 @@
 
 		<div class="flex gap-8 items-start">
 			<div class="flex-1 min-w-0 max-w-[800px]">
-				<MarkdownViewer content={data.content} slug={data.share.web_slug} folderItems={data.folderItems} />
+				<MarkdownViewer content={data.content} initialHtml={data.contentHtml} slug={data.share.web_slug} folderItems={data.folderItems} />
 			</div>
 		</div>
 	</article>

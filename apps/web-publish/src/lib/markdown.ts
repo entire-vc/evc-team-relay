@@ -42,19 +42,25 @@ function escapeHtml(str: string): string {
 const MATH_PLACEHOLDER_PREFIX = '\x00MATH_';
 const MATH_PLACEHOLDER_SUFFIX = '\x00';
 
-/** Store for math expressions extracted during preprocessing */
-let mathStore: Map<string, { expression: string; displayMode: boolean }> = new Map();
-let mathCounter = 0;
+type MathStore = Map<string, { expression: string; displayMode: boolean }>;
 
-function resetMathStore(): void {
-	mathStore = new Map();
-	mathCounter = 0;
-}
-
-function createMathPlaceholder(expression: string, displayMode: boolean): string {
-	const id = `${MATH_PLACEHOLDER_PREFIX}${mathCounter++}${MATH_PLACEHOLDER_SUFFIX}`;
-	mathStore.set(id, { expression, displayMode });
-	return id;
+/**
+ * Creates a placeholder-writer scoped to a single renderMarkdown() call.
+ * MUST be call-scoped, not module state: renderMarkdown() now runs inside
+ * SvelteKit's server load() (TR-37), where one Node process serves many
+ * requests concurrently — a shared/module-level store gets reset and
+ * overwritten mid-flight by a *different* request's render, cross-
+ * contaminating math between two unrelated documents (confirmed via a
+ * concurrent-render test: two Promise.all'd renders with different math
+ * both resolved to the second call's expression).
+ */
+function createMathPlaceholderFactory(mathStore: MathStore) {
+	let counter = 0;
+	return (expression: string, displayMode: boolean): string => {
+		const id = `${MATH_PLACEHOLDER_PREFIX}${counter++}${MATH_PLACEHOLDER_SUFFIX}`;
+		mathStore.set(id, { expression, displayMode });
+		return id;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +89,7 @@ function stripFrontmatter(text: string): string {
  * Order: $$...$$ first (display), then $...$ (inline).
  * Skip anything inside code fences or inline code.
  */
-function protectMath(text: string): string {
+function protectMath(text: string, createPlaceholder: (expression: string, displayMode: boolean) => string): string {
 	// First, protect code blocks and inline code so we don't match $ inside them
 	const codeBlocks: { placeholder: string; content: string }[] = [];
 	let codeCounter = 0;
@@ -104,14 +110,14 @@ function protectMath(text: string): string {
 
 	// Replace display math ($$...$$) - can be multiline
 	result = result.replace(/\$\$([\s\S]+?)\$\$/g, (_match, expr: string) => {
-		return createMathPlaceholder(expr.trim(), true);
+		return createPlaceholder(expr.trim(), true);
 	});
 
 	// Replace inline math ($...$) - single line only, not empty
 	// Negative lookbehind for \ to avoid matching \$
 	// Must not start or end with space (Obsidian behavior)
 	result = result.replace(/(?<![\\$])\$([^\s$](?:[^$]*[^\s$])?)\$(?!\d)/g, (_match, expr: string) => {
-		return createMathPlaceholder(expr, false);
+		return createPlaceholder(expr, false);
 	});
 
 	// Restore code blocks
@@ -126,11 +132,11 @@ function protectMath(text: string): string {
  * Full preprocessing pipeline.
  * Returns cleaned markdown ready for marked.parse().
  */
-function preprocessMarkdown(raw: string): string {
+function preprocessMarkdown(raw: string, createPlaceholder: (expression: string, displayMode: boolean) => string): string {
 	let text = raw;
 	text = stripFrontmatter(text);
 	text = stripComments(text);
-	text = protectMath(text);
+	text = protectMath(text, createPlaceholder);
 	return text;
 }
 
@@ -141,7 +147,7 @@ function preprocessMarkdown(raw: string): string {
 /**
  * Replace math placeholders with rendered KaTeX HTML.
  */
-function restoreMath(html: string): string {
+function restoreMath(html: string, mathStore: MathStore): string {
 	for (const [placeholder, { expression, displayMode }] of mathStore.entries()) {
 		try {
 			const rendered = katex.renderToString(expression, {
@@ -326,88 +332,97 @@ const tagExtension = {
 
 /**
  * Inline extension for ![[embed]] syntax.
+ *
+ * Built fresh per renderMarkdown() call (via createEmbedExtension), closing
+ * over that call's own `context` — NOT module-level state. renderMarkdown()
+ * now runs inside SvelteKit's server load() (TR-37), where one Node process
+ * serves many requests concurrently; a shared module-level render context
+ * would get overwritten mid-render by a different request for a different
+ * share, leaking one document's embed/slug resolution into another's output.
  */
-const embedExtension = {
-	name: 'obsidianEmbed' as const,
-	level: 'inline' as const,
-	start(src: string) {
-		return src.indexOf('![[');
-	},
-	tokenizer(src: string) {
-		const match = src.match(/^!\[\[([^\]]+)\]\]/);
-		if (match) {
-			const content = match[1];
-			let target: string;
-			let size: string | null = null;
+function createEmbedExtension(context: RenderContext) {
+	return {
+		name: 'obsidianEmbed' as const,
+		level: 'inline' as const,
+		start(src: string) {
+			return src.indexOf('![[');
+		},
+		tokenizer(src: string) {
+			const match = src.match(/^!\[\[([^\]]+)\]\]/);
+			if (match) {
+				const content = match[1];
+				let target: string;
+				let size: string | null = null;
 
-			if (content.includes('|')) {
-				const parts = content.split('|');
-				target = parts[0].trim();
-				size = parts.slice(1).join('|').trim();
-			} else {
-				target = content.trim();
+				if (content.includes('|')) {
+					const parts = content.split('|');
+					target = parts[0].trim();
+					size = parts.slice(1).join('|').trim();
+				} else {
+					target = content.trim();
+				}
+
+				return {
+					type: 'obsidianEmbed',
+					raw: match[0],
+					target,
+					size
+				};
+			}
+			return undefined;
+		},
+		renderer(token: { target: string; size: string | null }) {
+			const { target, size } = token;
+			const safeTarget = escapeHtml(target);
+			const safeSize = size ? escapeHtml(size) : null;
+			const ext = target.split('.').pop()?.toLowerCase() || '';
+			const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'];
+			const videoExts = ['mp4', 'webm', 'ogv', 'mov'];
+			const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'm4a'];
+
+			// Image embeds with asset proxy
+			if (imageExts.includes(ext)) {
+				if (context.slug) {
+					const styleAttr = safeSize ? ` style="max-width: ${safeSize}px"` : '';
+					return `<img class="obsidian-embed-image" src="/${context.slug}/_assets/${safeTarget}" alt="${safeTarget}"${styleAttr} />`;
+				}
+				// Fallback placeholder without slug
+				const sizeInfo = safeSize ? ` (${safeSize}px)` : '';
+				return `<div class="obsidian-embed obsidian-embed-image"><span class="obsidian-embed-icon">&#128444;</span> Image: <strong>${safeTarget}</strong>${sizeInfo}</div>`;
 			}
 
-			return {
-				type: 'obsidianEmbed',
-				raw: match[0],
-				target,
-				size
-			};
-		}
-		return undefined;
-	},
-	renderer(token: { target: string; size: string | null }) {
-		const { target, size } = token;
-		const safeTarget = escapeHtml(target);
-		const safeSize = size ? escapeHtml(size) : null;
-		const ext = target.split('.').pop()?.toLowerCase() || '';
-		const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'];
-		const videoExts = ['mp4', 'webm', 'ogv', 'mov'];
-		const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'm4a'];
-
-		// Image embeds with asset proxy
-		if (imageExts.includes(ext)) {
-			if (_renderContext.slug) {
-				const styleAttr = safeSize ? ` style="max-width: ${safeSize}px"` : '';
-				return `<img class="obsidian-embed-image" src="/${_renderContext.slug}/_assets/${safeTarget}" alt="${safeTarget}"${styleAttr} />`;
+			// Video/audio embeds (placeholder for now)
+			if (videoExts.includes(ext)) {
+				return `<div class="obsidian-embed obsidian-embed-video"><span class="obsidian-embed-icon">&#127909;</span> Video: <strong>${safeTarget}</strong></div>`;
 			}
-			// Fallback placeholder without slug
-			const sizeInfo = safeSize ? ` (${safeSize}px)` : '';
-			return `<div class="obsidian-embed obsidian-embed-image"><span class="obsidian-embed-icon">&#128444;</span> Image: <strong>${safeTarget}</strong>${sizeInfo}</div>`;
-		}
 
-		// Video/audio embeds (placeholder for now)
-		if (videoExts.includes(ext)) {
-			return `<div class="obsidian-embed obsidian-embed-video"><span class="obsidian-embed-icon">&#127909;</span> Video: <strong>${safeTarget}</strong></div>`;
-		}
-
-		if (audioExts.includes(ext)) {
-			return `<div class="obsidian-embed obsidian-embed-audio"><span class="obsidian-embed-icon">&#127925;</span> Audio: <strong>${safeTarget}</strong></div>`;
-		}
-
-		// Note embeds - show enhanced placeholder if found in folder
-		// TODO: Inline note rendering requires async pre-processing pass
-		if (_renderContext.folderItems) {
-			const noteItem = _renderContext.folderItems.find(
-				item => item.path === target || item.path === `${target}.md`
-			);
-
-			if (noteItem) {
-				const noteName = escapeHtml(noteItem.name || target);
-				// Show styled placeholder for found notes
-				return `<div class="obsidian-embed obsidian-embed-note obsidian-embed-note-found">
-					<span class="obsidian-embed-icon">&#128196;</span>
-					<span class="obsidian-embed-note-name">${noteName}</span>
-					<span class="obsidian-embed-note-hint">(in this folder)</span>
-				</div>`;
+			if (audioExts.includes(ext)) {
+				return `<div class="obsidian-embed obsidian-embed-audio"><span class="obsidian-embed-icon">&#127925;</span> Audio: <strong>${safeTarget}</strong></div>`;
 			}
-		}
 
-		// Note embed not found - placeholder
-		return `<div class="obsidian-embed obsidian-embed-note"><span class="obsidian-embed-icon">&#128196;</span> Embedded note: <strong>${safeTarget}</strong></div>`;
-	}
-};
+			// Note embeds - show enhanced placeholder if found in folder
+			// TODO: Inline note rendering requires async pre-processing pass
+			if (context.folderItems) {
+				const noteItem = context.folderItems.find(
+					item => item.path === target || item.path === `${target}.md`
+				);
+
+				if (noteItem) {
+					const noteName = escapeHtml(noteItem.name || target);
+					// Show styled placeholder for found notes
+					return `<div class="obsidian-embed obsidian-embed-note obsidian-embed-note-found">
+						<span class="obsidian-embed-icon">&#128196;</span>
+						<span class="obsidian-embed-note-name">${noteName}</span>
+						<span class="obsidian-embed-note-hint">(in this folder)</span>
+					</div>`;
+				}
+			}
+
+			// Note embed not found - placeholder
+			return `<div class="obsidian-embed obsidian-embed-note"><span class="obsidian-embed-icon">&#128196;</span> Embedded note: <strong>${safeTarget}</strong></div>`;
+		}
+	};
+}
 
 // ---------------------------------------------------------------------------
 // Marked extensions: Callouts
@@ -527,38 +542,18 @@ function walkTokensForTaskLists(token: Token): void {
 // ---------------------------------------------------------------------------
 // Configure marked instance
 // ---------------------------------------------------------------------------
+//
+// Built fresh per renderMarkdown() call (see buildMarkedInstance below), NOT
+// as a shared module-level singleton — renderMarkdown() runs inside
+// SvelteKit's server load() (TR-37), and marked.use() mutates the instance
+// it's called on, so a shared instance reconfigured per-request would race
+// exactly like the module-level render context did (see createEmbedExtension
+// above). highlightExtension/wikilinkExtension/tagExtension/walkTokens/the
+// custom renderer below are all stateless (no per-call context), so they're
+// safe to reuse as-is across instances — only the Marked instance itself and
+// the context-dependent embedExtension are rebuilt per call.
 
-const marked = new Marked(
-	markedHighlight({
-		langPrefix: 'hljs language-',
-		highlight(code, lang) {
-			// Mermaid: pass through as a special div instead of highlighting
-			if (lang === 'mermaid') {
-				return code;
-			}
-			const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-			return hljs.highlight(code, { language }).value;
-		}
-	}),
-	markedFootnote()
-);
-
-// Add inline extensions
-marked.use({
-	extensions: [highlightExtension, wikilinkExtension, tagExtension, embedExtension]
-});
-
-// Add walkTokens for callout and task list detection
-marked.use({
-	walkTokens(token: Token) {
-		walkTokensForCallouts(token);
-		walkTokensForTaskLists(token);
-	}
-});
-
-// Custom renderer for callouts, mermaid, code blocks, and task lists
-marked.use({
-	renderer: {
+const customRenderer = {
 		blockquote(this: unknown, token: Tokens.Blockquote) {
 			const callout = (token as unknown as Record<string, unknown>)._callout as
 				| { type: string; title: string; foldable: boolean; defaultOpen: boolean }
@@ -640,15 +635,46 @@ marked.use({
 			// Regular list item
 			return `<li>${body}</li>\n`;
 		}
-	}
-});
+	};
 
-// Configure marked options for GFM support
-marked.setOptions({
-	gfm: true,
-	breaks: false,
-	pedantic: false
-});
+/** Builds a fresh Marked instance scoped to a single renderMarkdown() call. */
+function buildMarkedInstance(context: RenderContext): Marked {
+	const instance = new Marked(
+		markedHighlight({
+			langPrefix: 'hljs language-',
+			highlight(code, lang) {
+				// Mermaid: pass through as a special div instead of highlighting
+				if (lang === 'mermaid') {
+					return code;
+				}
+				const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+				return hljs.highlight(code, { language }).value;
+			}
+		}),
+		markedFootnote()
+	);
+
+	instance.use({
+		extensions: [highlightExtension, wikilinkExtension, tagExtension, createEmbedExtension(context)]
+	});
+
+	instance.use({
+		walkTokens(token: Token) {
+			walkTokensForCallouts(token);
+			walkTokensForTaskLists(token);
+		}
+	});
+
+	instance.use({ renderer: customRenderer });
+
+	instance.setOptions({
+		gfm: true,
+		breaks: false,
+		pedantic: false
+	});
+
+	return instance;
+}
 
 // ---------------------------------------------------------------------------
 // DOMPurify configuration
@@ -724,35 +750,33 @@ export interface RenderContext {
 	folderItems?: Array<{ path: string; name: string; type: string; content?: string }>;
 }
 
-/** Module-level storage for render context (accessed by embed extension renderer) */
-let _renderContext: RenderContext = {};
-
 /**
  * Parse and render markdown to HTML.
  * Supports Obsidian-flavored markdown features.
  * Sanitizes HTML output to prevent XSS.
+ *
+ * Fully self-contained per call (no module-level mutable state) — this runs
+ * inside SvelteKit's server load() (TR-37), where one Node process serves
+ * many concurrent requests; shared state here would let one document's
+ * render bleed into another's.
  */
 export async function renderMarkdown(markdown: string, context?: RenderContext): Promise<string> {
-	// Reset math store for this render
-	resetMathStore();
-
-	// Store context for embed extension renderer
-	_renderContext = context || {};
+	const renderContext = context || {};
+	const mathStore: MathStore = new Map();
+	const createPlaceholder = createMathPlaceholderFactory(mathStore);
 
 	// Step 1: Preprocess (strip frontmatter, comments, protect math)
-	const preprocessed = preprocessMarkdown(markdown);
+	const preprocessed = preprocessMarkdown(markdown, createPlaceholder);
 
 	// Step 2: Parse with marked (extensions handle highlights, wikilinks, callouts, footnotes, mermaid)
+	const marked = buildMarkedInstance(renderContext);
 	const rawHtml = await marked.parse(preprocessed);
 
 	// Step 3: Restore math placeholders with KaTeX-rendered HTML
-	const withMath = restoreMath(rawHtml);
+	const withMath = restoreMath(rawHtml, mathStore);
 
 	// Step 4: Sanitize
 	const sanitizedHtml = DOMPurify.sanitize(withMath, SANITIZE_CONFIG);
-
-	// Clear context after rendering
-	_renderContext = {};
 
 	return sanitizedHtml;
 }

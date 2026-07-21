@@ -7,6 +7,10 @@
 	interface Props {
 		/** Static content (fallback when real-time not available) */
 		content: string;
+		/** Pre-rendered HTML for `content`, produced server-side — forwarded to the
+		 *  underlying MarkdownViewer so SSR output has a body before real-time sync
+		 *  (browser-only) ever connects (TR-37). */
+		initialHtml?: string;
 		/** Document ID for real-time sync (S3RN encoded) */
 		docId?: string | null;
 		/** Share slug for fetching relay token */
@@ -17,7 +21,7 @@
 		folderItems?: Array<{ path: string; name: string; type: string; content?: string }>;
 	}
 
-	let { content, docId, slug, sessionToken, class: className = '', folderItems }: Props = $props();
+	let { content, initialHtml, docId, slug, sessionToken, class: className = '', folderItems }: Props = $props();
 
 	let realtimeContent = $state<string | null>(null);
 	let connectionStatus = $state<'connecting' | 'connected' | 'disconnected' | 'unavailable'>(
@@ -80,7 +84,7 @@
 		</div>
 	{/if}
 
-	<MarkdownViewer content={displayContent} class={className} slug={slug} folderItems={folderItems} />
+	<MarkdownViewer content={displayContent} {initialHtml} class={className} slug={slug} folderItems={folderItems} />
 
 	{#if error && !realtimeContent}
 		<div class="sync-error">
