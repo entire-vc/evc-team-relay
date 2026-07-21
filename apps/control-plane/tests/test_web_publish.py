@@ -781,7 +781,12 @@ class TestPrivateShareAuth:
         raw = "tr_agent_" + _sec.token_hex(24)
         key_hash = _hl.sha256(raw.encode()).hexdigest()
         ak = models.ShareAgentKey(
-            share_id=share.id, key_hash=key_hash, label="test-key", scopes=scopes
+            share_id=share.id,
+            key_hash=key_hash,
+            label="test-key",
+            scopes=scopes,
+            # TR-03 (#ae52ba05): creator must still be owner/member to auth.
+            created_by=share.owner_user_id,
         )
         db.add(ak)
         db.commit()
@@ -1013,6 +1018,8 @@ class TestFolderFileContentSync:
             key_hash=key_hash,
             label="test-key",
             scopes=scopes,
+            # TR-03 (#ae52ba05): creator must still be owner/member to auth.
+            created_by=share.owner_user_id,
         )
         db.add(ak)
         db.commit()
@@ -1308,6 +1315,8 @@ def _make_agent_key(
         key_hash=key_hash,
         label="test key",
         scopes=scopes,
+        # TR-03 (#ae52ba05): creator must still be owner/member to auth.
+        created_by=share.owner_user_id,
     )
     db.add(ak)
     db.commit()
@@ -1608,6 +1617,8 @@ class TestPrivateShareWebAuth:
             key_hash=key_hash,
             label="test-key",
             scopes=scopes,
+            # TR-03 (#ae52ba05): creator must still be owner/member to auth.
+            created_by=share.owner_user_id,
         )
         db.add(ak)
         db.commit()

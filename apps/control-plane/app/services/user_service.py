@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -125,6 +125,20 @@ def delete_user(
         actor_user_id=actor_user_id,
         target_user_id=user.id,
         details={"email": user.email},
+    )
+
+    # Revoke every agent key this user created, across ALL shares (TR-03,
+    # #ae52ba05). ShareAgentKey.created_by is ON DELETE SET NULL, not
+    # cascaded — without this, deleting the user silently orphans their keys
+    # (created_by -> NULL) rather than disabling them, and they keep
+    # authenticating forever (confirmed live: 13 such active keys in prod).
+    db.execute(
+        update(models.ShareAgentKey)
+        .where(
+            models.ShareAgentKey.created_by == user.id,
+            models.ShareAgentKey.revoked_at.is_(None),
+        )
+        .values(revoked_at=security.utcnow())
     )
 
     db.delete(user)

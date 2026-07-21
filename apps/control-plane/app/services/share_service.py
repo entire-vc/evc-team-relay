@@ -4,7 +4,7 @@ import re
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.core import security
@@ -469,6 +469,20 @@ def remove_member(
         target_user_id=user_id,
         target_share_id=share.id,
         details={"role": member.role.value},
+    )
+
+    # Revoke agent keys this member created for THIS share (TR-03, #ae52ba05).
+    # created_by is not FK-cascaded on membership removal, so without this an
+    # ex-member's key keeps authenticating (_auth_agent_key checks revoked_at,
+    # not membership) — this is the write side of that check's defense.
+    db.execute(
+        update(models.ShareAgentKey)
+        .where(
+            models.ShareAgentKey.share_id == share.id,
+            models.ShareAgentKey.created_by == user_id,
+            models.ShareAgentKey.revoked_at.is_(None),
+        )
+        .values(revoked_at=security.utcnow())
     )
 
     db.delete(member)
