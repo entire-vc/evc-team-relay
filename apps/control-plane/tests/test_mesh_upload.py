@@ -49,6 +49,10 @@ def make_agent_key(
         key_hash=key_hash,
         label="test key",
         scopes=scopes,
+        # TR-03 (#ae52ba05): _auth_agent_key now requires the creator to still
+        # be the share's owner or an active member; default to the owner so
+        # existing callers keep getting a working key without changes.
+        created_by=share.owner_user_id,
     )
     db.add(ak)
     db.commit()
