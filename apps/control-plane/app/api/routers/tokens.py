@@ -23,4 +23,10 @@ def issue_relay_token(
     db: Session = Depends(get_db),
     current_user: models.User | None = Depends(deps.get_optional_user),
 ):
-    return token_service.issue_relay_token(db, request, payload, current_user)
+    # TR-07 (#cecd6baf): an X-Agent-Key header authenticates the request
+    # in its own right, scoped to payload.share_id — see
+    # token_service.issue_relay_token for the branch. A share-scoped agent
+    # key can now obtain a relay-token without any User account, closing
+    # the gap that forced the whole fleet onto the shared admin login.
+    raw_agent_key = request.headers.get("X-Agent-Key")
+    return token_service.issue_relay_token(db, request, payload, current_user, raw_agent_key)

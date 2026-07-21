@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
+from datetime import timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select, update
@@ -532,6 +534,100 @@ def ensure_write_access(db: Session, share: models.Share, user: models.User | No
     if member and member.role == models.ShareMemberRole.EDITOR:
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write access denied")
+
+
+def agent_key_creator_authorized(
+    db: Session, agent_key: models.ShareAgentKey, share: models.Share
+) -> bool:
+    """True if the key's creator still has standing authority over this share.
+
+    Single source of truth for every X-Agent-Key auth path (CAS reads/writes
+    in web.py, web-publish embeds, and relay-token issuance in
+    token_service.py) — moved here from web.py's private
+    `_agent_key_creator_authorized` (TR-03, #ae52ba05) so a future fix to
+    this check lands everywhere at once instead of risking a second,
+    drifted copy.
+
+    `ShareAgentKey.created_by` is `ON DELETE SET NULL`, not cascaded, so a
+    key survives its creator's membership removal or account deletion and
+    would otherwise keep authenticating indefinitely. "Standing authority"
+    mirrors create_agent_key's own gate: owner, active member, or a
+    currently-active global admin (admin-issued keys on a share the admin
+    doesn't own/belong to are the normal case for fleet agent keys, not an
+    orphan — only demotion/deletion of that admin makes it orphaned).
+    """
+    if agent_key.created_by is None:
+        return False
+    if agent_key.created_by == share.owner_user_id:
+        return True
+    member = db.execute(
+        select(models.ShareMember.id).where(
+            models.ShareMember.share_id == share.id,
+            models.ShareMember.user_id == agent_key.created_by,
+        )
+    ).scalar_one_or_none()
+    if member is not None:
+        return True
+    creator_is_active_admin = db.execute(
+        select(models.User.id).where(
+            models.User.id == agent_key.created_by,
+            models.User.is_admin.is_(True),
+            models.User.is_active.is_(True),
+        )
+    ).scalar_one_or_none()
+    return creator_is_active_admin is not None
+
+
+def authenticate_agent_key(
+    db: Session,
+    share: models.Share,
+    raw_key: str,
+    required_scope: str | None = None,
+) -> models.ShareAgentKey:
+    """Validate an X-Agent-Key value against a specific share.
+
+    Same checks as web.py's `_auth_agent_key` (hash lookup, share match,
+    revoked/expired, creator standing authority, scope) — shared here so
+    relay-token issuance (TR-07, #cecd6baf) enforces the identical,
+    security-hardened rules the CAS read/write endpoints already do,
+    instead of a second hand-rolled copy that could silently drift.
+
+    Raises HTTPException (401/403) on any failure; returns the row on success.
+    """
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    agent_key = db.execute(
+        select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
+    ).scalar_one_or_none()
+
+    if agent_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+    if agent_key.share_id != share.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
+        )
+    if agent_key.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
+        )
+    if agent_key.expires_at is not None:
+        exp = agent_key.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < security.utcnow():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
+            )
+    if required_scope and required_scope not in set(agent_key.scopes.split(",")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Agent key does not have {required_scope} scope",
+        )
+    if not agent_key_creator_authorized(db, agent_key, share):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent key creator is no longer an owner or member of this share",
+        )
+    return agent_key
 
 
 def list_user_shares(
