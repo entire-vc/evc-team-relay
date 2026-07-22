@@ -23,7 +23,34 @@ def utcnow() -> datetime:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a plaintext password against a stored hash.
+
+    OAuth-only accounts are created with password_hash="" (oauth_service.py)
+    since they have no password — passlib can't identify an empty string as a
+    hash and raises UnknownHashError rather than returning False (TR-20; that
+    used to surface as an unhandled 500 from /auth/login instead of a 401).
+
+    UnknownHashError is a ValueError subclass; passlib's bcrypt backend also
+    raises a *bare* ValueError (not UnknownHashError) for a hash that has a
+    recognizable scheme prefix but is otherwise malformed — e.g. a truncated
+    salt. Catch ValueError, not just UnknownHashError, to fail closed on both
+    shapes rather than just the empty-string one. hashed_password always
+    comes from the DB (never attacker-controlled), so failing closed here
+    only ever denies a login/share-password check, never allows one.
+    """
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except ValueError as e:
+        # The empty-string OAuth-only case is routine and expected; anything
+        # else reaching here (a real but malformed stored hash) is more
+        # likely a genuine data issue, so log it — the alternative is an
+        # ordinary-looking 401 with zero trace of the underlying corruption.
+        logger.warning(
+            "Password verification failed on an unverifiable hash (%s: %s)",
+            type(e).__name__,
+            e,
+        )
+        return False
 
 
 def get_password_hash(password: str) -> str:

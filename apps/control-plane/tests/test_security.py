@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.db import models
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -14,6 +19,63 @@ def login(client: TestClient, email: str, password: str) -> str:
     response = client.post("/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200, response.text
     return response.json()["access_token"]
+
+
+# ── TR-20: password-login of an OAuth-only user must 401, not 500 ────────────
+#
+# OAuth-only accounts are created with password_hash="" (oauth_service.py:457
+# — "No password for OAuth-only accounts"). passlib can't identify an empty
+# string as a hash and raises UnknownHashError rather than returning False;
+# unhandled, that surfaced as a 500 from POST /auth/login instead of the
+# expected 401 (prod repro 2026-07-19T08:12:15).
+
+
+class TestTR20OAuthUserPasswordLogin:
+    def test_verify_password_returns_false_for_empty_hash(self):
+        """Direct unit test of the actual failure point (core/security.py)."""
+        from app.core import security
+
+        assert security.verify_password("anything", "") is False
+
+    def test_verify_password_returns_false_for_garbage_hash(self):
+        """Not just the empty-string case — any hash passlib can't identify
+        must fail closed, not raise."""
+        from app.core import security
+
+        assert security.verify_password("anything", "not-a-real-hash") is False
+
+    def test_verify_password_returns_false_for_malformed_bcrypt_hash(self):
+        """A scheme-prefixed but corrupted hash (e.g. a truncated bcrypt salt)
+        raises a *bare* ValueError from passlib's backend, not
+        UnknownHashError — a narrower `except UnknownHashError` would still
+        crash on this shape. Found by independent review, not the original
+        repro."""
+        from app.core import security
+
+        assert security.verify_password("anything", "$2b$04$shorttoolong") is False
+
+    def test_login_with_password_for_oauth_only_user_returns_401(
+        self, db_session: Session, client: TestClient
+    ):
+        """End-to-end repro: an OAuth-only user (password_hash="", exactly
+        as oauth_service.create/link produces it) attempts a password login —
+        must get 401, never an unhandled 500."""
+        user = models.User(
+            id=uuid.uuid4(),
+            email="oauth-only@example.com",
+            password_hash="",
+            is_admin=False,
+            is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        response = client.post(
+            "/auth/login",
+            json={"email": "oauth-only@example.com", "password": "whatever-they-typed"},
+        )
+
+        assert response.status_code == 401, response.text
 
 
 def test_public_key_endpoint(client: TestClient) -> None:
