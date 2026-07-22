@@ -185,6 +185,14 @@ class Settings(BaseSettings):
         default=10, description="Max agent key creations per user per hour"
     )
 
+    # Data retention (TR-48): email_queue/webhook_deliveries accumulate PII
+    # (recipient addresses, full HTML bodies, webhook payloads) with no purge —
+    # rows older than this are hard-deleted by the background retention worker.
+    data_retention_days: int = Field(
+        default=90,
+        description="Age (days) past which email_queue/webhook_deliveries rows are purged",
+    )
+
     # Argus CRM integration (S7: contact dedup + cross-product suppression-read)
     argus_enabled: bool = Field(default=False, description="Enable Argus CRM integration")
     argus_api_url: str = Field(default="http://argus-api:8000", description="Argus API base URL")
