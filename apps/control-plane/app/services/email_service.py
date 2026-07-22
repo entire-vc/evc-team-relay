@@ -255,6 +255,8 @@ class EmailService:
         text_body: str,
         html_body: str,
         email_type: str,
+        *,
+        commit: bool = True,
     ) -> EmailQueue:
         """Queue email for async delivery.
 
@@ -265,9 +267,16 @@ class EmailService:
             text_body: Plain text body
             html_body: HTML body
             email_type: Email type for tracking
+            commit: Commit (and refresh) immediately. Set False to fold this
+                insert into a caller-managed transaction — e.g. lifecycle_service
+                (TR-18) commits the queued email and its idempotency-key row
+                together, so a crash lands on neither side of that gap instead
+                of leaving an email queued with no record that it was sent.
 
         Returns:
-            Created EmailQueue instance
+            Created EmailQueue instance. `id` is populated either way (a
+            client-side default), but server-generated fields like
+            `created_at` stay unset until whoever commits refreshes it.
         """
         email = EmailQueue(
             to_email=to_email,
@@ -280,8 +289,9 @@ class EmailService:
         )
 
         db.add(email)
-        db.commit()
-        db.refresh(email)
+        if commit:
+            db.commit()
+            db.refresh(email)
 
         logger.info(
             "Email queued",
@@ -289,6 +299,7 @@ class EmailService:
                 "email_id": str(email.id),
                 "to": to_email,
                 "type": email_type,
+                "committed": commit,
             },
         )
 
