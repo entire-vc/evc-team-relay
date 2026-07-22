@@ -316,8 +316,9 @@ class TestWebPublishEndpoints:
     ):
         """Test sitemap.xml lists public+published+indexable shares with lastmod."""
         monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
-        from app.core.config import get_settings
         from datetime import datetime, timezone
+
+        from app.core.config import get_settings
 
         get_settings.cache_clear()
 
