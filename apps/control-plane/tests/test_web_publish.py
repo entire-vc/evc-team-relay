@@ -223,6 +223,58 @@ class TestWebPublishEndpoints:
         # Clean up
         get_settings.cache_clear()
 
+    def test_robots_txt_excludes_non_public_visibility(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """TR-44: web_published+web_noindex=false alone must not make a share
+        crawlable — visibility must also be PUBLIC. A private (or protected)
+        share flipped to published+indexable must not leak its slug."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        leaky_private = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Private/Leaky.md",
+            visibility=models.ShareVisibility.PRIVATE,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-private-doc",
+            web_noindex=False,  # would be indexable if visibility weren't checked
+        )
+        leaky_protected = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Protected/Leaky.md",
+            visibility=models.ShareVisibility.PROTECTED,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-protected-doc",
+            web_noindex=False,
+            password_hash="x",
+        )
+        genuinely_public = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Real.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="genuinely-public-doc",
+            web_noindex=False,
+        )
+        db_session.add_all([leaky_private, leaky_protected, genuinely_public])
+        db_session.commit()
+
+        response = client.get("/v1/web/robots.txt")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "leaky-private-doc" not in content
+        assert "leaky-protected-doc" not in content
+        assert "Allow: /genuinely-public-doc" in content
+
+        get_settings.cache_clear()
+
 
 def _auth_headers(token: str) -> dict[str, str]:
     """Helper to create auth headers from token."""
