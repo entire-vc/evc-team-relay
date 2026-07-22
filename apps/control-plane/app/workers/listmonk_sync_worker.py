@@ -128,10 +128,18 @@ async def main() -> None:
     settings = get_settings()
 
     if not settings.listmonk_enabled:
+        # A missing/misconfigured LISTMONK_URL or LISTMONK_API_PASSWORD is a
+        # config defect, not a transient fault — sys.exit(1) here just hands
+        # `restart: unless-stopped` an infinite crash-restart loop (env vars
+        # are fixed at container start, so a restart can never fix it).
+        # Match the email/lifecycle worker convention instead: log clearly
+        # and idle the sync loop so the process stays up in a visibly
+        # misconfigured state until a human fixes the config (TR-50).
         logger.error(
-            "Listmonk sync disabled — set LISTMONK_URL and LISTMONK_API_PASSWORD. Exiting."
+            "Listmonk sync disabled — set LISTMONK_URL and LISTMONK_API_PASSWORD. "
+            "Worker will idle (not exit) until the config is fixed and the "
+            "container is recreated."
         )
-        sys.exit(1)
 
     svc = get_listmonk_service()
     await svc.start()
@@ -142,19 +150,26 @@ async def main() -> None:
             "listmonk_url": settings.listmonk_url,
             "list_id": settings.listmonk_list_id,
             "sync_interval": settings.listmonk_sync_interval,
+            "enabled": settings.listmonk_enabled,
         },
     )
 
     try:
         while not shutdown_flag:
-            db = get_sessionmaker()()
-            try:
-                await _run_backfill_if_due(svc, db)
-                await _run_incremental(svc, db, settings)
-            except Exception:
-                logger.exception("Error in Listmonk sync cycle")
-            finally:
-                db.close()
+            if settings.listmonk_enabled:
+                db = get_sessionmaker()()
+                try:
+                    await _run_backfill_if_due(svc, db)
+                    await _run_incremental(svc, db, settings)
+                except Exception:
+                    logger.exception("Error in Listmonk sync cycle")
+                finally:
+                    db.close()
+            else:
+                logger.error(
+                    "Listmonk sync still disabled — set LISTMONK_URL and "
+                    "LISTMONK_API_PASSWORD and recreate the container."
+                )
 
             for _ in range(settings.listmonk_sync_interval):
                 if shutdown_flag:
