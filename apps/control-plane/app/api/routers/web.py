@@ -829,9 +829,9 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
     Dynamic robots.txt for web publishing domain.
 
     Default behavior: Disallow all (Disallow: /)
-    For shares with web_noindex=false: Add Allow: /{slug}
+    For public shares with web_noindex=false: Add Allow: /{slug}
 
-    This ensures only shares explicitly marked for indexing are crawlable.
+    This ensures only public shares explicitly marked for indexing are crawlable.
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -847,11 +847,14 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
         "",
     ]
 
-    # Find all published shares that allow indexing
+    # Find all published shares that allow indexing. visibility=PUBLIC is
+    # required here (TR-44) — without it a private/protected share flipped to
+    # web_published+web_noindex=false would leak its slug into robots.txt.
     stmt = select(models.Share).where(
         models.Share.web_published == True,  # noqa: E712
         models.Share.web_noindex == False,  # noqa: E712
         models.Share.web_slug.isnot(None),
+        models.Share.visibility == models.ShareVisibility.PUBLIC,
     )
     indexable_shares = db.execute(stmt).scalars().all()
 
