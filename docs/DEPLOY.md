@@ -186,6 +186,13 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
   the server's compose file and `.env` alone.
 - **web-publish / relay-server** are not (re)built by the deploy pipeline — it covers the
   control-plane and its workers only. Rebuild those manually if their source changes.
+- **`infra/Caddyfile` is host-managed and NOT synced by the deploy pipeline** (same gap as the
+  compose file above). A fix applied here must ALSO be applied live on `tr-relay-vm`
+  (`/opt/relay/Caddyfile`, content-preserving write + `caddy validate` + `caddy reload` inside
+  `relay-caddy-1` — it's a bind-mounted single file, don't `sed -i` it, write a fresh copy so the
+  inode is preserved) or it silently only exists in git. Confirmed drifted at least once already
+  (TR-47's `/metrics` block, TR-43's WS-token-stripping fix) — always diff live vs repo before
+  assuming they match.
 - **Firewall.** See the network note under [Automated deploy](#required-repository-secrets) if
   GitHub-hosted runners can't reach `tr-relay-vm`.
 
