@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from datetime import timezone as _tz
 from uuid import UUID
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from minio import Minio
@@ -823,6 +824,19 @@ def update_share_content(
     }
 
 
+def _get_indexable_shares(db: Session) -> list[models.Share]:
+    """Shares eligible for robots.txt/sitemap.xml: published, indexable, and
+    genuinely PUBLIC (TR-44) — without the visibility check a private/protected
+    share flipped to web_published+web_noindex=false would leak its slug."""
+    stmt = select(models.Share).where(
+        models.Share.web_published == True,  # noqa: E712
+        models.Share.web_noindex == False,  # noqa: E712
+        models.Share.web_slug.isnot(None),
+        models.Share.visibility == models.ShareVisibility.PUBLIC,
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
 @router.get("/robots.txt", response_class=Response)
 def get_robots_txt(db: Session = Depends(get_db)) -> Response:
     """
@@ -847,16 +861,7 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
         "",
     ]
 
-    # Find all published shares that allow indexing. visibility=PUBLIC is
-    # required here (TR-44) — without it a private/protected share flipped to
-    # web_published+web_noindex=false would leak its slug into robots.txt.
-    stmt = select(models.Share).where(
-        models.Share.web_published == True,  # noqa: E712
-        models.Share.web_noindex == False,  # noqa: E712
-        models.Share.web_slug.isnot(None),
-        models.Share.visibility == models.ShareVisibility.PUBLIC,
-    )
-    indexable_shares = db.execute(stmt).scalars().all()
+    indexable_shares = _get_indexable_shares(db)
 
     # Add Allow rules for indexable shares
     if indexable_shares:
@@ -865,7 +870,7 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
             lines.append(f"Allow: /{share.web_slug}")
         lines.append("")
 
-    # Add sitemap reference (for future implementation)
+    # Add sitemap reference
     if indexable_shares:
         domain = settings.web_publish_domain
         if not domain.startswith("http"):
@@ -874,6 +879,49 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
 
     content = "\n".join(lines)
     return Response(content=content, media_type="text/plain")
+
+
+@router.get("/sitemap.xml", response_class=Response)
+def get_sitemap_xml(db: Session = Depends(get_db)) -> Response:
+    """
+    Dynamic sitemap.xml (TR-61) for the shares robots.txt advertises.
+
+    Same eligibility as robots.txt's Allow rules: published, web_noindex=false,
+    and visibility=PUBLIC (TR-44) — kept in one place (_get_indexable_shares)
+    so the two endpoints can't drift apart on that filter.
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled",
+        )
+
+    domain = settings.web_publish_domain
+    if not domain.startswith("http"):
+        domain = f"https://{domain}"
+    domain = domain.rstrip("/")
+
+    indexable_shares = _get_indexable_shares(db)
+
+    urls = []
+    for share in indexable_shares:
+        loc = escape(f"{domain}/{share.web_slug}")
+        entry = [f"  <url>\n    <loc>{loc}</loc>"]
+        if share.web_content_updated_at:
+            lastmod = share.web_content_updated_at.strftime("%Y-%m-%d")
+            entry.append(f"    <lastmod>{lastmod}</lastmod>")
+        entry.append("  </url>")
+        urls.append("\n".join(entry))
+
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls)
+        + ("\n" if urls else "")
+        + "</urlset>\n"
+    )
+    return Response(content=content, media_type="application/xml")
 
 
 def _get_minio_client() -> Minio:

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession, ShareNotFoundError } from './api.js';
+import {
+	fetchWithTimeout,
+	getShareBySlug,
+	authenticateShare,
+	validateSession,
+	getSitemapXml,
+	ShareNotFoundError
+} from './api.js';
 
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — timeout behaviour
@@ -179,5 +186,35 @@ describe('validateSession', () => {
 		const result = await validateSession('slug', 'good-token');
 		expect(result.valid).toBe(true);
 		expect(result.share_id).toBe('share-xyz');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getSitemapXml — proxy to Control Plane
+// ---------------------------------------------------------------------------
+
+describe('getSitemapXml', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('throws on non-ok response', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
+		);
+
+		await expect(getSitemapXml()).rejects.toThrow('Failed to fetch sitemap.xml');
+	});
+
+	it('returns the XML body on 200', async () => {
+		const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n';
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response(xml, { status: 200 })))
+		);
+
+		const result = await getSitemapXml();
+		expect(result).toBe(xml);
 	});
 });
