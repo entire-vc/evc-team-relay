@@ -268,6 +268,21 @@ def redeem_invite(
             detail=error or "Invite is no longer valid",
         )
 
+    # TR-46: an invite targeted at a specific email (invite.email) previously let
+    # ANY bearer of the link redeem it — the email column was stored but never
+    # checked, creating a false sense of targeting. Checked here, before any new
+    # user is registered, so a mismatch never leaves behind an orphan account
+    # that was created but not granted membership. Case-insensitive; a null/blank
+    # invite.email (the common case today — no invite has ever set it) keeps the
+    # existing untargeted behavior unchanged.
+    if invite.email:
+        redeeming_email = user.email if user else (new_user_data.email if new_user_data else None)
+        if redeeming_email and invite.email.strip().lower() != redeeming_email.strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This invite is restricted to a different email address",
+            )
+
     # Handle new user registration or existing user
     access_token = None
     if not user:

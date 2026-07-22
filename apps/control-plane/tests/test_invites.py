@@ -436,6 +436,191 @@ class TestInviteRedemption:
         error_str = str(response_body).lower()
         assert "already" in error_str and ("exist" in error_str or "registered" in error_str)
 
+    def test_redeem_invite_email_mismatch_rejected(self, client: TestClient, db_session):
+        """TR-46: an invite targeted at a specific email must reject a different
+        email. Before the fix, invite.email was stored but never checked at
+        redeem — any bearer of the link could join regardless.
+        """
+        from sqlalchemy import select
+
+        from app.db import models
+
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/email-targeted.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        share_id = share_resp.json()["id"]
+
+        invite_resp = client.post(
+            f"/shares/{share_id}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        # invite.email isn't settable via the create API yet (this task is
+        # redeem-side only, per Daedalus's scoping) -- set it directly, the way
+        # an admin backfill or a future create-path extension would.
+        invite = db_session.execute(
+            select(models.ShareInvite).where(models.ShareInvite.token == token)
+        ).scalar_one()
+        invite.email = "intended@test.com"
+        db_session.commit()
+
+        # A different email is rejected — new-user-registration path.
+        wrong_resp = client.post(
+            f"/invite/{token}/redeem",
+            json={"email": "wrong-person@test.com", "password": "somepass123"},
+        )
+        assert wrong_resp.status_code == 403, wrong_resp.text
+        assert "email" in str(wrong_resp.json()).lower()
+
+        # No user or membership must have been created on the rejected attempt.
+        assert (
+            db_session.execute(
+                select(models.User).where(models.User.email == "wrong-person@test.com")
+            ).scalar_one_or_none()
+            is None
+        )
+        members_resp = client.get(
+            f"/shares/{share_id}/members",
+            headers=auth_headers(admin_token),
+        )
+        assert members_resp.json() == []
+
+        # The intended email still succeeds.
+        ok_resp = client.post(
+            f"/invite/{token}/redeem",
+            json={"email": "intended@test.com", "password": "somepass123"},
+        )
+        assert ok_resp.status_code == 200, ok_resp.text
+        assert ok_resp.json()["user_email"] == "intended@test.com"
+
+    def test_redeem_invite_email_mismatch_rejected_existing_user(
+        self, client: TestClient, db_session
+    ):
+        """TR-46: the email-targeting check must also apply to an already
+        authenticated existing user, not just the new-registration path.
+        """
+        from sqlalchemy import select
+
+        from app.db import models
+
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/email-existing-user.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        share_id = share_resp.json()["id"]
+
+        invite_resp = client.post(
+            f"/shares/{share_id}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        invite = db_session.execute(
+            select(models.ShareInvite).where(models.ShareInvite.token == token)
+        ).scalar_one()
+        invite.email = "someone-else@test.com"
+        db_session.commit()
+
+        client.post(
+            "/admin/users",
+            json={
+                "email": "wrong-existing-user@test.com",
+                "password": "password123",
+                "is_admin": False,
+                "is_active": True,
+            },
+            headers=auth_headers(admin_token),
+        )
+        wrong_user_token = login(client, "wrong-existing-user@test.com", "password123")
+
+        redeem_resp = client.post(
+            f"/invite/{token}/redeem",
+            headers=auth_headers(wrong_user_token),
+        )
+        assert redeem_resp.status_code == 403, redeem_resp.text
+
+        members_resp = client.get(
+            f"/shares/{share_id}/members",
+            headers=auth_headers(admin_token),
+        )
+        assert members_resp.json() == []
+
+    def test_redeem_invite_email_match_is_case_insensitive(self, client: TestClient, db_session):
+        """TR-46: the email targeting check must not be case-sensitive."""
+        from sqlalchemy import select
+
+        from app.db import models
+
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/email-case.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        invite_resp = client.post(
+            f"/shares/{share_resp.json()['id']}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        invite = db_session.execute(
+            select(models.ShareInvite).where(models.ShareInvite.token == token)
+        ).scalar_one()
+        invite.email = "Mixed.Case@Test.com"
+        db_session.commit()
+
+        redeem_resp = client.post(
+            f"/invite/{token}/redeem",
+            json={"email": "mixed.case@test.com", "password": "somepass123"},
+        )
+        assert redeem_resp.status_code == 200, redeem_resp.text
+
+    def test_redeem_invite_no_email_set_unaffected(self, client: TestClient, db_session):
+        """TR-46 regression guard: an invite with no email set (the status quo
+        for every invite in prod today) must keep working for any redeemer,
+        exactly as before this fix.
+        """
+        from sqlalchemy import select
+
+        from app.db import models
+
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/no-email.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        invite_resp = client.post(
+            f"/shares/{share_resp.json()['id']}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        invite = db_session.execute(
+            select(models.ShareInvite).where(models.ShareInvite.token == token)
+        ).scalar_one()
+        assert invite.email is None
+
+        redeem_resp = client.post(
+            f"/invite/{token}/redeem",
+            json={"email": "anyone@test.com", "password": "somepass123"},
+        )
+        assert redeem_resp.status_code == 200, redeem_resp.text
+
     def test_redeem_invite_owner_cannot_join(self, client: TestClient):
         """Test that share owner cannot redeem their own invite."""
         admin_token = login(client, "bootstrap@example.com", "super-secret")
