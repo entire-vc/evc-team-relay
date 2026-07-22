@@ -153,6 +153,19 @@ export async function getRobotsTxt(): Promise<string> {
 }
 
 /**
+ * Fetch sitemap.xml content from Control Plane.
+ */
+export async function getSitemapXml(): Promise<string> {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/sitemap.xml`);
+
+	if (!response.ok) {
+		throw new Error(`Failed to fetch sitemap.xml: ${response.statusText}`);
+	}
+
+	return response.text();
+}
+
+/**
  * Get relay token for real-time sync.
  * Returns token data for connecting to y-sweet WebSocket.
  */

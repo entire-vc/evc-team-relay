@@ -275,6 +275,126 @@ class TestWebPublishEndpoints:
 
         get_settings.cache_clear()
 
+    def test_sitemap_xml_not_enabled(self, client: TestClient):
+        """Test sitemap.xml returns 404 when web publishing is disabled."""
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 404
+
+    def test_sitemap_xml_empty_when_no_indexable_shares(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """Test sitemap.xml is a valid empty urlset when nothing is indexable."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        share = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Test.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="test-doc",
+            web_noindex=True,  # Not indexable
+        )
+        db_session.add(share)
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/xml"
+        content = response.text
+        assert '<?xml version="1.0" encoding="UTF-8"?>' in content
+        assert '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' in content
+        assert "<url>" not in content
+
+        get_settings.cache_clear()
+
+    def test_sitemap_xml_includes_indexable_public_shares(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """Test sitemap.xml lists public+published+indexable shares with lastmod."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+        from datetime import datetime, timezone
+
+        get_settings.cache_clear()
+
+        updated_at = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+        share1 = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Doc1.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="public-doc-1",
+            web_noindex=False,
+            web_content_updated_at=updated_at,
+        )
+        share2 = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Doc2.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="public-doc-2",
+            web_noindex=False,
+        )
+        db_session.add_all([share1, share2])
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "<loc>https://docs.test.com/public-doc-1</loc>" in content
+        assert "<lastmod>2026-07-15</lastmod>" in content
+        assert "<loc>https://docs.test.com/public-doc-2</loc>" in content
+
+        get_settings.cache_clear()
+
+    def test_sitemap_xml_excludes_non_public_visibility(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """TR-44/TR-61: sitemap.xml must apply the same visibility=public filter
+        as robots.txt — a private/protected published+indexable share must not
+        leak its URL into the sitemap either."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        leaky_private = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Private/Leaky.md",
+            visibility=models.ShareVisibility.PRIVATE,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-private-doc",
+            web_noindex=False,
+        )
+        genuinely_public = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Real.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="genuinely-public-doc",
+            web_noindex=False,
+        )
+        db_session.add_all([leaky_private, genuinely_public])
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "leaky-private-doc" not in content
+        assert "<loc>https://docs.test.com/genuinely-public-doc</loc>" in content
+
+        get_settings.cache_clear()
+
 
 def _auth_headers(token: str) -> dict[str, str]:
     """Helper to create auth headers from token."""
