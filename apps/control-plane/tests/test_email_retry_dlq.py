@@ -69,9 +69,9 @@ class TestRetrySchedule:
             elapsed += interval
             if elapsed <= 30 * 60:
                 attempts_within_30min += 1
-        assert attempts_within_30min < email_service.MAX_EMAIL_RETRIES, (
-            "a 30min outage must not exhaust all retry attempts"
-        )
+        assert (
+            attempts_within_30min < email_service.MAX_EMAIL_RETRIES
+        ), "a 30min outage must not exhaust all retry attempts"
 
     def test_total_retry_window_is_at_least_24h(self):
         assert sum(email_service.EMAIL_RETRY_INTERVALS) >= 24 * 3600
