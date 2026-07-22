@@ -214,13 +214,23 @@ class ListmonkService:
     # ------------------------------------------------------------------
 
     async def sync_new_users(self, db: Session, since: datetime) -> tuple[int, datetime | None]:
-        """Sync users created after `since`. Returns (synced_count, max_created_at)."""
+        """Sync users created after `since`. Returns (synced_count, max_created_at).
+
+        `max_ts` only advances while every row so far has been attempted
+        without raising. Once a row raises, the watermark freezes at the
+        last known-good `registered_at` — later rows in the same batch are
+        still attempted (a persistently-broken row shouldn't block newer
+        registrations forever), but the cursor never jumps past a row that
+        hasn't successfully synced, so the failed row gets retried on the
+        next cycle instead of silently skipped for up to 24h (TR-49).
+        """
         rows = db.execute(_NEW_USERS_SINCE_QUERY, {"since": since}).fetchall()
         if not rows:
             return 0, None
 
         synced = 0
         max_ts: datetime | None = None
+        failed = False
 
         for row in rows:
             try:
@@ -234,11 +244,12 @@ class ListmonkService:
                 )
                 if ok:
                     synced += 1
-                # Advance max_ts regardless (so cursor moves past opt-out users too)
-                if max_ts is None or row.registered_at > max_ts:
+                # Advance past opt-out users too, but never past a failure.
+                if not failed and (max_ts is None or row.registered_at > max_ts):
                     max_ts = row.registered_at
             except Exception:
                 logger.exception("Failed to upsert subscriber %s", row.email)
+                failed = True
 
         return synced, max_ts
 

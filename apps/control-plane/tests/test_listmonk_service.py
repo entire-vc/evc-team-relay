@@ -19,8 +19,9 @@ mocked; the escaping/normalization logic under test runs for real.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -135,3 +136,75 @@ class TestUpdateExistingLookupEscaping:
         # out of the string literal mid-fragment.
         assert lookup_query == "subscribers.email = 'o''brien@x.com'"
         assert "= 'o'brien" not in lookup_query
+
+
+def _make_row(email: str, registered_at: datetime):
+    return SimpleNamespace(
+        id=f"id-{email}",
+        email=email,
+        registered_at=registered_at,
+        casdoor=True,
+        has_share=False,
+        name=email.split("@")[0],
+        lifecycle_emails=True,
+    )
+
+
+class TestSyncNewUsersCursorOnPartialFailure:
+    """TR-49 regression: a per-row exception must not let the cursor jump past it.
+
+    Pre-fix, `max_ts` advanced on every row that didn't itself raise — so a
+    later, successfully-synced row would drag the watermark past an earlier
+    row that failed, and the failed row's `registered_at` would never again
+    satisfy `created_at > :since` on the next cycle. That user silently
+    stopped receiving lifecycle syncs for up to 24h (until the nightly
+    backfill caught it via full reconcile).
+    """
+
+    @pytest.mark.asyncio
+    async def test_cursor_freezes_at_first_failed_row_not_at_last_row(self):
+        base = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        rows = [
+            _make_row("a@example.com", base),
+            _make_row("b@example.com", base + timedelta(minutes=1)),  # fails
+            _make_row("c@example.com", base + timedelta(minutes=2)),  # synced after the failure
+        ]
+
+        db = MagicMock()
+        db.execute.return_value.fetchall.return_value = rows
+
+        service = ListmonkService()
+
+        async def fake_upsert(*, email, **kwargs):
+            if email == "b@example.com":
+                raise RuntimeError("boom")
+            return True
+
+        with patch.object(service, "upsert_subscriber", new=AsyncMock(side_effect=fake_upsert)):
+            synced, max_ts = await service.sync_new_users(db, since=base - timedelta(days=1))
+
+        # a@ (before the failure) + c@ (attempted after, still succeeds) = 2 synced.
+        assert synced == 2
+        # The cursor must stay at a@'s timestamp — the last row that synced
+        # successfully BEFORE the failure — so b@'s created_at is still
+        # > the persisted cursor and gets re-fetched + retried next cycle.
+        assert max_ts == base
+        assert max_ts < rows[1].registered_at
+        assert max_ts < rows[2].registered_at
+
+    @pytest.mark.asyncio
+    async def test_no_failures_advances_cursor_to_last_row(self):
+        base = datetime(2026, 7, 20, tzinfo=timezone.utc)
+        rows = [
+            _make_row("a@example.com", base),
+            _make_row("b@example.com", base + timedelta(minutes=1)),
+        ]
+        db = MagicMock()
+        db.execute.return_value.fetchall.return_value = rows
+
+        service = ListmonkService()
+        with patch.object(service, "upsert_subscriber", new=AsyncMock(return_value=True)):
+            synced, max_ts = await service.sync_new_users(db, since=base - timedelta(days=1))
+
+        assert synced == 2
+        assert max_ts == rows[-1].registered_at
