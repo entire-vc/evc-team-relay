@@ -121,12 +121,17 @@ services:
       minio-init:
         condition: service_completed_successfully
     healthcheck:
+      # TR-17: watch readiness (DB-connectivity-checked), not the static /health
+      # endpoint (always {"ok": true}, no DB check at all — a Postgres outage
+      # never made this healthcheck fail). urlopen() raises HTTPError on a
+      # non-2xx response rather than returning it — explicitly catch it and
+      # exit 1 on any non-200 code, including /health/ready's 503.
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import sys,urllib.request;sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health').status == 200 else sys.exit(1)",
+          "import sys,urllib.error,urllib.request\ntry:\n    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready').status == 200 else 1)\nexcept urllib.error.HTTPError:\n    sys.exit(1)",
         ]
       interval: 15s
       timeout: 5s
