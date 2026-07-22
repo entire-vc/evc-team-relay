@@ -87,9 +87,7 @@ class TestUpsertSubscriberCaseNormalization:
                 200,
                 {
                     "data": {
-                        "results": [
-                            {"id": 42, "lists": [], "attribs": {}, "status": "enabled"}
-                        ]
+                        "results": [{"id": 42, "lists": [], "attribs": {}, "status": "enabled"}]
                     }
                 },
             )
@@ -119,9 +117,7 @@ class TestUpdateExistingLookupEscaping:
     async def test_email_with_single_quote_is_escaped_in_lookup_query(self):
         client = AsyncMock()
         client.post = AsyncMock(return_value=_make_response(409))
-        client.get = AsyncMock(
-            return_value=_make_response(200, {"data": {"results": []}})
-        )
+        client.get = AsyncMock(return_value=_make_response(200, {"data": {"results": []}}))
         service = _make_service(client)
 
         await service.upsert_subscriber(
