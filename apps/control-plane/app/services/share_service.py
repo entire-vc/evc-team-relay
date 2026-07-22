@@ -108,11 +108,40 @@ def _get_member(db: Session, share_id: uuid.UUID, user_id: uuid.UUID) -> models.
     return db.execute(stmt).scalar_one_or_none()
 
 
+def _share_has_publishable_content(share: models.Share) -> bool:
+    """Whether a share has real content to show on its public web page (TR-39).
+
+    A public+published share with none renders a page (doc) or a folder tree
+    whose every entry (folder) is a "Content not available" placeholder —
+    see web.py's folder-file fallback / +page.server.ts's equivalent.
+    """
+    if share.kind == models.ShareKind.DOC:
+        return bool(share.web_content and share.web_content.strip())
+    if share.kind == models.ShareKind.FOLDER:
+        return any(
+            item.get("content") or item.get("storage_key")
+            for item in (share.web_folder_items or [])
+        )
+    return False
+
+
 def create_share(
     db: Session, owner: models.User, payload: share_schema.ShareCreate
 ) -> models.Share:
     # Validate path safety and format
     validate_share_path_safety(payload.path, payload.kind)
+
+    # TR-39: a share can't carry content at creation time (ShareCreate has no
+    # content field — it's added via a later update), so public+published at
+    # creation would always be an empty public page. Require content first.
+    if payload.web_published and payload.visibility == models.ShareVisibility.PUBLIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Cannot create a share as public and published before it has content. "
+                "Create it (private or protected), sync content, then publish as public."
+            ),
+        )
 
     password_hash = None
     if payload.visibility == models.ShareVisibility.PROTECTED:
@@ -265,6 +294,15 @@ def update_share(
         new_has_items = len(payload.web_folder_items) > 0
         changes["web_folder_items"] = {"old": old_has_items, "new": new_has_items}
         if payload.web_folder_items:
+            # Flush THIS call's pending changes (kind/path/visibility/web_published/
+            # web_content/etc., set earlier in this same function) before refreshing —
+            # Session.refresh() does NOT autoflush, it reloads straight from the last
+            # COMMITTED row, silently discarding any unflushed in-memory attribute
+            # changes on `share`. Without the flush, a PATCH combining web_folder_items
+            # with e.g. visibility in one call would revert the visibility change with
+            # no error (found while testing the TR-39 guard below, verified via a
+            # standalone SQLAlchemy repro — real bug, not specific to that guard).
+            db.flush()
             db.refresh(share)  # fresh read — sync_upload may have added artifacts after load
             existing_by_path = {item.get("path"): item for item in (share.web_folder_items or [])}
             new_items = []
@@ -296,6 +334,24 @@ def update_share(
         old_doc_id = share.web_doc_id
         changes["web_doc_id"] = {"old": old_doc_id is not None, "new": payload.web_doc_id != ""}
         share.web_doc_id = payload.web_doc_id if payload.web_doc_id else None
+
+    # TR-39: reject the RESULTING state of this update if it would leave the
+    # share public + published with no content — regardless of which field(s)
+    # in this call caused it (flipping visibility/web_published on, or clearing
+    # content while already public+published). Checked last, against the final
+    # mutated `share`, so it sees content changes made earlier in this same call.
+    if (
+        share.web_published
+        and share.visibility == models.ShareVisibility.PUBLIC
+        and not _share_has_publishable_content(share)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Cannot make a share with no content public. Add content first, "
+                "or keep it private/protected until it does."
+            ),
+        )
 
     db.add(share)
     db.commit()
