@@ -268,7 +268,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Public Doc.md",
-                "visibility": "public",
+                # TR-39 guard: public+published+no-content is rejected — this test is
+                # about slug/publish mechanics, not visibility, so create private.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -291,7 +293,8 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Some Doc.md",
-                "visibility": "public",
+                # TR-39 guard: this test is about slug generation, not visibility.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-custom-slug",
             },
@@ -314,7 +317,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "API Docs.md",
-                "visibility": "public",
+                # TR-39 guard: isolate the reserved-slug check being tested here from
+                # the (unrelated) public+no-content guard.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "api",  # Reserved
             },
@@ -340,7 +345,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Doc1.md",
-                "visibility": "public",
+                # TR-39 guard: isolate the duplicate-slug check from the (unrelated)
+                # public+no-content guard.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-slug",
             },
@@ -354,7 +361,7 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Doc2.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-slug",  # Duplicate
             },
@@ -374,13 +381,15 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share
+        # Create share (TR-39: private — this test is about the enable-publish
+        # transition, not visibility; enabling publish while public+no-content
+        # would hit the new guard on the PATCH below)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
             },
             headers=headers,
         )
@@ -406,13 +415,14 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share with web publishing enabled
+        # Create share with web publishing enabled (TR-39: private — this test is
+        # about disabling publish, not visibility)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
             },
             headers=headers,
@@ -440,13 +450,14 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share with web publishing
+        # Create share with web publishing (TR-39: private — this test is about
+        # slug updates, not visibility)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
             },
             headers=headers,
@@ -489,7 +500,11 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Content Test.md",
-                "visibility": "public",
+                # TR-39 guard: create private, then the PATCH below sets content
+                # while the share stays private — this test is about the content
+                # field itself, not the public-visibility interaction (covered
+                # separately in test_public_content_guard.py).
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -519,7 +534,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Clear Content Test.md",
-                "visibility": "public",
+                # TR-39 guard: private — this test's interaction with the public
+                # guard specifically is covered in test_public_content_guard.py.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -985,7 +1002,8 @@ class TestWebRelayToken:
             json={
                 "kind": "doc",
                 "path": "DocId Test.md",
-                "visibility": "public",
+                # TR-39 guard: this test is about web_doc_id, not visibility.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -1901,7 +1919,11 @@ class TestFolderItemsContentMerge:
         share = models.Share(
             kind=models.ShareKind.FOLDER,
             path="Vault/",
-            visibility=models.ShareVisibility.PUBLIC,
+            # TR-39 guard: PRIVATE — this fixture is about web_folder_items merge
+            # mechanics (AC1-AC3 below), not visibility. test_patch_new_path_has_no_content
+            # deliberately leaves the share with zero content items after its PATCH,
+            # which the public-content guard would otherwise (correctly) reject.
+            visibility=models.ShareVisibility.PRIVATE,
             owner_user_id=test_user.id,
             web_published=True,
             web_slug="content-merge-share",
