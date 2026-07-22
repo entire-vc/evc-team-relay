@@ -74,9 +74,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 if user_id:
                     log_context["user_id"] = str(user_id)
 
-            # Log based on status code
+            # Log based on status code.
+            # 404 is routine, not an actionable signal: public slug-lookup routes
+            # (e.g. /v1/web/shares/{slug}) return it identically for an expired/
+            # deleted share and for a vulnerability scanner probing garbage paths
+            # (.env, .idea, ...) — the route matches either way, so there is no
+            # way to tell those apart from the response alone. Logging it at
+            # WARNING just buries real WARNINGs (401/403/409/422/429, etc.) under
+            # scanner noise (TR-63). Every other 4xx still warns.
             if response.status_code >= 500:
                 logger.error("Request failed", extra=log_context)
+            elif response.status_code == 404:
+                logger.info("Request not found", extra=log_context)
             elif response.status_code >= 400:
                 logger.warning("Request error", extra=log_context)
             elif request.url.path not in self.QUIET_PATHS:
