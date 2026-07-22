@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -48,10 +49,10 @@ def liveness_probe() -> HealthStatus:
 
 
 @router.get("/health/ready", response_model=DetailedHealthStatus)
-def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus:
+def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus | JSONResponse:
     """
     Kubernetes readiness probe.
-    Returns 200 if the application is ready to serve traffic.
+    Returns 200 if the application is ready to serve traffic, 503 otherwise.
     Checks database connectivity and relay keys.
     """
     settings = get_settings()
@@ -72,13 +73,27 @@ def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus:
     # Return unhealthy status if any check fails
     overall_status = "healthy" if db_status == "healthy" else "unhealthy"
 
-    return DetailedHealthStatus(
+    body = DetailedHealthStatus(
         status=overall_status,
         timestamp=datetime.utcnow(),
         version=settings.api_version,
         database=db_status,
         relay_keys=relay_keys_status,
     )
+
+    # TR-17: the body already carried status="unhealthy" on DB-down, but the
+    # HTTP status code stayed 200 — Docker's healthcheck (and any LB/monitor
+    # that reads the status code, not the JSON body) never saw a failure, so
+    # a real Postgres outage went undetected. Return the same body but with
+    # a real 503 when not ready — a Response instance returned directly
+    # bypasses response_model's forced-200 serialization for this case.
+    if overall_status != "healthy":
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=body.model_dump(mode="json"),
+        )
+
+    return body
 
 
 @router.get("/version")
