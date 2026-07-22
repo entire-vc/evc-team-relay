@@ -31,7 +31,7 @@ def test_server_info_includes_branding(client):
 
     # Default values should be present
     assert branding["name"] == "Relay Server"
-    assert branding["logo_url"] == "/static/img/evc-ava.svg"
+    assert branding["logo_url"] == "/static/img/evc-ava.png"
     assert branding["favicon_url"] == "/static/img/evc-ava.svg"
 
 
@@ -60,7 +60,7 @@ def test_admin_get_branding_success(client):
 
     data = response.json()
     assert data["name"] == "Relay Server"
-    assert data["logo_url"] == "/static/img/evc-ava.svg"
+    assert data["logo_url"] == "/static/img/evc-ava.png"
     assert data["favicon_url"] == "/static/img/evc-ava.svg"
 
 
