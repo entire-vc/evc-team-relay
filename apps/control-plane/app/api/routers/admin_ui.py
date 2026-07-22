@@ -136,6 +136,7 @@ def _issue_admin_session(request: Request, db: Session, user: models.User) -> Re
 
 
 @router.post("/login", response_class=HTMLResponse)
+@limiter.limit("10/minute")  # TR-19: max 10 login attempts per minute per IP
 def login_submit(
     request: Request,
     email: Annotated[str, Form()],

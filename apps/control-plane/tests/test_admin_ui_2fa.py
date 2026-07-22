@@ -1,4 +1,6 @@
-"""Tests for TR-06 (#fceefc4f): /admin-ui/login bypassed 2FA.
+"""Tests for TR-06 (#fceefc4f): /admin-ui/login bypassed 2FA, and TR-19
+(#4ed5a3b9): /admin-ui/login had no rate limit — unbounded password
+brute-force on the sole public entry point to the full-access admin panel.
 
 authenticate_user() only checks password; login_submit used to issue the
 admin_token cookie immediately after, never looking at user.totp_enabled —
@@ -79,6 +81,26 @@ class TestAdminUiLoginWithout2FA:
         assert response.headers["location"] == "/admin-ui/dashboard"
         assert "admin_token" in response.cookies
         assert "admin_2fa_pending" not in response.cookies
+
+
+class TestAdminUiLoginRateLimit:
+    def test_login_is_rate_limited(self, db_session: Session, client: TestClient):
+        """TR-19: /admin-ui/login had no rate limiting at all — unbounded
+        password brute-force against the sole public admin-panel entry
+        point. Wrong-password attempts must still trip the limiter (the
+        limit guards the endpoint, not just successful logins)."""
+        make_admin_user(db_session, "rl-admin@example.com")
+
+        statuses = []
+        for _ in range(15):
+            resp = client.post(
+                "/admin-ui/login",
+                data={"email": "rl-admin@example.com", "password": "wrong-password"},
+                follow_redirects=False,
+            )
+            statuses.append(resp.status_code)
+
+        assert 429 in statuses, f"expected a 429 among {statuses}"
 
 
 class TestAdminUiLoginWith2FA:
