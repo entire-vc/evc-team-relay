@@ -8,13 +8,15 @@ are notified appropriately.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.models import Share, ShareInvite, ShareMember, User
+from app.db.models import Share, ShareInvite, ShareMember, User, UserSession
 from app.services import webhook_service
 from app.services.email_service import EmailService, get_email_service
 
@@ -591,6 +593,64 @@ class NotificationService:
 
     # Auth events
 
+    def _should_send_new_session_email(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        device_name: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> bool:
+        """TR-36: suppress the "New login" email if an identical-looking
+        session already got one within the suppression window.
+
+        Keys on the FULL (device_name, ip_address, user_agent) tuple, not
+        device_name alone — device_name is frequently uninformative: the
+        OAuth login path (oauth.py) always passes the fixed literal
+        f"OAuth ({provider})" for every session regardless of the real
+        device, and the password path only sets it from an optional
+        X-Device-Name header most clients don't send (None otherwise). Either
+        one alone would collapse a user's genuinely different devices into
+        one suppression bucket — a real second device logging in via the
+        same OAuth provider within the window would go silently unnotified,
+        which is the opposite of what a security alert is for. ip_address +
+        user_agent narrow the match back down to "actually looks like the
+        same client", which is what a reconnect loop actually reproduces.
+
+        The UserSession row for the CURRENT login is already committed by
+        the time this runs (auth_service.login()/the OAuth callback create
+        it, then db.commit(), before notify_session_created is called) — so
+        "any matching session in the window besides the newest one" is the
+        signal, not "any session at all" (which would always be true for
+        the very login triggering this check).
+
+        Known residual gap (accepted, not fixed here — a plain
+        select-then-decide has no locking): two logins from an identical
+        client landing in the same instant on different worker processes
+        could both pass this check and both send. Failure direction is
+        "occasional duplicate email", not "a genuinely new device stays
+        silent" — the correct side to fail on for a security notification.
+        """
+        settings = get_settings()
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            hours=settings.security_new_session_email_suppression_hours
+        )
+        stmt = (
+            select(UserSession.id)
+            .where(
+                UserSession.user_id == user_id,
+                UserSession.device_name == device_name,
+                UserSession.ip_address == ip_address,
+                UserSession.user_agent == user_agent,
+                UserSession.created_at >= cutoff,
+            )
+            .order_by(UserSession.created_at.desc())
+            .limit(2)
+        )
+        recent_session_ids = db.execute(stmt).scalars().all()
+        # 0 or 1 (just the current session) => nothing sent yet in this window.
+        return len(recent_session_ids) <= 1
+
     async def notify_session_created(
         self,
         db: Session,
@@ -625,16 +685,25 @@ class NotificationService:
 
         self._queue_webhooks(db, event_type, payload, user.id)
 
-        # Send security email
+        # Send security email — suppressed if an identical-looking session
+        # already got one within the suppression window (TR-36).
         if user.email:
-            await self.email_service.send_security_new_session(
-                db,
-                user.email,
-                user.id,
-                device_name,
-                ip_address,
-                user_agent,
-            )
+            if self._should_send_new_session_email(
+                db, user.id, device_name, ip_address, user_agent
+            ):
+                await self.email_service.send_security_new_session(
+                    db,
+                    user.email,
+                    user.id,
+                    device_name,
+                    ip_address,
+                    user_agent,
+                )
+            else:
+                logger.info(
+                    "Suppressed duplicate new-session email",
+                    extra={"user_id": str(user.id), "device_name": device_name},
+                )
 
         logger.info(
             "Session created notification sent",

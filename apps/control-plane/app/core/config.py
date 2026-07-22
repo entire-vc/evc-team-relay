@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # value directly shrinks the write-after-removal window.
     relay_token_ttl_minutes: int = Field(default=5)
 
+    # TR-36: session.created fires (and notify_session_created queues a
+    # "New login to your account" email) on every login, including a
+    # reconnect-loop client hammering /auth/login — observed 10 emails to one
+    # user in 2 minutes. This bounds how often that email fires per
+    # (user, device) pair; the underlying UserSession row is still created
+    # every time, only the notification is suppressed.
+    security_new_session_email_suppression_hours: int = Field(default=24)
+
     # CORS settings
     cors_allowed_origins: str = Field(
         default="https://cp.tr.entire.vc",
