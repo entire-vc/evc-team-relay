@@ -274,7 +274,6 @@ class TestLifecycleArgusSuppressionT1:
                 return_value=("<html>", "text"),
             ),
             patch("app.services.lifecycle_service._template_context", return_value={}),
-            patch("app.services.lifecycle_service._mark_sent"),
             patch("app.services.lifecycle_service.get_email_service") as mock_email,
         ):
             db.execute.return_value.scalars.return_value.all.return_value = [user]
