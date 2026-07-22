@@ -137,10 +137,14 @@ def create_agent_key(
     """Create an agent key for a share. Raw key is shown once and never retrievable again."""
     share, user_id = _require_share_owner_or_admin(share_id, request, db)
     settings = get_settings()
+    now = security.utcnow()
 
-    # Validate expires_at
+    # Validate expires_at, or apply a default TTL when the caller omits it (TR-45):
+    # an unbounded key that survives a member's removal/offboarding forever is
+    # exactly the "stale access made permanent" risk the audit flagged (37 prod
+    # keys had no expiry at all). Non-breaking: existing callers that already
+    # pass expires_at keep their exact value; only the omitted case changes.
     if payload.expires_at is not None:
-        now = security.utcnow()
         exp = payload.expires_at
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
@@ -154,6 +158,8 @@ def create_agent_key(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="expires_at must be within 2 years from now",
             )
+    else:
+        exp = now + timedelta(days=settings.agent_key_default_ttl_days)
 
     # Enforce per-share active key cap
     active_count_stmt = select(func.count()).where(
@@ -179,7 +185,7 @@ def create_agent_key(
         label=payload.label,
         scopes=",".join(payload.scopes),
         created_by=user_id,
-        expires_at=exp if payload.expires_at is not None else None,
+        expires_at=exp,
     )
     db.add(agent_key)
     db.commit()
@@ -193,7 +199,8 @@ def create_agent_key(
             "share_id": str(share.id),
             "created_by": str(user_id),
             "label": payload.label,
-            "expires_at": payload.expires_at.isoformat() if payload.expires_at else None,
+            "expires_at": agent_key.expires_at.isoformat(),
+            "default_ttl_applied": payload.expires_at is None,
             "scopes": agent_key.scopes,
             "ip": request.client.host if request.client else None,
         },

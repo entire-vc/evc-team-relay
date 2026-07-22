@@ -184,6 +184,13 @@ class Settings(BaseSettings):
     agent_key_creation_rate_per_hour: int = Field(
         default=10, description="Max agent key creations per user per hour"
     )
+    agent_key_default_ttl_days: int = Field(
+        default=90,
+        description=(
+            "Default expiry applied when a caller omits expires_at at key creation "
+            "(TR-45) — matches the prod-DB-password rotation cadence used elsewhere."
+        ),
+    )
 
     # Argus CRM integration (S7: contact dedup + cross-product suppression-read)
     argus_enabled: bool = Field(default=False, description="Enable Argus CRM integration")
