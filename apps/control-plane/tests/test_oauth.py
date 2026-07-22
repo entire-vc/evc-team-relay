@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -481,6 +481,142 @@ class TestOAuthEndpoints:
             data = response.json()
             state_data = oauth_service.decode_state(data["state"])
             assert state_data.redirect_uri == "http://localhost:58548/callback"
+
+
+class TestOAuthCallbackSessionNotification:
+    """TR-16: OAuth login must send the security-alert email + session.created
+    webhook after create_session(), same as the password-login path (auth.py)
+    already does. oauth.py's callback() previously called create_session()
+    directly with no notification_service call at all."""
+
+    def _make_provider(self, db_session: Session) -> models.OAuthProvider:
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client_id",
+            client_secret_encrypted="test_secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+        return provider
+
+    def _make_global_webhook(self, db_session: Session, event_type: str) -> models.Webhook:
+        webhook = models.Webhook(
+            id=uuid.uuid4(),
+            user_id=None,  # admin/global webhook — matches any user per find_matching_webhooks
+            name="test session webhook",
+            url="https://example.com/hook",
+            secret="whsec_test",
+            events=[event_type],
+            active=True,
+        )
+        db_session.add(webhook)
+        db_session.commit()
+        return webhook
+
+    def _run_callback(
+        self, client: TestClient, db_session: Session, provider: models.OAuthProvider
+    ):
+        from app.schemas.oauth import OAuthStateData, OAuthUserInfo
+
+        state = oauth_service.encode_state(
+            OAuthStateData(
+                code_verifier="test-verifier-1234567890abcdefghijklmno",
+                redirect_uri="https://cp.example.com/callback",
+            )
+        )
+        userinfo = OAuthUserInfo(
+            sub="casdoor-user-1",
+            email="oauth-login@example.com",
+            name="OAuth Login User",
+            groups=[],
+        )
+        with (
+            patch(
+                "app.api.routers.oauth.oauth_service.exchange_code_for_tokens",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fake-provider-access-token"},
+            ),
+            patch(
+                "app.api.routers.oauth.oauth_service.get_user_info",
+                new_callable=AsyncMock,
+                return_value=userinfo,
+            ),
+        ):
+            response = client.get(
+                f"/v1/auth/oauth/{provider.name}/callback",
+                params={"code": "fake-code", "state": state},
+            )
+        return response
+
+    def test_callback_queues_security_email(self, client: TestClient, db_session: Session):
+        provider = self._make_provider(db_session)
+
+        response = self._run_callback(client, db_session, provider)
+        assert response.status_code == 200, response.text
+
+        emails = (
+            db_session.query(models.EmailQueue)
+            .filter(models.EmailQueue.to_email == "oauth-login@example.com")
+            .all()
+        )
+        security_emails = [e for e in emails if e.email_type == "security_new_session"]
+        assert len(security_emails) == 1, [e.email_type for e in emails]
+
+    def test_callback_queues_session_created_webhook(self, client: TestClient, db_session: Session):
+        provider = self._make_provider(db_session)
+        self._make_global_webhook(db_session, "session.created")
+
+        response = self._run_callback(client, db_session, provider)
+        assert response.status_code == 200, response.text
+
+        deliveries = (
+            db_session.query(models.WebhookDelivery)
+            .filter(models.WebhookDelivery.event_type == "session.created")
+            .all()
+        )
+        assert len(deliveries) == 1
+        assert deliveries[0].payload["data"]["user"]["email"] == "oauth-login@example.com"
+
+    def test_callback_without_notification_fix_would_have_sent_nothing(
+        self, client: TestClient, db_session: Session
+    ):
+        """Guards against the exact regression: with notify_session_created()
+        stubbed out (simulating the pre-fix code), NEITHER channel fires —
+        proves the two tests above actually exercise the fix, not some other
+        path that would queue these regardless."""
+        provider = self._make_provider(db_session)
+        self._make_global_webhook(db_session, "session.created")
+
+        with patch(
+            "app.api.routers.oauth.get_notification_service"
+        ) as mock_get_notification_service:
+            mock_service = MagicMock()
+            mock_service.notify_session_created = AsyncMock()
+            mock_get_notification_service.return_value = mock_service
+
+            response = self._run_callback(client, db_session, provider)
+            assert response.status_code == 200, response.text
+            mock_service.notify_session_created.assert_awaited_once()
+
+        # With the real notification service swapped out, nothing should have
+        # actually landed in either queue.
+        emails = (
+            db_session.query(models.EmailQueue)
+            .filter(models.EmailQueue.to_email == "oauth-login@example.com")
+            .all()
+        )
+        assert emails == []
+        deliveries = (
+            db_session.query(models.WebhookDelivery)
+            .filter(models.WebhookDelivery.event_type == "session.created")
+            .all()
+        )
+        assert deliveries == []
 
 
 class TestOAuthGroupMapping:
