@@ -27,10 +27,18 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 	const body = await response.arrayBuffer();
 	const contentType = response.headers.get('content-type') || 'application/octet-stream';
 
-	return new Response(body, {
-		headers: {
-			'Content-Type': contentType,
-			'Cache-Control': 'public, max-age=86400'
-		}
-	});
+	// TR-60: don't hardcode a cache policy here — control-plane already sets
+	// Cache-Control based on the share's actual visibility (public shares get
+	// `public, max-age=...`; private/protected shares get none at all, see
+	// web.py's serve_web_asset). Forward whatever it decided instead of
+	// overriding it with a blanket `public`, which would let any downstream
+	// CDN/shared cache in front of this proxy serve a private asset to
+	// anyone who guesses its URL.
+	const responseHeaders: Record<string, string> = { 'Content-Type': contentType };
+	const upstreamCacheControl = response.headers.get('cache-control');
+	if (upstreamCacheControl) {
+		responseHeaders['Cache-Control'] = upstreamCacheControl;
+	}
+
+	return new Response(body, { headers: responseHeaders });
 };
