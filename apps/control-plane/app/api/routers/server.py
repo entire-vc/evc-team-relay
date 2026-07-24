@@ -20,6 +20,7 @@ class ServerFeatures(BaseModel):
     admin_ui: bool = True
     oauth_enabled: bool = False
     oauth_provider: str | None = None
+    billing_enabled: bool = False
     web_publish_enabled: bool = False
     web_publish_domain: str | None = None
 
@@ -67,11 +68,12 @@ def get_server_info(db: Session = Depends(get_db)) -> ServerInfo:
         id=server_id,
         name=settings.server_name,
         version=settings.api_version,
-        edition="community",  # OSS edition; Enterprise will override this
+        edition="enterprise",
         relay_url=str(settings.relay_public_url).rstrip("/"),
         features=ServerFeatures(
             oauth_enabled=settings.oauth_enabled,
             oauth_provider=settings.oauth_provider_name if settings.oauth_enabled else None,
+            billing_enabled=settings.billing_enabled,
             web_publish_enabled=settings.web_publish_enabled,
             web_publish_domain=settings.web_publish_domain,
         ),

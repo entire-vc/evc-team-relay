@@ -36,10 +36,21 @@ concurrency:
 
 jobs:
   deploy:
-    # OSS deploy to prod is DISABLED — prod control-plane is built from relay-onprem-enterprise
-    # (enterprise edition with billing_enabled). The OSS source hardcodes edition=community which
-    # breaks the billing button in the plugin. Re-enable only when the OSS and enterprise
-    # migration trees are reconciled. See Mesh task e5b4a3d6 for context.
+    # OSS deploy to prod is DISABLED — not because of an edition mismatch (that's
+    # resolved as of TR·edition/billing #f75f04bb: this repo's main IS what's live
+    # on tr-relay-vm, edition=enterprise with billing_enabled, verified by byte-diffing
+    # /opt/relay/control-plane-src against this repo — the old "built from
+    # relay-onprem-enterprise" claim here was already stale/wrong before that fix, see
+    # episode-gandalf-2026-07-24-tr20-live-deploy-verify), but because this job cannot
+    # actually run: tr-relay-vm (10.10.10.40) is reachable only via ProxyJump through
+    # hel01 on the private Helsinki network, `ubuntu-latest` GitHub-hosted runners have
+    # no path to it, there are zero self-hosted runners on this repo, and zero of the
+    # TW_RELAY_* secrets this job needs are configured (`gh secret list` returns empty).
+    # Every recent fix (TR-03/20/22/39/45/55/60...) ships via the documented manual path
+    # instead: `docs/DEPLOY.md` / `scripts/deploy.sh` run by hand over SSH through the
+    # ProxyJump alias. Re-enabling this job for real needs a self-hosted runner (or a
+    # bastion) that can reach the private network, plus the TW_RELAY_* secrets — that's
+    # a standalone infra task, not something to flip live without a working target.
     if: ${{ false }}
     runs-on: ubuntu-latest
     environment: production
