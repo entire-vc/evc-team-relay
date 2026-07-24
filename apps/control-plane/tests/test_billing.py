@@ -542,5 +542,5 @@ class TestNonStubModeMocksExternalBillingClient:
             result = await billing_service.create_checkout_session(
                 "cid-checkout", {"product_id": "prod_relay_builder"}, _FakeDb(), _FakeUser()
             )
-            assert result["checkout_url"].startswith("https://billing.entire.vc")
+            assert result["checkout_url"] == "https://billing.entire.vc/checkout/abc"
             mock_client.create_subscription.assert_awaited_once()
