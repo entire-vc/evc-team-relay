@@ -211,3 +211,37 @@ class TestRequestLogging:
             ids.add(response.headers["X-Request-ID"])
 
         assert len(ids) == 5  # All IDs should be unique
+
+    def test_404_logs_at_info_not_warning(self, client, caplog) -> None:
+        """TR-63: a 404 (e.g. a scanner probing a garbage slug like /.env, /.idea
+        under /v1/web/shares/{slug}) must not log at WARNING — it's routine, not
+        an actionable signal, and was drowning real WARNINGs in scanner noise."""
+        import logging as logging_module
+
+        with caplog.at_level(logging_module.INFO, logger="app.middleware.logging"):
+            response = client.get("/v1/web/shares/.env")
+
+        assert response.status_code == 404
+        request_records = [
+            r for r in caplog.records if r.message in ("Request error", "Request not found")
+        ]
+        assert len(request_records) == 1
+        assert request_records[0].levelname == "INFO"
+        assert request_records[0].message == "Request not found"
+
+    def test_real_4xx_still_logs_at_warning(self, client, caplog) -> None:
+        """TR-63 regression guard: only 404 is downgraded — a genuine client-error
+        4xx (e.g. an invalid refresh token, 401) must still warn, so this fix
+        doesn't silently swallow actionable signals along with the scanner noise."""
+        import logging as logging_module
+
+        with caplog.at_level(logging_module.INFO, logger="app.middleware.logging"):
+            response = client.post("/v1/auth/refresh", json={"refresh_token": "a" * 64})
+
+        assert response.status_code == 401
+        request_records = [
+            r for r in caplog.records if r.message in ("Request error", "Request not found")
+        ]
+        assert len(request_records) == 1
+        assert request_records[0].levelname == "WARNING"
+        assert request_records[0].message == "Request error"
