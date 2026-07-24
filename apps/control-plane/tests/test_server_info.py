@@ -17,7 +17,7 @@ def test_server_info_returns_metadata(client):
     assert "name" in data
     assert "version" in data
     assert "edition" in data
-    assert data["edition"] == "community"  # OSS edition
+    assert data["edition"] == "enterprise"  # TR·edition/billing (#f75f04bb)
     assert "relay_url" in data
     assert "features" in data
     assert "branding" in data
@@ -31,6 +31,8 @@ def test_server_info_returns_metadata(client):
     # OAuth disabled by default
     assert features["oauth_enabled"] is False
     assert features["oauth_provider"] is None
+    # Billing disabled by default (BILLING_ENABLED unset in test env)
+    assert features["billing_enabled"] is False
 
     # Check branding structure
     branding = data["branding"]

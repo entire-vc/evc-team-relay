@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entire VC Team Relay - Payment Complete</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/evc-ava.svg">
+    <link rel="stylesheet" href="/static/css/admin.css">
+    <style>
+        .callback-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: var(--bg-secondary);
+        }
+
+        .callback-card {
+            background: var(--bg);
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px var(--shadow);
+            width: 100%;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .callback-brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .callback-brand a {
+            display: flex;
+            transition: opacity 0.2s;
+        }
+
+        .callback-brand a:hover {
+            opacity: 0.8;
+        }
+
+        .callback-brand img {
+            border-radius: 8px;
+        }
+
+        .callback-brand span {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .status-icon {
+            font-size: 4rem;
+            margin: 1rem 0;
+        }
+
+        .status-icon.success {
+            color: var(--success);
+        }
+
+        .status-icon.error {
+            color: var(--danger);
+        }
+
+        .status-icon.pending {
+            color: var(--warning);
+        }
+
+        .callback-card h1 {
+            margin: 0.5rem 0;
+            font-size: 1.75rem;
+        }
+
+        .callback-card p {
+            color: var(--text-muted);
+            margin: 1rem 0;
+        }
+
+        .redirect-info {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1.5rem 0;
+        }
+
+        .redirect-info p {
+            margin: 0.5rem 0;
+            font-size: 0.875rem;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .btn-full {
+            width: 100%;
+            margin-top: 1rem;
+        }
+
+        .session-id {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            word-break: break-all;
+            margin-top: 1rem;
+            padding: 0.5rem;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="callback-container">
+        <div class="callback-card">
+            <div class="callback-brand">
+                <a href="/">
+                    <img src="{{ branding.logo_url if branding else '/static/img/evc-ava.svg' }}" alt="{{ branding.name if branding else 'EVC Team Relay' }}" width="40" height="40">
+                </a>
+                <span>{{ branding.name if branding else 'Team Relay' }}</span>
+            </div>
+
+            {% if status == 'success' %}
+                <div class="status-icon success">✓</div>
+                <h1>Payment Successful!</h1>
+                <p>Your subscription has been activated. Redirecting you back to Obsidian...</p>
+
+                <div class="redirect-info">
+                    <p><strong>Redirecting automatically</strong> <span class="loader"></span></p>
+                    <p style="margin-top: 0.5rem;">If the redirect doesn't work, click the button below.</p>
+                </div>
+
+                <a href="obsidian://evc-team-relay/billing-ok?status=success{% if subscription_id %}&subscription_id={{ subscription_id }}{% endif %}"
+                   class="btn btn-primary btn-full">
+                    Return to Obsidian
+                </a>
+
+                {% if subscription_id %}
+                <div class="session-id">
+                    {% if subscription_id.startswith('sub_') %}
+                    Subscription ID: {{ subscription_id }}
+                    {% else %}
+                    Session ID: {{ subscription_id }}
+                    {% endif %}
+                </div>
+                {% endif %}
+
+            {% elif status == 'canceled' %}
+                <div class="status-icon pending">⚠</div>
+                <h1>Payment Canceled</h1>
+                <p>Your payment was canceled. No charges have been made.</p>
+
+                <div class="redirect-info">
+                    <p>You can close this page and return to Obsidian to try again.</p>
+                </div>
+
+                <a href="obsidian://evc-team-relay/billing-canceled?status=canceled"
+                   class="btn btn-secondary btn-full">
+                    Return to Obsidian
+                </a>
+
+            {% elif status == 'unknown' %}
+                <div class="status-icon success">✓</div>
+                <h1>You're All Set</h1>
+                <p>You can safely close this page and return to Obsidian.</p>
+
+                <div class="redirect-info">
+                    <p>Your subscription settings are managed in the Obsidian plugin.</p>
+                </div>
+
+                <a href="obsidian://evc-team-relay/billing-ok?status=portal_return"
+                   class="btn btn-primary btn-full">
+                    Return to Obsidian
+                </a>
+
+            {% else %}
+                <div class="status-icon error">✕</div>
+                <h1>Payment Issue</h1>
+                <p>Something went wrong with your payment ({{ status }}). Please check your billing settings in Obsidian.</p>
+
+                <div class="redirect-info">
+                    <p>If you were charged but don't see your subscription, please contact support.</p>
+                </div>
+
+                <a href="obsidian://evc-team-relay/billing-error?status={{ status }}"
+                   class="btn btn-secondary btn-full">
+                    Return to Obsidian
+                </a>
+            {% endif %}
+
+            <p style="margin-top: 2rem; font-size: 0.875rem;">
+                Having trouble? <a href="mailto:support@entire.vc" style="color: var(--primary);">Contact Support</a>
+            </p>
+        </div>
+    </div>
+
+    {% if status == 'success' %}
+    <script>
+        // Auto-redirect after 2 seconds
+        setTimeout(function() {
+            const deepLinkUrl = "obsidian://evc-team-relay/billing-ok?status=success{% if subscription_id %}&subscription_id={{ subscription_id }}{% endif %}";
+            window.location.href = deepLinkUrl;
+        }, 2000);
+    </script>
+    {% endif %}
+</body>
+</html>

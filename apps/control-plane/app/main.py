@@ -18,6 +18,8 @@ from app.api.routers import (
     admin_ui,
     agent_keys,
     auth,
+    billing,
+    billing_webhooks,
     dashboard,
     health,
     invites,
@@ -40,6 +42,7 @@ from app.db.session import get_sessionmaker
 from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.services import auth_service
+from app.services.billing_service import LimitExceededError, VisibilityNotAllowedError
 from app.workers import metrics_worker, retention_worker
 
 # Rate limiter configuration
@@ -144,12 +147,17 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.add_exception_handler(SQLAlchemyError, errors.database_exception_handler)
     app.add_exception_handler(Exception, errors.general_exception_handler)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(LimitExceededError, errors.limit_exceeded_handler)
+    app.add_exception_handler(VisibilityNotAllowedError, errors.visibility_not_allowed_handler)
 
     # Mount static files for admin UI
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
     # Prometheus metrics endpoint (no auth, no versioning)
     app.include_router(metrics.router)
+
+    # Billing callback page (SSR, public — no /v1 prefix, matches plugin deep-link)
+    app.include_router(billing.callback_router)
 
     # Register v1 API routers
     app.include_router(health.router, prefix="/v1")
@@ -165,10 +173,12 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(invites.public_router, prefix="/v1")  # Public invite redemption
     app.include_router(tokens.router, prefix="/v1")
     app.include_router(keys.router, prefix="/v1")
+    app.include_router(billing.router, prefix="/v1")  # Billing API (enterprise edition)
     app.include_router(web.router)  # Web publishing public API (prefix included)
     app.include_router(agent_keys.router)  # Agent key management (prefix included)
     app.include_router(webhooks.router)  # Webhooks API (prefix included)
     app.include_router(webhooks.admin_router)  # Admin webhooks API (prefix included)
+    app.include_router(billing_webhooks.router)  # Billing Service webhooks (prefix included)
     app.include_router(unsubscribe.router)  # Lifecycle email one-click unsubscribe (public)
 
     # Legacy routes (backward compatibility) - proxy to /v1 with deprecation warning
@@ -261,6 +271,17 @@ Get a token by calling `POST /auth/login` with valid credentials.
                 raise RuntimeError(
                     "MINIO_ACCESS_KEY is set to the insecure default 'minioadmin'. "
                     "Change it before running in production."
+                )
+
+    @app.on_event("startup")
+    def _validate_billing_config() -> None:
+        """M-16: require a Billing Service token once billing leaves stub mode."""
+        settings = get_settings()
+        if settings.billing_enabled and not settings.billing_stub_mode:
+            if not settings.billing_service_token:
+                raise ValueError(
+                    "BILLING_SERVICE_TOKEN is required when billing is enabled "
+                    "and stub mode is disabled."
                 )
 
     @app.on_event("startup")

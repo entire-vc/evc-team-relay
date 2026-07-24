@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.billing_service import LimitExceededError, VisibilityNotAllowedError
 
 logger = get_logger(__name__)
 
@@ -202,6 +203,48 @@ async def database_exception_handler(request: Request, exc: SQLAlchemyError) -> 
         content["error"]["details"] = str(exc)
 
     return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=content)
+
+
+async def limit_exceeded_handler(request: Request, exc: LimitExceededError) -> JSONResponse:
+    """Handle billing limit exceeded errors."""
+    limit_messages = {
+        "max_shares": "You have reached the maximum number of shares for your plan",
+        "max_members_per_share": "You have reached the maximum number of members for this share",
+        "max_web_published": (
+            "You have reached the maximum number of web-published shares for your plan"
+        ),
+        "max_storage_bytes": "You have reached the storage limit for your plan",
+    }
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={
+            "error": "limit_exceeded",
+            "detail": limit_messages.get(exc.limit, f"Plan limit exceeded: {exc.limit}"),
+            "limit": exc.limit,
+            "current": exc.current,
+            "max": exc.max_value,
+            "plan": exc.plan,
+        },
+    )
+
+
+async def visibility_not_allowed_handler(
+    request: Request, exc: VisibilityNotAllowedError
+) -> JSONResponse:
+    """Handle visibility tier not allowed by plan."""
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={
+            "error": "visibility_not_allowed",
+            "detail": (
+                f"Visibility '{exc.visibility}' requires a higher plan. "
+                f"Your plan allows: {', '.join(exc.allowed)}"
+            ),
+            "visibility": exc.visibility,
+            "allowed": exc.allowed,
+            "plan": exc.plan,
+        },
+    )
 
 
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:

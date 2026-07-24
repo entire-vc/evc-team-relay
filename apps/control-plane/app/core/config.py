@@ -131,6 +131,17 @@ class Settings(BaseSettings):
         description="Block relay token issuance for users with unverified email",
     )
 
+    # Billing integration (enterprise edition)
+    billing_enabled: bool = Field(default=False, description="Enable billing integration")
+    billing_stub_mode: bool = Field(
+        default=True, description="Use local stub instead of Billing Service"
+    )
+    billing_base_url: str = Field(default="https://billing.entire.vc/api/v1")
+    billing_service_token: str = Field(default="")
+    billing_webhook_secret: str = Field(default="")
+    billing_grace_period_days: int = Field(default=7)
+    billing_return_url: str = Field(default="", description="Return URL after checkout")
+
     # Web publishing settings
     web_publish_domain: str | None = Field(
         default=None,
