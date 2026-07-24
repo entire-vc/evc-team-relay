@@ -7,9 +7,17 @@ issuance flow including permissions, CWT structure, and error cases.
 from __future__ import annotations
 
 import base64
+import hashlib
+import secrets
+import uuid
 
 import cbor2
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.security import utcnow
+from app.db import models
 
 # ── Helpers ──────────────────────────────────────────────────
 
@@ -57,6 +65,37 @@ def add_member(client: TestClient, admin_token: str, share_id: str, user_id: str
         headers=auth_headers(admin_token),
     )
     assert resp.status_code == 201, resp.text
+
+
+def make_agent_key(
+    db_session: Session,
+    share_id: str,
+    created_by: uuid.UUID,
+    scopes: str = "write",
+    revoked: bool = False,
+) -> str:
+    """Insert a ShareAgentKey row directly (mirrors test_agent_key_authorization.py)
+    and return the raw key string to send as X-Agent-Key."""
+    raw_key = "tr_agent_" + secrets.token_hex(24)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    ak = models.ShareAgentKey(
+        share_id=uuid.UUID(share_id),
+        key_hash=key_hash,
+        label="tr07-test-key",
+        scopes=scopes,
+        created_by=created_by,
+        revoked_at=(utcnow() if revoked else None),
+    )
+    db_session.add(ak)
+    db_session.commit()
+    return raw_key
+
+
+def get_share_owner_id(db_session: Session, share_id: str) -> uuid.UUID:
+    share = db_session.execute(
+        select(models.Share).where(models.Share.id == uuid.UUID(share_id))
+    ).scalar_one()
+    return share.owner_user_id
 
 
 def decode_cwt_claims(token_b64: str) -> dict:
@@ -427,3 +466,162 @@ class TestRelayTokenErrors:
             headers=auth_headers(admin_token),
         )
         assert resp.status_code == 422
+
+
+# ── Agent Key Auth (TR-07, #cecd6baf) ───────────────────────
+#
+# A ShareAgentKey should be able to obtain a relay-token scoped to its own
+# share WITHOUT any User row/JWT — this is what lets the fleet stop logging
+# in as the shared admin (in@entire.vc) just to reach a live CRDT doc.
+
+
+class TestRelayTokenAgentKey:
+    def test_write_key_gets_write_token_no_user_at_all(self, client: TestClient, db_session):
+        """Core AC: X-Agent-Key alone (no Authorization header) is sufficient."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        owner_id = get_share_owner_id(db_session, share_id)
+        raw_key = make_agent_key(db_session, share_id, created_by=owner_id, scopes="write")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["relay_url"].startswith("wss://")
+        claims = decode_cwt_claims(data["token"])
+        assert claims["scope"] == f"doc:{share_id}:rw"
+
+    def test_read_only_key_gets_read_token(self, client: TestClient, db_session):
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        owner_id = get_share_owner_id(db_session, share_id)
+        raw_key = make_agent_key(db_session, share_id, created_by=owner_id, scopes="read")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "read"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 200, resp.text
+        claims = decode_cwt_claims(resp.json()["token"])
+        assert claims["scope"] == f"doc:{share_id}:r"
+
+    def test_read_only_key_cannot_get_write_token(self, client: TestClient, db_session):
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        owner_id = get_share_owner_id(db_session, share_id)
+        raw_key = make_agent_key(db_session, share_id, created_by=owner_id, scopes="read")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403
+
+    def test_key_rejected_for_a_different_share(self, client: TestClient, db_session):
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_a = create_share(client, admin_token, path="vault/a.md")
+        share_b = create_share(client, admin_token, path="vault/b.md")
+        owner_id = get_share_owner_id(db_session, share_a)
+        raw_key = make_agent_key(db_session, share_a, created_by=owner_id, scopes="write")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_b, "doc_id": share_b, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403
+
+    def test_revoked_key_rejected(self, client: TestClient, db_session):
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        owner_id = get_share_owner_id(db_session, share_id)
+        raw_key = make_agent_key(
+            db_session, share_id, created_by=owner_id, scopes="write", revoked=True
+        )
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403
+
+    def test_garbage_key_rejected(self, client: TestClient):
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "read"},
+            headers={"X-Agent-Key": "not-a-real-key"},
+        )
+        assert resp.status_code == 401
+
+    def test_key_creator_removed_from_share_rejected(self, client: TestClient, db_session):
+        """TR-03 standing-authority check applies here too (shared helper)."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        editor_id = create_user(client, admin_token, "editor-tr07@example.com", "pass12345")
+        add_member(client, admin_token, share_id, editor_id, "editor")
+        raw_key = make_agent_key(
+            db_session, share_id, created_by=uuid.UUID(editor_id), scopes="write"
+        )
+
+        # Remove the creator from the share — remove_member's cascade-revoke
+        # (TR-03) already handles keys created via the real endpoint; this
+        # key was inserted directly, so exercise the standing-authority
+        # check itself rather than the cascade.
+        resp = client.delete(
+            f"/shares/{share_id}/members/{editor_id}",
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code in (200, 204), resp.text
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403
+
+    def test_agent_key_cannot_use_foreign_share_as_doc_id(self, client: TestClient, db_session):
+        """H6 confused-deputy check applies to agent keys: a key is bound to
+        exactly one share, so it can never authorize a DIFFERENT share via
+        doc_id — always reject, there's no "recheck access" path for a key."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_a = create_share(client, admin_token, kind="doc", path="vault/a.md")
+        share_b = create_share(client, admin_token, kind="doc", path="vault/b.md")
+        owner_id = get_share_owner_id(db_session, share_a)
+        raw_key = make_agent_key(db_session, share_a, created_by=owner_id, scopes="write")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_a, "doc_id": share_b, "mode": "write"},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 403
+
+    def test_agent_key_scoped_folder_share_any_doc_id(self, client: TestClient, db_session):
+        """Sanity: folder-share whole-sync + per-file doc_id both still work
+        for an agent key, mirroring the user-based folder-share tests."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token, kind="folder", path="vault/project")
+        owner_id = get_share_owner_id(db_session, share_id)
+        raw_key = make_agent_key(db_session, share_id, created_by=owner_id, scopes="write")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={
+                "share_id": share_id,
+                "doc_id": "some-file-id",
+                "mode": "write",
+                "file_path": "vault/project/notes.md",
+            },
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert resp.status_code == 200, resp.text

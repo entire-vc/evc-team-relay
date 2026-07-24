@@ -25,6 +25,7 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
+from app.services import share_service
 from app.services.web_session_service import WebSessionService
 
 logger = logging.getLogger(__name__)
@@ -33,49 +34,11 @@ router = APIRouter(prefix="/v1/web", tags=["web"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-def _agent_key_creator_authorized(
-    agent_key: models.ShareAgentKey, share: models.Share, db: Session
-) -> bool:
-    """True if the key's creator still has standing authority over this share.
-
-    Closes TR-03 (#ae52ba05): `ShareAgentKey.created_by` is `ON DELETE SET
-    NULL`, not cascaded, and neither `remove_member` nor `delete_user` used to
-    revoke a departing member's keys — so a key survives membership removal or
-    account deletion and keeps authenticating indefinitely (confirmed live:
-    18 active keys on non-members, 13 on deleted users). Every X-Agent-Key
-    auth path must check this, not just key_hash/revoked_at/expires_at.
-
-    "Standing authority" mirrors create_agent_key's own gate
-    (_require_share_owner_or_admin in agent_keys.py): owner, active member, OR
-    a currently-active global admin — key creation itself is admin-or-owner
-    gated (plain members can't create keys at all), so a global admin who
-    created a key for a share they don't own or belong to is a normal,
-    intended case, not an orphan. Only treat it as orphaned once that admin
-    is demoted or the account no longer exists — that's what the `is_admin`
-    branch below is for; leaving it out would have made this fix reject every
-    admin-issued key on a share the admin doesn't own/belong to, which is
-    most of the fleet's Mesh-agent keys.
-    """
-    if agent_key.created_by is None:
-        return False
-    if agent_key.created_by == share.owner_user_id:
-        return True
-    member = db.execute(
-        select(models.ShareMember.id).where(
-            models.ShareMember.share_id == share.id,
-            models.ShareMember.user_id == agent_key.created_by,
-        )
-    ).scalar_one_or_none()
-    if member is not None:
-        return True
-    creator_is_active_admin = db.execute(
-        select(models.User.id).where(
-            models.User.id == agent_key.created_by,
-            models.User.is_admin.is_(True),
-            models.User.is_active.is_(True),
-        )
-    ).scalar_one_or_none()
-    return creator_is_active_admin is not None
+# NOTE: the TR-03 (#ae52ba05) "standing authority" check that used to live
+# here as a private `_agent_key_creator_authorized` was moved to
+# `share_service.agent_key_creator_authorized` (TR-07, #cecd6baf) so
+# relay-token issuance shares the identical, security-hardened check instead
+# of a second copy that could drift. Call sites below now delegate to it.
 
 
 def _require_private_web_auth(
@@ -114,7 +77,7 @@ def _require_private_web_auth(
         if (
             agent_key is not None
             and agent_key.revoked_at is None
-            and _agent_key_creator_authorized(agent_key, share, db)
+            and share_service.agent_key_creator_authorized(db, agent_key, share)
         ):
             exp = agent_key.expires_at
             if exp is not None:
@@ -1522,7 +1485,7 @@ def _auth_agent_key(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Agent key does not have {required_scope} scope",
         )
-    if not _agent_key_creator_authorized(agent_key, share, db):
+    if not share_service.agent_key_creator_authorized(db, agent_key, share):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent key creator is no longer an owner or member of this share",

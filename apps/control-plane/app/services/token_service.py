@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,8 +25,24 @@ def issue_relay_token(
     request: Request,
     payload: token_schema.RelayTokenRequest,
     user: models.User | None,
+    raw_agent_key: str | None = None,
 ) -> token_schema.RelayTokenResponse:
     share = share_service.get_share(db, payload.share_id)
+
+    # TR-07 (#cecd6baf): an X-Agent-Key header authenticates in its own
+    # right, scoped to `share` — validated up front so both the H6 check
+    # below and the main permission check can treat "authenticated via
+    # agent key" as settled. Unlike the browser-iframe agent-key path in
+    # web.py (_require_private_web_auth), which falls back to a JWT/cookie
+    # if the key doesn't check out, this is a machine-to-machine POST: an
+    # invalid/wrong-share/expired key fails closed immediately rather than
+    # silently trying a JWT the caller likely doesn't have.
+    required_scope = "write" if payload.mode == token_schema.TokenMode.WRITE else "read"
+    agent_key: models.ShareAgentKey | None = None
+    if raw_agent_key:
+        agent_key = share_service.authenticate_agent_key(
+            db, share, raw_agent_key, required_scope=required_scope
+        )
 
     # H6 — Confused-deputy issuer-side fix.
     #
@@ -50,6 +66,17 @@ def issue_relay_token(
         if foreign_share_id is not None:
             foreign_share = _find_share_by_id(db, foreign_share_id)
             if foreign_share is not None:
+                if agent_key is not None:
+                    # An agent key is bound to exactly one share_id — it can
+                    # never legitimately carry authority over a DIFFERENT
+                    # real share, so this is always a reject, not a
+                    # re-check (there's no "agent key access to share B" to
+                    # verify — same conclusion the user-based branch below
+                    # reaches via ensure_*_access, just without a User row).
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Agent key not valid for this share",
+                    )
                 if payload.mode == token_schema.TokenMode.WRITE:
                     share_service.ensure_write_access(db, foreign_share, user)
                 else:
@@ -68,11 +95,12 @@ def issue_relay_token(
     #    pre-existing, tested design (see test_folder_share_any_doc_id_accepted,
     #    test_find_share_for_path_doc_precedence)
 
-    # Check permissions
-    if payload.mode == token_schema.TokenMode.WRITE:
-        share_service.ensure_write_access(db, share, user)
-    else:
-        share_service.ensure_read_access(db, share, user, password=payload.password)
+    # Check permissions — already settled above if an agent key authenticated.
+    if agent_key is None:
+        if payload.mode == token_schema.TokenMode.WRITE:
+            share_service.ensure_write_access(db, share, user)
+        else:
+            share_service.ensure_read_access(db, share, user, password=payload.password)
 
     settings = get_settings()
     expires_in = timedelta(minutes=settings.relay_token_ttl_minutes)
@@ -117,6 +145,9 @@ def issue_relay_token(
     }
     if share.kind == models.ShareKind.FOLDER and payload.file_path:
         details["file_path"] = payload.file_path
+    if agent_key is not None:
+        details["agent_key_id"] = str(agent_key.id)
+        agent_key.last_used_at = security.utcnow()
 
     audit_service.log_action(
         db=db,
