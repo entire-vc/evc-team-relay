@@ -56,8 +56,10 @@ async def process_pending_emails() -> int:
     email_service = get_email_service()
 
     try:
-        # Get pending emails
-        emails = email_service.get_pending_emails(db, limit=WORKER_BATCH_SIZE)
+        # Claim pending emails (TR-11, #8a509876): atomic SELECT FOR UPDATE
+        # SKIP LOCKED + flip to SENDING, so two worker instances never claim
+        # the same row.
+        emails = email_service.claim_pending_emails(db, limit=WORKER_BATCH_SIZE)
 
         if not emails:
             return 0

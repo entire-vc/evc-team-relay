@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -79,6 +79,13 @@ MAX_RETRIES = len(RETRY_INTERVALS)
 
 # Webhook delivery timeout
 DELIVERY_TIMEOUT = 10.0
+
+# TR-11 (#8a509876): a claimed (SENDING) delivery older than this is assumed
+# abandoned — the worker that claimed it died before recording an outcome —
+# and becomes eligible for another worker to re-claim. Generous relative to
+# DELIVERY_TIMEOUT so an in-flight-but-slow HTTP call is never reclaimed out
+# from under a worker still actively processing it.
+WEBHOOK_CLAIM_LEASE_SECONDS = 300
 
 # Max consecutive failures before auto-disable
 MAX_CONSECUTIVE_FAILURES = 10
@@ -629,6 +636,7 @@ async def deliver_webhook(
             extra={"delivery_id": str(delivery.id)},
         )
         delivery.status = WebhookDeliveryStatus.FAILED
+        delivery.claimed_at = None
         db.add(delivery)
         db.commit()
         return False
@@ -694,6 +702,7 @@ async def deliver_webhook(
             # Success
             delivery.status = WebhookDeliveryStatus.SUCCESS
             delivery.next_retry_at = None
+            delivery.claimed_at = None
 
             # Reset failure count on success
             webhook.failure_count = 0
@@ -721,6 +730,7 @@ async def deliver_webhook(
             # Permanent failure (4xx except 429)
             delivery.status = WebhookDeliveryStatus.FAILED
             delivery.next_retry_at = None
+            delivery.claimed_at = None
             _increment_failure_count(db, webhook)
 
             logger.warning(
@@ -772,6 +782,7 @@ def _schedule_retry(db: Session, delivery: WebhookDelivery, webhook: Webhook) ->
     if delivery.attempt_count >= MAX_RETRIES:
         delivery.status = WebhookDeliveryStatus.MAX_RETRIES_EXCEEDED
         delivery.next_retry_at = None
+        delivery.claimed_at = None
         _increment_failure_count(db, webhook)
 
         logger.warning(
@@ -783,6 +794,11 @@ def _schedule_retry(db: Session, delivery: WebhookDelivery, webhook: Webhook) ->
             },
         )
     else:
+        # TR-11: back to PENDING (it was flipped to SENDING at claim time by
+        # claim_pending_deliveries, not here) so the next claim cycle picks
+        # it up again at next_retry_at.
+        delivery.status = WebhookDeliveryStatus.PENDING
+        delivery.claimed_at = None
         retry_interval = RETRY_INTERVALS[delivery.attempt_count - 1]
         delivery.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=retry_interval)
 
@@ -823,32 +839,66 @@ def _increment_failure_count(db: Session, webhook: Webhook) -> None:
     db.commit()
 
 
-def get_pending_deliveries(
+def claim_pending_deliveries(
     db: Session,
     limit: int = 100,
 ) -> list[WebhookDelivery]:
-    """Get pending webhook deliveries ready for processing.
+    """Atomically claim up to `limit` pending webhook deliveries for processing.
+
+    TR-11 (#8a509876): root cause of the 08-09.07 duplicate-delivery
+    incident's other queue — two worker instances (split-brain) both read
+    the same PENDING rows and both delivered, since nothing marked a row as
+    "claimed" before the HTTP attempt (the X-Relay-Delivery header softens
+    this for a webhook RECEIVER that dedupes on it, but doesn't stop us
+    sending the duplicate in the first place). `SELECT ... FOR UPDATE SKIP
+    LOCKED` means two workers racing the same poll cycle can never claim
+    the same row. Claimed rows are flipped to SENDING and committed in THIS
+    transaction, before any HTTP attempt — so a SIGKILL between claim and
+    delivery leaves the row safely stuck in SENDING (never actually
+    delivered), not back in PENDING where the next poll would blindly
+    redeliver it.
+
+    Also reclaims rows stuck in SENDING past WEBHOOK_CLAIM_LEASE_SECONDS —
+    the recovery path for a worker that claimed a row and then died before
+    deliver_webhook could record an outcome.
 
     Args:
         db: Database session
-        limit: Maximum number of deliveries to return
+        limit: Maximum number of deliveries to claim
 
     Returns:
-        List of WebhookDelivery instances ready for delivery
+        List of claimed WebhookDelivery instances (status now SENDING)
     """
     now = datetime.now(timezone.utc)
+    lease_cutoff = now - timedelta(seconds=WEBHOOK_CLAIM_LEASE_SECONDS)
 
     stmt = (
         select(WebhookDelivery)
         .where(
-            WebhookDelivery.status == WebhookDeliveryStatus.PENDING,
-            WebhookDelivery.next_retry_at <= now,
+            or_(
+                and_(
+                    WebhookDelivery.status == WebhookDeliveryStatus.PENDING,
+                    WebhookDelivery.next_retry_at <= now,
+                ),
+                and_(
+                    WebhookDelivery.status == WebhookDeliveryStatus.SENDING,
+                    WebhookDelivery.claimed_at <= lease_cutoff,
+                ),
+            )
         )
         .order_by(WebhookDelivery.next_retry_at)
         .limit(limit)
+        .with_for_update(skip_locked=True)
     )
 
-    return list(db.execute(stmt).scalars().all())
+    claimed = list(db.execute(stmt).scalars().all())
+    for delivery in claimed:
+        delivery.status = WebhookDeliveryStatus.SENDING
+        delivery.claimed_at = now
+        db.add(delivery)
+    db.commit()
+
+    return claimed
 
 
 def list_deliveries(

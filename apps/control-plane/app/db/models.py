@@ -68,6 +68,9 @@ class OAuthProviderType(str, Enum):
 
 class WebhookDeliveryStatus(str, Enum):
     PENDING = "pending"
+    # TR-11 (#8a509876): in-flight/claimed by a worker, set atomically with
+    # the SELECT ... FOR UPDATE SKIP LOCKED claim, before the HTTP attempt.
+    SENDING = "sending"
     SUCCESS = "success"
     FAILED = "failed"
     MAX_RETRIES_EXCEEDED = "max_retries_exceeded"
@@ -75,6 +78,9 @@ class WebhookDeliveryStatus(str, Enum):
 
 class EmailStatus(str, Enum):
     PENDING = "pending"
+    # TR-11 (#8a509876): in-flight/claimed by a worker, set atomically with
+    # the SELECT ... FOR UPDATE SKIP LOCKED claim, before the SMTP attempt.
+    SENDING = "sending"
     SENT = "sent"
     FAILED = "failed"
 
@@ -539,6 +545,13 @@ class WebhookDelivery(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # TR-11 (#8a509876): set when a worker claims this row (status -> SENDING).
+    # A claim older than the lease timeout is treated as abandoned (worker
+    # died mid-delivery) and becomes eligible for re-claim.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     webhook: Mapped["Webhook"] = relationship(back_populates="deliveries")
 
@@ -567,6 +580,13 @@ class EmailQueue(Base):
         DateTime(timezone=True),
         nullable=True,
         index=True,
+    )
+    # TR-11 (#8a509876): set when a worker claims this row (status -> SENDING).
+    # A claim older than the lease timeout is treated as abandoned (worker
+    # died mid-send) and becomes eligible for re-claim.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

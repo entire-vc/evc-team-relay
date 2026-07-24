@@ -54,8 +54,10 @@ async def process_pending_deliveries() -> int:
     processed = 0
 
     try:
-        # Get pending deliveries
-        deliveries = webhook_service.get_pending_deliveries(db, limit=WORKER_BATCH_SIZE)
+        # Claim pending deliveries (TR-11, #8a509876): atomic SELECT FOR
+        # UPDATE SKIP LOCKED + flip to SENDING, so two worker instances
+        # never claim the same row.
+        deliveries = webhook_service.claim_pending_deliveries(db, limit=WORKER_BATCH_SIZE)
 
         if not deliveries:
             return 0
