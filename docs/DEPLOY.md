@@ -195,6 +195,26 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
   assuming they match.
 - **Firewall.** See the network note under [Automated deploy](#required-repository-secrets) if
   GitHub-hosted runners can't reach `tr-relay-vm`.
+- **`infra/Caddyfile` is NOT deployed by CD or the manual steps above — sync it by hand, every
+  time.** Neither the automated pipeline nor the manual upgrade recipe touches
+  `/opt/relay/Caddyfile`; it's a `docker-compose.yml`-managed bind mount the deploy tooling
+  deliberately leaves alone (same reasoning as the server-managed compose file, above), but
+  unlike compose/`.env` there is no independent reason for it to diverge from git — it's meant to
+  track `infra/Caddyfile` exactly. This has silently regressed the public `/metrics` block twice
+  (task history: `c27b715a`, `77117bf7`) — most recently by surviving the 2026-07-09 Helsinki
+  host migration, since a host migration copies data/config that was already on the box, not
+  what's in git. **After editing `infra/Caddyfile`, or after any host migration, manually sync
+  it:**
+  ```bash
+  scp infra/Caddyfile tr-relay-vm:/opt/relay/Caddyfile   # back up the old one on the host first
+  ssh tr-relay-vm "docker exec relay-caddy-1 caddy validate --config /etc/caddy/Caddyfile"
+  ssh tr-relay-vm "docker exec relay-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+  ```
+  Then verify from **outside** the container — `caddy reload`'s own success message is not proof
+  the running config changed (e.g. a single-file bind mount can retain a stale inode after some
+  edit methods; confirm `stat -c %i` matches between host and `docker exec ... stat` before
+  trusting `reload`, and always curl the actual external behavior afterward, not just the exit
+  code).
 
 ---
 
