@@ -83,8 +83,12 @@ export interface RelayToken {
  */
 export async function getShareBySlug(slug: string, agentKey?: string): Promise<WebShare> {
 	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}`);
-	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
-	const response = await fetchWithTimeout(urlObj.toString());
+	// Agent key goes in the X-Agent-Key header, never the query string — a query
+	// param leaks a write-scoped bearer secret into Caddy access logs, Referer
+	// headers, and browser history (TR-14).
+	const headers: Record<string, string> = {};
+	if (agentKey) headers['X-Agent-Key'] = agentKey;
+	const response = await fetchWithTimeout(urlObj.toString(), { headers });
 
 	if (!response.ok) {
 		if (response.status === 404) {
@@ -331,10 +335,13 @@ export async function getFolderFileContent(
 	if (authToken) {
 		headers['Authorization'] = `Bearer ${authToken}`;
 	}
+	// Agent key goes in the X-Agent-Key header, never the query string (TR-14).
+	if (agentKey) {
+		headers['X-Agent-Key'] = agentKey;
+	}
 
 	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/files`);
 	urlObj.searchParams.set('path', path);
-	if (agentKey) urlObj.searchParams.set('agent_key', agentKey);
 
 	const response = await fetchWithTimeout(urlObj.toString(), { headers });
 

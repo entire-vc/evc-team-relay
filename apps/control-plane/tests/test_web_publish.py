@@ -1005,15 +1005,35 @@ class TestPrivateShareAuth:
         assert data["visibility"] == "private"
         assert data["web_folder_items"] is None
 
-    def test_get_private_share_invalid_agent_key_returns_401(
+    def test_get_private_share_invalid_agent_key_header_returns_401(
         self, client: TestClient, private_folder_share: models.Share, monkeypatch
     ):
-        """Invalid ?agent_key on PRIVATE share → 401 (not 200 with stripped content)."""
+        """Invalid X-Agent-Key header on PRIVATE share → 401 (not 200 with stripped content)."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
         r = client.get(
-            f"/v1/web/shares/{private_folder_share.web_slug}?agent_key=invalid_garbage_key"
+            f"/v1/web/shares/{private_folder_share.web_slug}",
+            headers={"X-Agent-Key": "invalid_garbage_key"},
         )
         assert r.status_code == 401
+
+    def test_get_private_share_agent_key_query_param_is_ignored(
+        self,
+        client: TestClient,
+        db_session: Session,
+        private_folder_share: models.Share,
+        monkeypatch,
+    ):
+        """?agent_key= query param is no longer read at all (TR-14) — even a VALID key
+        sent this way must NOT grant access. It's treated as no credential at all
+        (200 stripped), not as an invalid-credential 401, because the endpoint can't
+        tell "wrong channel" apart from "nothing provided" once it stops reading the
+        query string."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
+        raw_key, _ = self._make_agent_key(db_session, private_folder_share, scopes="read")
+        r = client.get(f"/v1/web/shares/{private_folder_share.web_slug}?agent_key={raw_key}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["web_folder_items"] is None
 
     def test_get_private_share_invalid_bearer_returns_401(
         self, client: TestClient, private_folder_share: models.Share, monkeypatch
@@ -1033,10 +1053,13 @@ class TestPrivateShareAuth:
         private_folder_share: models.Share,
         monkeypatch,
     ):
-        """Valid agent_key on PRIVATE share → 200 with web_folder_items populated."""
+        """Valid agent_key (X-Agent-Key header) on PRIVATE share → 200 with folder items."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._web_settings())
         raw_key, _ = self._make_agent_key(db_session, private_folder_share, scopes="read")
-        r = client.get(f"/v1/web/shares/{private_folder_share.web_slug}?agent_key={raw_key}")
+        r = client.get(
+            f"/v1/web/shares/{private_folder_share.web_slug}",
+            headers={"X-Agent-Key": raw_key},
+        )
         assert r.status_code == 200
         data = r.json()
         assert data["web_folder_items"] is not None
@@ -1658,20 +1681,22 @@ class TestPrivateShareWebAuthMetadata:
         assert response.status_code == 200
         assert "token" in response.json()
 
-    def test_token_private_with_agent_key_query_param_returns_200(
+    def test_token_private_with_agent_key_query_param_is_rejected(
         self,
         client: TestClient,
         private_share_with_doc: models.Share,
         db_session: Session,
         monkeypatch,
     ):
+        """?agent_key= query param is no longer accepted (TR-14) — even a VALID key
+        sent this way must be rejected, not just ignored: /token has no soft-auth
+        masking path, so with no other credential this is a hard 401."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
         raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
         response = client.get(
             f"/v1/web/shares/{private_share_with_doc.web_slug}/token?agent_key={raw_key}",
         )
-        assert response.status_code == 200
-        assert "token" in response.json()
+        assert response.status_code == 401
 
     def test_token_private_wrong_share_agent_key_returns_401(
         self,
@@ -1723,12 +1748,31 @@ class TestPrivateShareWebAuthMetadata:
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
         raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
         response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}?agent_key={raw_key}",
+            f"/v1/web/shares/{private_share_with_doc.web_slug}",
+            headers={"X-Agent-Key": raw_key},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["web_content"] == "# Secret content"
         assert data["web_doc_id"] is not None
+
+    def test_metadata_private_agent_key_query_param_is_ignored(
+        self,
+        client: TestClient,
+        private_share_with_doc: models.Share,
+        db_session: Session,
+        monkeypatch,
+    ):
+        """?agent_key= query param no longer works (TR-14) — falls back to the
+        no-credentials masking path (200 stripped), not full content."""
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
+        raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
+        response = client.get(
+            f"/v1/web/shares/{private_share_with_doc.web_slug}?agent_key={raw_key}",
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["web_content"] is None
 
     def test_token_private_with_auth_adds_frame_ancestors_header(
         self,

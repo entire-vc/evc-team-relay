@@ -92,9 +92,17 @@ def _require_private_web_auth(
     3. access_token cookie — same JWT validation (for browser iframes via withCredentials).
 
     required_scope: "read" (default) accepts read or write keys; "write" rejects read-only keys.
+
+    Agent key is HEADER-ONLY (TR-14): a ?agent_key= query param puts a
+    write-scoped bearer secret into Caddy access logs, the Referer header sent
+    to any embedded/linked resource, and browser history. Callers that need to
+    reach this from a browser-rendered <img>/<iframe> src (which can't attach
+    custom headers) go through web-publish's own server-side asset proxy
+    (routes/[slug]/_assets/[...path]/+server.ts), which reads agent_key off
+    its OWN incoming request and forwards it here as X-Agent-Key.
     """
-    # --- Agent key path (header or ?agent_key= query param for iframe src embeds) ---
-    raw_key = request.headers.get("X-Agent-Key") or request.query_params.get("agent_key")
+    # --- Agent key path (X-Agent-Key header only) ---
+    raw_key = request.headers.get("X-Agent-Key")
     if raw_key:
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent_key = db.execute(
@@ -246,8 +254,8 @@ def get_share_by_slug(
     For PRIVATE shares:
     - Without credentials: returns metadata only (web_content/folder_items stripped) so the
       frontend can show an "authentication required" prompt.
-    - With valid credentials (Bearer JWT, access_token cookie, X-Agent-Key header, or
-      ?agent_key= query param): returns full metadata + frame-ancestors CSP header.
+    - With valid credentials (Bearer JWT, access_token cookie, or X-Agent-Key header):
+      returns full metadata + frame-ancestors CSP header.
 
     For PROTECTED shares, the client must call POST /web/shares/{slug}/auth separately.
     """
@@ -278,7 +286,6 @@ def get_share_by_slug(
     if share.visibility == models.ShareVisibility.PRIVATE:
         has_credentials = bool(
             request.headers.get("X-Agent-Key")
-            or request.query_params.get("agent_key")
             or (request.headers.get("Authorization") or "").startswith("Bearer ")
             or request.cookies.get("access_token")
         )
