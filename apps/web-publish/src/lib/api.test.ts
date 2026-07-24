@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession } from './api.js';
+import {
+	fetchWithTimeout,
+	getShareBySlug,
+	authenticateShare,
+	validateSession,
+	getFolderFileContent,
+	getSitemapXml,
+	ShareNotFoundError
+} from './api.js';
 
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — timeout behaviour
@@ -73,22 +81,24 @@ describe('getShareBySlug', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('throws "Share not found" on 404', async () => {
+	it('throws ShareNotFoundError on 404', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('not found', { status: 404 })))
 		);
 
 		await expect(getShareBySlug('missing-slug')).rejects.toThrow('Share not found or not published');
+		await expect(getShareBySlug('missing-slug')).rejects.toBeInstanceOf(ShareNotFoundError);
 	});
 
-	it('throws generic error on other non-ok status', async () => {
+	it('throws a plain (non-ShareNotFoundError) error on other non-ok status', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
 		);
 
 		await expect(getShareBySlug('some-slug')).rejects.toThrow('Failed to fetch share');
+		await expect(getShareBySlug('some-slug')).rejects.not.toBeInstanceOf(ShareNotFoundError);
 	});
 
 	it('returns parsed share on 200', async () => {
@@ -102,18 +112,72 @@ describe('getShareBySlug', () => {
 		expect(result.web_slug).toBe('my-share');
 	});
 
-	it('appends agent_key query param when provided', async () => {
+	it('sends agent key as the X-Agent-Key header, never a query param (TR-14)', async () => {
 		let capturedUrl = '';
+		let capturedHeaders: Record<string, string> = {};
 		vi.stubGlobal(
 			'fetch',
-			vi.fn((url: string) => {
+			vi.fn((url: string, init?: RequestInit) => {
 				capturedUrl = url;
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
 				return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
 			})
 		);
 
 		await getShareBySlug('my-share', 'secret-key').catch(() => {});
-		expect(capturedUrl).toContain('agent_key=secret-key');
+		expect(capturedHeaders['X-Agent-Key']).toBe('secret-key');
+		expect(capturedUrl).not.toContain('secret-key');
+		expect(capturedUrl).not.toContain('agent_key');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getFolderFileContent — agent key transport
+// ---------------------------------------------------------------------------
+
+describe('getFolderFileContent', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('sends agent key as the X-Agent-Key header, never a query param (TR-14)', async () => {
+		let capturedUrl = '';
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((url: string, init?: RequestInit) => {
+				capturedUrl = url;
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(
+					new Response(JSON.stringify({ path: 'a.md', name: 'a.md', type: 'doc', content: '' }), {
+						status: 200
+					})
+				);
+			})
+		);
+
+		await getFolderFileContent('my-share', 'a.md', undefined, undefined, 'secret-key');
+		expect(capturedHeaders['X-Agent-Key']).toBe('secret-key');
+		expect(capturedUrl).not.toContain('secret-key');
+		expect(capturedUrl).not.toContain('agent_key');
+	});
+
+	it('omits the X-Agent-Key header when no agent key is provided', async () => {
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((_url: string, init?: RequestInit) => {
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(
+					new Response(JSON.stringify({ path: 'a.md', name: 'a.md', type: 'doc', content: '' }), {
+						status: 200
+					})
+				);
+			})
+		);
+
+		await getFolderFileContent('my-share', 'a.md');
+		expect(capturedHeaders['X-Agent-Key']).toBeUndefined();
 	});
 });
 
@@ -177,5 +241,35 @@ describe('validateSession', () => {
 		const result = await validateSession('slug', 'good-token');
 		expect(result.valid).toBe(true);
 		expect(result.share_id).toBe('share-xyz');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getSitemapXml — proxy to Control Plane
+// ---------------------------------------------------------------------------
+
+describe('getSitemapXml', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('throws on non-ok response', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
+		);
+
+		await expect(getSitemapXml()).rejects.toThrow('Failed to fetch sitemap.xml');
+	});
+
+	it('returns the XML body on 200', async () => {
+		const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n';
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response(xml, { status: 200 })))
+		);
+
+		const result = await getSitemapXml();
+		expect(result).toBe(xml);
 	});
 });

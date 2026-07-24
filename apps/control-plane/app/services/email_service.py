@@ -43,8 +43,12 @@ EMAIL_TYPE_SECURITY_PASSWORD_CHANGED = "security_password_changed"
 EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H = "lifecycle_no_share_24h"
 EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE = "lifecycle_inactive_after_share"
 
-# Retry intervals for email queue (seconds)
-EMAIL_RETRY_INTERVALS = [60, 300, 900]  # 1min, 5min, 15min
+# Retry intervals for email queue (seconds). TR-35: matches the webhook
+# worker's schedule (webhook_service.RETRY_INTERVALS) — 3 attempts over
+# ~21min gave up well inside a routine SMTP outage window; transactional
+# email (invites, security alerts) deserves at least the 24h the webhook
+# worker already gives itself.
+EMAIL_RETRY_INTERVALS = [60, 300, 900, 3600, 21600, 86400]  # 1m, 5m, 15m, 1h, 6h, 24h
 MAX_EMAIL_RETRIES = len(EMAIL_RETRY_INTERVALS)
 
 # TR-11 (#8a509876): a claimed (SENDING) row older than this is assumed
@@ -262,6 +266,8 @@ class EmailService:
         text_body: str,
         html_body: str,
         email_type: str,
+        *,
+        commit: bool = True,
     ) -> EmailQueue:
         """Queue email for async delivery.
 
@@ -272,9 +278,16 @@ class EmailService:
             text_body: Plain text body
             html_body: HTML body
             email_type: Email type for tracking
+            commit: Commit (and refresh) immediately. Set False to fold this
+                insert into a caller-managed transaction — e.g. lifecycle_service
+                (TR-18) commits the queued email and its idempotency-key row
+                together, so a crash lands on neither side of that gap instead
+                of leaving an email queued with no record that it was sent.
 
         Returns:
-            Created EmailQueue instance
+            Created EmailQueue instance. `id` is populated either way (a
+            client-side default), but server-generated fields like
+            `created_at` stay unset until whoever commits refreshes it.
         """
         email = EmailQueue(
             to_email=to_email,
@@ -287,8 +300,9 @@ class EmailService:
         )
 
         db.add(email)
-        db.commit()
-        db.refresh(email)
+        if commit:
+            db.commit()
+            db.refresh(email)
 
         logger.info(
             "Email queued",
@@ -296,6 +310,7 @@ class EmailService:
                 "email_id": str(email.id),
                 "to": to_email,
                 "type": email_type,
+                "committed": commit,
             },
         )
 
@@ -424,6 +439,86 @@ class EmailService:
         db.commit()
 
         return claimed
+
+    def get_email(self, db: Session, email_id: uuid.UUID) -> EmailQueue | None:
+        """Get a single queued/sent/failed email by id.
+
+        Args:
+            db: Database session
+            email_id: EmailQueue id
+
+        Returns:
+            EmailQueue instance, or None if not found
+        """
+        return db.execute(select(EmailQueue).where(EmailQueue.id == email_id)).scalar_one_or_none()
+
+    def list_emails(
+        self,
+        db: Session,
+        status_filter: EmailStatus | None = None,
+        email_type: str | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[EmailQueue]:
+        """List queued emails with optional filters (admin visibility — TR-35).
+
+        Args:
+            db: Database session
+            status_filter: Filter by status
+            email_type: Filter by email type
+            skip: Number of records to skip
+            limit: Maximum number of records to return
+
+        Returns:
+            List of EmailQueue instances, most recent first
+        """
+        stmt = select(EmailQueue)
+
+        if status_filter:
+            stmt = stmt.where(EmailQueue.status == status_filter)
+        if email_type:
+            stmt = stmt.where(EmailQueue.email_type == email_type)
+
+        stmt = stmt.order_by(EmailQueue.created_at.desc()).offset(skip).limit(limit)
+
+        return list(db.execute(stmt).scalars().all())
+
+    def requeue_email(self, db: Session, email: EmailQueue) -> EmailQueue:
+        """Manually requeue a FAILED email for another delivery attempt (TR-35).
+
+        The router does its own `status == FAILED` check first so it can
+        return a clean 409 — this is a hard backstop, not just documentation:
+        resetting a still-retrying PENDING or already-SENT email's budget
+        would let the worker silently re-send it (e.g. a duplicate
+        security-alert or invite to a real user).
+
+        Args:
+            db: Database session
+            email: EmailQueue instance to requeue
+
+        Returns:
+            The updated EmailQueue instance
+
+        Raises:
+            ValueError: If `email.status` is not FAILED.
+        """
+        if email.status != EmailStatus.FAILED:
+            raise ValueError(
+                f"Cannot requeue email {email.id} in status {email.status.value!r} "
+                "— only FAILED emails may be requeued"
+            )
+
+        email.status = EmailStatus.PENDING
+        email.attempt_count = 0
+        email.error_message = None
+        email.next_retry_at = datetime.now(timezone.utc)
+        db.add(email)
+        db.commit()
+        db.refresh(email)
+
+        logger.info("Email manually requeued", extra={"email_id": str(email.id)})
+
+        return email
 
     def get_user_email_preferences(
         self, db: Session, user_id: uuid.UUID

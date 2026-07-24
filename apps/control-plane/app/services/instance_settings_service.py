@@ -5,10 +5,14 @@ from sqlalchemy.orm import Session
 
 from app.db.models import InstanceSetting
 
-# Default branding values
+# Default branding values.
+# logo_url is PNG (TR-62) — this value is also used as og:image/twitter:image
+# on the web-publish share pages, and most social-card crawlers (Twitter/X,
+# etc.) don't render SVG. favicon_url stays SVG — browsers render SVG
+# favicons fine, and that surface isn't scraped by social crawlers.
 DEFAULT_BRANDING = {
     "name": "Relay Server",
-    "logo_url": "/static/img/evc-ava.svg",
+    "logo_url": "/static/img/evc-ava.png",
     "favicon_url": "/static/img/evc-ava.svg",
 }
 

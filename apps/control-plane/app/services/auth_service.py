@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
+from datetime import timedelta
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -12,6 +15,8 @@ from app.db import models
 from app.schemas import auth as auth_schema
 from app.schemas import user as user_schema
 from app.services import audit_service, session_service, user_service
+
+ADMIN_2FA_PENDING_TOKEN_EXPIRE_MINUTES = 5
 
 
 def authenticate_user(db: Session, email: str, password: str) -> models.User:
@@ -99,6 +104,72 @@ def bootstrap_admin_if_needed(db: Session) -> None:
 def create_access_token(user_id: uuid.UUID) -> str:
     """Create JWT access token for user."""
     return security.create_access_token(str(user_id))
+
+
+def _hash_admin_2fa_pending_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_admin_2fa_pending_token(db: Session, user_id: uuid.UUID) -> str:
+    """Create the second-factor handle for the admin-ui login flow (TR-06, #fceefc4f).
+
+    Password verified, TOTP still required. Deliberately a separate DB-backed
+    single-use token (same shape as PasswordResetToken/EmailVerificationToken)
+    rather than a JWT, so it can never be confused with — or replayed as — a
+    real admin_token session cookie even if a caller forgets to check its
+    purpose. See AdminLoginPendingToken's docstring for the full rationale.
+    """
+    raw_token = secrets.token_hex(32)
+    token_hash = _hash_admin_2fa_pending_token(raw_token)
+    now = security.utcnow()
+    record = models.AdminLoginPendingToken(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        token_hash=token_hash,
+        expires_at=now + timedelta(minutes=ADMIN_2FA_PENDING_TOKEN_EXPIRE_MINUTES),
+        created_at=now,
+    )
+    db.add(record)
+    db.commit()
+    return raw_token
+
+
+def validate_admin_2fa_pending_token(db: Session, raw_token: str) -> models.User | None:
+    """Validate + single-use-consume a pending-2FA token, returning its user.
+
+    Returns None (never raises) for any invalid/expired/already-used/missing
+    token — callers should treat that as "restart the login flow", not
+    surface the specific reason (avoids leaking token-guessing feedback).
+    """
+    if not raw_token:
+        return None
+    token_hash = _hash_admin_2fa_pending_token(raw_token)
+    now = security.utcnow()
+    stmt = select(models.AdminLoginPendingToken).where(
+        models.AdminLoginPendingToken.token_hash == token_hash,
+        models.AdminLoginPendingToken.expires_at > now,
+        models.AdminLoginPendingToken.used_at.is_(None),
+    )
+    record = db.execute(stmt).scalar_one_or_none()
+    if not record:
+        return None
+
+    user = db.get(models.User, record.user_id)
+    if not user or not user.is_active:
+        return None
+    return user
+
+
+def mark_admin_2fa_pending_token_used(db: Session, raw_token: str) -> None:
+    """Mark a pending-2FA token consumed so it can't be replayed (TR-06)."""
+    token_hash = _hash_admin_2fa_pending_token(raw_token)
+    stmt = select(models.AdminLoginPendingToken).where(
+        models.AdminLoginPendingToken.token_hash == token_hash,
+    )
+    record = db.execute(stmt).scalar_one_or_none()
+    if record and record.used_at is None:
+        record.used_at = security.utcnow()
+        db.commit()
 
 
 def log_login(

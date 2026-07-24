@@ -12,6 +12,7 @@ from app.db import models
 from app.db.session import get_db
 from app.schemas import oauth as oauth_schema
 from app.services import audit_service, oauth_service, session_service
+from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/auth/oauth", tags=["oauth"])
 
@@ -261,6 +262,18 @@ async def callback(
     )
 
     db.commit()
+
+    # TR-16: OAuth was the only login path NOT sending the security-alert email
+    # + session.created webhook after create_session() — password login (auth.py)
+    # already does this. Same device_name passed to create_session() above.
+    notification_service = get_notification_service()
+    await notification_service.notify_session_created(
+        db,
+        user,
+        f"OAuth ({provider})",
+        request.client.host if request.client else None,
+        request.headers.get("user-agent"),
+    )
 
     # If return_url is provided, redirect with cookie
     if hasattr(state_data, "return_url") and state_data.return_url:

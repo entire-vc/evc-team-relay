@@ -10,12 +10,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 //   - private: OAuth JWT via validateUserToken or agent_key from CP response
 // ---------------------------------------------------------------------------
 
-vi.mock('$lib/api', () => ({
-	getShareBySlug: vi.fn(),
-	validateSession: vi.fn(),
-	validateUserToken: vi.fn(),
-	getFolderFileContent: vi.fn()
-}));
+vi.mock('$lib/api', async (importOriginal) => {
+	const mod = await importOriginal();
+	return {
+		...mod,
+		getShareBySlug: vi.fn(),
+		validateSession: vi.fn(),
+		validateUserToken: vi.fn(),
+		getFolderFileContent: vi.fn()
+	};
+});
 
 // SvelteKit error() throws an object with a status property
 vi.mock('@sveltejs/kit', async (importOriginal) => {
@@ -31,6 +35,7 @@ vi.mock('@sveltejs/kit', async (importOriginal) => {
 });
 
 import * as api from '$lib/api';
+import { ShareNotFoundError } from '$lib/api';
 import { load } from '../routes/[slug]/+page.server.js';
 
 // Helper: build a minimal mock share
@@ -208,8 +213,8 @@ describe('load() — private share', () => {
 // ---------------------------------------------------------------------------
 
 describe('load() — share not found', () => {
-	it('throws 404 when getShareBySlug rejects', async () => {
-		vi.mocked(api.getShareBySlug).mockRejectedValue(new Error('Share not found or not published'));
+	it('throws 404 when getShareBySlug rejects with ShareNotFoundError', async () => {
+		vi.mocked(api.getShareBySlug).mockRejectedValue(new ShareNotFoundError());
 
 		await expect(
 			load({
@@ -218,5 +223,35 @@ describe('load() — share not found', () => {
 				url: makeUrl()
 			})
 		).rejects.toMatchObject({ status: 404 });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 503 — upstream/network failure (TR-38: must NOT be mapped to 404)
+// ---------------------------------------------------------------------------
+
+describe('load() — upstream/network failure', () => {
+	it('throws 503 when getShareBySlug rejects with a 5xx-style error', async () => {
+		vi.mocked(api.getShareBySlug).mockRejectedValue(new Error('Failed to fetch share: Internal Server Error'));
+
+		await expect(
+			load({
+				params: { slug: 'test-slug' },
+				cookies: makeCookies(),
+				url: makeUrl()
+			})
+		).rejects.toMatchObject({ status: 503 });
+	});
+
+	it('throws 503 when getShareBySlug rejects with a network/timeout error', async () => {
+		vi.mocked(api.getShareBySlug).mockRejectedValue(new DOMException('The operation was aborted', 'AbortError'));
+
+		await expect(
+			load({
+				params: { slug: 'test-slug' },
+				cookies: makeCookies(),
+				url: makeUrl()
+			})
+		).rejects.toMatchObject({ status: 503 });
 	});
 });

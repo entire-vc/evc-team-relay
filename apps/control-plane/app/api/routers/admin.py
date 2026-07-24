@@ -3,16 +3,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.db import models
+from app.db.models import EmailStatus
 from app.db.session import get_db
 from app.schemas import audit as audit_schema
 from app.schemas import branding as branding_schema
+from app.schemas import email as email_schema
 from app.schemas import user as user_schema
-from app.services import audit_service, instance_settings_service, user_service
+from app.services import audit_service, email_service, instance_settings_service, user_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -153,3 +155,70 @@ def update_branding(
         custom_body_code=payload.custom_body_code,
     )
     return branding_schema.BrandingRead(**branding_data)
+
+
+@router.get("/emails", response_model=list[email_schema.EmailQueueRead])
+def list_emails(
+    status_filter: EmailStatus | None = Query(default=None, alias="status"),
+    email_type: str | None = Query(default=None),
+    skip: int = Query(default=0, ge=0, description="Pagination offset"),
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum results per page"),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(deps.get_current_admin),
+):
+    """
+    List queued/sent/failed emails. Admin only. TR-35.
+
+    A FAILED email exhausted MAX_EMAIL_RETRIES (currently 6 attempts over
+    ~24h, matching the webhook worker) — this is the admin-visible view of
+    that dead-letter state; see POST /admin/emails/{email_id}/requeue.
+    """
+    svc = email_service.get_email_service()
+    return svc.list_emails(
+        db=db,
+        status_filter=status_filter,
+        email_type=email_type,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.post("/emails/{email_id}/requeue", response_model=email_schema.EmailQueueRead)
+def requeue_email(
+    email_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(deps.get_current_admin),
+):
+    """
+    Manually requeue a FAILED email for another delivery attempt. Admin only. TR-35.
+
+    Resets attempt_count to 0 and schedules an immediate retry. Only valid
+    for emails currently in FAILED state — PENDING (still retrying) or SENT
+    emails are left untouched (409).
+    """
+    svc = email_service.get_email_service()
+    email = svc.get_email(db, email_id)
+    if not email:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found")
+    if email.status != EmailStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Email is not in failed state (current: {email.status.value})",
+        )
+
+    email = svc.requeue_email(db, email)
+
+    audit_service.log_action(
+        db=db,
+        # no dedicated EMAIL_REQUEUED enum value yet, see webhooks.py precedent
+        action=models.AuditAction.USER_UPDATED,
+        actor_user_id=current_admin.id,
+        details={
+            "action": "email_requeued",
+            "email_id": str(email.id),
+            "to_email": email.to_email,
+            "email_type": email.email_type,
+        },
+    )
+
+    return email

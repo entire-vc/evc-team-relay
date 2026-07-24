@@ -23,6 +23,24 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _sql_string_literal(value: str) -> str:
+    """Escape `value` for safe embedding in a single-quoted Postgres string literal.
+
+    Listmonk's GET /api/subscribers `query` param is a raw Postgres SQL
+    WHERE-clause fragment executed server-side against Listmonk's own DB —
+    not a parameterized filter. As of this writing there is no `email=`
+    param or dedicated get-by-email endpoint (confirmed against listmonk's
+    own API docs and an open, unresolved upstream issue asking for exactly
+    that: knadh/listmonk#2311), so a raw SQL fragment is the only way to
+    look up a subscriber by email through this API. A bare `'` is valid in
+    an RFC 5321 local-part (`o'brien@x.com` is a legal email) and breaks
+    out of the string literal, so every value interpolated into `query`
+    MUST go through this escape (U1, #baa47cc5).
+    """
+    return value.replace("'", "''")
+
+
 _USERS_QUERY = text(
     """
     SELECT DISTINCT ON (u.id)
@@ -111,6 +129,15 @@ class ListmonkService:
             logger.debug("Skipping %s — lifecycle_emails=false", email)
             return False
 
+        # Listmonk stores/matches emails lowercase internally. A mixed-case
+        # registration email (e.g. Jimenezisaac021@gmail.com) POSTs fine the
+        # first time, but every subsequent sync gets a 409 (already exists)
+        # whose exact-case lookup in _update_existing() never matches the
+        # lowercased row — attribs/list membership silently stop updating,
+        # forever (TR-34, #38a5bdfd). Normalize once, here, so the same
+        # value flows through the POST, the 409 lookup, and the PUT.
+        email = email.strip().lower()
+
         client = self._client_or_raise()
         settings = self._settings
 
@@ -151,7 +178,7 @@ class ListmonkService:
         # Lookup subscriber by email
         search = await client.get(
             "/api/subscribers",
-            params={"query": f"subscribers.email = '{email}'", "per_page": 1},
+            params={"query": f"subscribers.email = '{_sql_string_literal(email)}'", "per_page": 1},
         )
         search.raise_for_status()
         results = search.json().get("data", {}).get("results", [])
@@ -187,13 +214,23 @@ class ListmonkService:
     # ------------------------------------------------------------------
 
     async def sync_new_users(self, db: Session, since: datetime) -> tuple[int, datetime | None]:
-        """Sync users created after `since`. Returns (synced_count, max_created_at)."""
+        """Sync users created after `since`. Returns (synced_count, max_created_at).
+
+        `max_ts` only advances while every row so far has been attempted
+        without raising. Once a row raises, the watermark freezes at the
+        last known-good `registered_at` — later rows in the same batch are
+        still attempted (a persistently-broken row shouldn't block newer
+        registrations forever), but the cursor never jumps past a row that
+        hasn't successfully synced, so the failed row gets retried on the
+        next cycle instead of silently skipped for up to 24h (TR-49).
+        """
         rows = db.execute(_NEW_USERS_SINCE_QUERY, {"since": since}).fetchall()
         if not rows:
             return 0, None
 
         synced = 0
         max_ts: datetime | None = None
+        failed = False
 
         for row in rows:
             try:
@@ -207,11 +244,12 @@ class ListmonkService:
                 )
                 if ok:
                     synced += 1
-                # Advance max_ts regardless (so cursor moves past opt-out users too)
-                if max_ts is None or row.registered_at > max_ts:
+                # Advance past opt-out users too, but never past a failure.
+                if not failed and (max_ts is None or row.registered_at > max_ts):
                     max_ts = row.registered_at
             except Exception:
                 logger.exception("Failed to upsert subscriber %s", row.email)
+                failed = True
 
         return synced, max_ts
 
