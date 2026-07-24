@@ -199,6 +199,16 @@ class Settings(BaseSettings):
             "(TR-45) — matches the prod-DB-password rotation cadence used elsewhere."
         ),
     )
+    invite_default_ttl_days: int = Field(
+        default=30,
+        description=(
+            "Default expiry applied when a caller omits/nulls expires_in_days at "
+            "invite creation (TR security-tail follow-up to TR-45) — the schema's "
+            "own default of 7 only fires when the field is absent from the request "
+            "body; a caller that sends an explicit null bypasses it and the invite "
+            "was left with no expiry at all."
+        ),
+    )
 
     # Data retention (TR-48): email_queue/webhook_deliveries accumulate PII
     # (recipient addresses, full HTML bodies, webhook payloads) with no purge —

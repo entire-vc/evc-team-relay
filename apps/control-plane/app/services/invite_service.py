@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core import security
+from app.core.config import get_settings
 from app.db import models
 from app.schemas import invite as invite_schema
 from app.schemas import user as user_schema
@@ -43,10 +44,17 @@ def create_invite(
     # Verify share exists (raises 404 if not found)
     share_service.get_share(db, share_id)
 
-    # Calculate expiration
-    expires_at = None
+    # Calculate expiration. The schema's own default (7) only applies when the
+    # field is absent from the request body — a caller that sends an explicit
+    # null (or 0) bypasses it, which is how invites ended up with no expiry at
+    # all. Apply a config-driven default in that case too (mirrors TR-45's
+    # agent-key fix in app/api/routers/agent_keys.py).
     if payload.expires_in_days:
         expires_at = security.utcnow() + timedelta(days=payload.expires_in_days)
+    else:
+        expires_at = security.utcnow() + timedelta(
+            days=get_settings().invite_default_ttl_days
+        )
 
     # Generate unique token
     token = generate_secure_token()

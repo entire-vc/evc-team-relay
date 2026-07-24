@@ -107,6 +107,30 @@ class TestInviteCreation:
         assert invite["role"] == "viewer"
         assert invite["max_uses"] is None  # Unlimited uses
 
+    def test_create_invite_explicit_null_expires_in_days_gets_default(
+        self, client: TestClient
+    ):
+        """A caller sending expires_in_days: null bypasses the schema's own
+        default of 7 (only applied when the field is absent) — this must
+        still land on the config default, not on no expiry at all."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/test.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        share_id = share_resp.json()["id"]
+
+        invite_resp = client.post(
+            f"/shares/{share_id}/invites",
+            json={"expires_in_days": None},
+            headers=auth_headers(admin_token),
+        )
+        assert invite_resp.status_code == 201
+        invite = invite_resp.json()
+        assert invite["expires_at"] is not None
+
 
 class TestInviteListing:
     """Tests for listing invite links."""
