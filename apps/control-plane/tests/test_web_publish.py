@@ -223,6 +223,179 @@ class TestWebPublishEndpoints:
         # Clean up
         get_settings.cache_clear()
 
+    def test_robots_txt_excludes_non_public_visibility(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """TR-44: web_published+web_noindex=false alone must not make a share
+        crawlable — visibility must also be PUBLIC. A private (or protected)
+        share flipped to published+indexable must not leak its slug."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        leaky_private = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Private/Leaky.md",
+            visibility=models.ShareVisibility.PRIVATE,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-private-doc",
+            web_noindex=False,  # would be indexable if visibility weren't checked
+        )
+        leaky_protected = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Protected/Leaky.md",
+            visibility=models.ShareVisibility.PROTECTED,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-protected-doc",
+            web_noindex=False,
+            password_hash="x",
+        )
+        genuinely_public = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Real.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="genuinely-public-doc",
+            web_noindex=False,
+        )
+        db_session.add_all([leaky_private, leaky_protected, genuinely_public])
+        db_session.commit()
+
+        response = client.get("/v1/web/robots.txt")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "leaky-private-doc" not in content
+        assert "leaky-protected-doc" not in content
+        assert "Allow: /genuinely-public-doc" in content
+
+        get_settings.cache_clear()
+
+    def test_sitemap_xml_not_enabled(self, client: TestClient):
+        """Test sitemap.xml returns 404 when web publishing is disabled."""
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 404
+
+    def test_sitemap_xml_empty_when_no_indexable_shares(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """Test sitemap.xml is a valid empty urlset when nothing is indexable."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        share = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Test.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="test-doc",
+            web_noindex=True,  # Not indexable
+        )
+        db_session.add(share)
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/xml"
+        content = response.text
+        assert '<?xml version="1.0" encoding="UTF-8"?>' in content
+        assert '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' in content
+        assert "<url>" not in content
+
+        get_settings.cache_clear()
+
+    def test_sitemap_xml_includes_indexable_public_shares(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """Test sitemap.xml lists public+published+indexable shares with lastmod."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from datetime import datetime, timezone
+
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        updated_at = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+        share1 = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Doc1.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="public-doc-1",
+            web_noindex=False,
+            web_content_updated_at=updated_at,
+        )
+        share2 = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Doc2.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="public-doc-2",
+            web_noindex=False,
+        )
+        db_session.add_all([share1, share2])
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "<loc>https://docs.test.com/public-doc-1</loc>" in content
+        assert "<lastmod>2026-07-15</lastmod>" in content
+        assert "<loc>https://docs.test.com/public-doc-2</loc>" in content
+
+        get_settings.cache_clear()
+
+    def test_sitemap_xml_excludes_non_public_visibility(
+        self, client: TestClient, db_session: Session, test_user: models.User, monkeypatch
+    ):
+        """TR-44/TR-61: sitemap.xml must apply the same visibility=public filter
+        as robots.txt — a private/protected published+indexable share must not
+        leak its URL into the sitemap either."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        leaky_private = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Private/Leaky.md",
+            visibility=models.ShareVisibility.PRIVATE,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="leaky-private-doc",
+            web_noindex=False,
+        )
+        genuinely_public = models.Share(
+            kind=models.ShareKind.DOC,
+            path="Public/Real.md",
+            visibility=models.ShareVisibility.PUBLIC,
+            owner_user_id=test_user.id,
+            web_published=True,
+            web_slug="genuinely-public-doc",
+            web_noindex=False,
+        )
+        db_session.add_all([leaky_private, genuinely_public])
+        db_session.commit()
+
+        response = client.get("/v1/web/sitemap.xml")
+        assert response.status_code == 200
+        content = response.text
+
+        assert "leaky-private-doc" not in content
+        assert "<loc>https://docs.test.com/genuinely-public-doc</loc>" in content
+
+        get_settings.cache_clear()
+
 
 def _auth_headers(token: str) -> dict[str, str]:
     """Helper to create auth headers from token."""
@@ -268,7 +441,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Public Doc.md",
-                "visibility": "public",
+                # TR-39 guard: public+published+no-content is rejected — this test is
+                # about slug/publish mechanics, not visibility, so create private.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -291,7 +466,8 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Some Doc.md",
-                "visibility": "public",
+                # TR-39 guard: this test is about slug generation, not visibility.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-custom-slug",
             },
@@ -314,7 +490,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "API Docs.md",
-                "visibility": "public",
+                # TR-39 guard: isolate the reserved-slug check being tested here from
+                # the (unrelated) public+no-content guard.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "api",  # Reserved
             },
@@ -340,7 +518,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Doc1.md",
-                "visibility": "public",
+                # TR-39 guard: isolate the duplicate-slug check from the (unrelated)
+                # public+no-content guard.
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-slug",
             },
@@ -354,7 +534,7 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Doc2.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
                 "web_slug": "my-slug",  # Duplicate
             },
@@ -374,13 +554,15 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share
+        # Create share (TR-39: private — this test is about the enable-publish
+        # transition, not visibility; enabling publish while public+no-content
+        # would hit the new guard on the PATCH below)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
             },
             headers=headers,
         )
@@ -406,13 +588,14 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share with web publishing enabled
+        # Create share with web publishing enabled (TR-39: private — this test is
+        # about disabling publish, not visibility)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
             },
             headers=headers,
@@ -440,13 +623,14 @@ class TestShareWebFields:
         token = login_response.json()["access_token"]
         headers = _auth_headers(token)
 
-        # Create share with web publishing
+        # Create share with web publishing (TR-39: private — this test is about
+        # slug updates, not visibility)
         create_response = client.post(
             "/v1/shares",
             json={
                 "kind": "doc",
                 "path": "Test Doc.md",
-                "visibility": "public",
+                "visibility": "private",
                 "web_published": True,
             },
             headers=headers,
@@ -489,7 +673,11 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Content Test.md",
-                "visibility": "public",
+                # TR-39 guard: create private, then the PATCH below sets content
+                # while the share stays private — this test is about the content
+                # field itself, not the public-visibility interaction (covered
+                # separately in test_public_content_guard.py).
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -519,7 +707,9 @@ class TestShareWebFields:
             json={
                 "kind": "doc",
                 "path": "Clear Content Test.md",
-                "visibility": "public",
+                # TR-39 guard: private — this test's interaction with the public
+                # guard specifically is covered in test_public_content_guard.py.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -1008,7 +1198,8 @@ class TestWebRelayToken:
             json={
                 "kind": "doc",
                 "path": "DocId Test.md",
-                "visibility": "public",
+                # TR-39 guard: this test is about web_doc_id, not visibility.
+                "visibility": "private",
                 "web_published": True,
             },
             headers=_auth_headers(token),
@@ -1202,31 +1393,96 @@ class TestWebContentEditing:
         )
         assert response.status_code == 404
 
-    def test_update_content_protected_share_with_session(
+    def test_update_content_protected_share_session_alone_is_rejected(
         self, client: TestClient, doc_share: models.Share, monkeypatch
     ):
-        """Test updating content with valid session for protected share."""
-        # Enable web publishing
+        """TR-13 (#7d32a104): a valid web_session cookie proves only that the
+        caller knows the share's VIEW password — it must never be sufficient
+        for write on its own. Regression test for the exact vulnerability:
+        this used to return 200."""
         monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
         from app.core.config import get_settings
 
         get_settings.cache_clear()
 
-        # Authenticate to get session
         from app.services.web_session_service import WebSessionService
 
         session_token = WebSessionService.create_web_session(doc_share.id, hours=24)
 
-        # Update content
+        response = client.put(
+            f"/v1/web/shares/{doc_share.web_slug}/content",
+            json={"content": "# Attacker-controlled content"},
+            cookies={"web_session": session_token},
+        )
+        assert response.status_code == 403
+        body = response.json()
+        # Error may be wrapped by middleware (see test_update_content_folder_share_rejected).
+        detail = body.get("detail") or body.get("error", {}).get("message", "")
+        assert detail == "Editor role required to edit this share"
+
+        get_settings.cache_clear()
+
+    def test_update_content_protected_share_owner_with_jwt_still_works(
+        self, client: TestClient, db_session: Session, doc_share: models.Share, monkeypatch
+    ):
+        """The legitimate case must keep working: the share owner, real JWT
+        session, can still edit their own protected share — with or without
+        also presenting the web_session cookie."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        owner = db_session.get(models.User, doc_share.owner_user_id)
+        login_response = client.post(
+            "/auth/login", json={"email": owner.email, "password": "test123456"}
+        )
+        token = login_response.json()["access_token"]
+
         response = client.put(
             f"/v1/web/shares/{doc_share.web_slug}/content",
             json={"content": "# Updated Content\n\nNew text here."},
-            cookies={"web_session": session_token},
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
         assert "updated_at" in data
+
+        get_settings.cache_clear()
+
+    def test_update_content_protected_share_non_editor_jwt_rejected(
+        self, client: TestClient, db_session: Session, doc_share: models.Share, monkeypatch
+    ):
+        """A real logged-in user who is neither owner nor an editor member
+        must still be rejected, even with a valid JWT."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        stranger = models.User(
+            email="stranger-tr13@example.com",
+            password_hash=get_password_hash("test123456"),
+            is_active=True,
+        )
+        db_session.add(stranger)
+        db_session.commit()
+
+        login_response = client.post(
+            "/auth/login", json={"email": stranger.email, "password": "test123456"}
+        )
+        token = login_response.json()["access_token"]
+
+        response = client.put(
+            f"/v1/web/shares/{doc_share.web_slug}/content",
+            json={"content": "# Should be rejected"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403
+        body = response.json()
+        detail = body.get("detail") or body.get("error", {}).get("message", "")
+        assert detail == "Editor role required to edit this share"
 
         get_settings.cache_clear()
 
@@ -1945,7 +2201,11 @@ class TestFolderItemsContentMerge:
         share = models.Share(
             kind=models.ShareKind.FOLDER,
             path="Vault/",
-            visibility=models.ShareVisibility.PUBLIC,
+            # TR-39 guard: PRIVATE — this fixture is about web_folder_items merge
+            # mechanics (AC1-AC3 below), not visibility. test_patch_new_path_has_no_content
+            # deliberately leaves the share with zero content items after its PATCH,
+            # which the public-content guard would otherwise (correctly) reject.
+            visibility=models.ShareVisibility.PRIVATE,
             owner_user_id=test_user.id,
             web_published=True,
             web_slug="content-merge-share",

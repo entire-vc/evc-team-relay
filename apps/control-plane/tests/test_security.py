@@ -254,3 +254,43 @@ def test_audit_logging_on_logout(client: TestClient) -> None:
     # Should have at least one user_logout event
     logout_logs = [log for log in logs if log["action"] == "user_logout"]
     assert len(logout_logs) > 0, "No logout events in audit log"
+
+
+# ── TR-22: relay-token TTL bounds the remove_member exposure window ──────────
+
+
+class TestTR22RelayTokenTTL:
+    """relay-token is a stateless CWT with no jti/revocation-list (#f63a2bea) —
+    remove_member cannot invalidate an already-issued token, so
+    relay_token_ttl_minutes is the entire window during which a removed member
+    can still write to the CRDT doc. Guard against this silently regressing
+    back to the old 30-minute default.
+    """
+
+    def test_default_ttl_is_short(self, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.delenv("RELAY_TOKEN_TTL_MINUTES", raising=False)
+        get_settings.cache_clear()
+        try:
+            settings = get_settings()
+            assert settings.relay_token_ttl_minutes <= 10, (
+                "relay_token_ttl_minutes default grew past the TR-22 bound — this "
+                "directly widens the write-after-removal window since relay-tokens "
+                "cannot be revoked early (no jti/revocation-list)."
+            )
+        finally:
+            get_settings.cache_clear()
+
+    def test_ttl_is_configurable_via_env(self, monkeypatch):
+        """Deployments needing a different TTL can still override it explicitly."""
+        from app.core.config import get_settings
+
+        monkeypatch.setenv("RELAY_TOKEN_TTL_MINUTES", "2")
+        get_settings.cache_clear()
+        try:
+            settings = get_settings()
+            assert settings.relay_token_ttl_minutes == 2
+        finally:
+            monkeypatch.delenv("RELAY_TOKEN_TTL_MINUTES", raising=False)
+            get_settings.cache_clear()

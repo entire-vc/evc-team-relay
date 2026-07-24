@@ -40,7 +40,7 @@ from app.db.session import get_sessionmaker
 from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.services import auth_service
-from app.workers import metrics_worker
+from app.workers import metrics_worker, retention_worker
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
@@ -282,6 +282,18 @@ Get a token by calling `POST /auth/login` with valid credentials.
     async def _stop_metrics_collector() -> None:
         """Cancel background metrics collection loop on shutdown."""
         task = getattr(app.state, "metrics_task", None)
+        if task is not None:
+            task.cancel()
+
+    @app.on_event("startup")
+    async def _start_retention_cleanup() -> None:
+        """Launch background data-retention cleanup loop (24h interval, TR-48)."""
+        app.state.retention_task = asyncio.create_task(retention_worker.run_retention_cleanup())
+
+    @app.on_event("shutdown")
+    async def _stop_retention_cleanup() -> None:
+        """Cancel background retention cleanup loop on shutdown."""
+        task = getattr(app.state, "retention_task", None)
         if task is not None:
             task.cancel()
 

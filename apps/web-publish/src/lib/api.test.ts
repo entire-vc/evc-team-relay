@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithTimeout, getShareBySlug, authenticateShare, validateSession, getFolderFileContent } from './api.js';
+import {
+	fetchWithTimeout,
+	getShareBySlug,
+	authenticateShare,
+	validateSession,
+	getFolderFileContent,
+	getSitemapXml,
+	ShareNotFoundError
+} from './api.js';
 
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — timeout behaviour
@@ -73,22 +81,24 @@ describe('getShareBySlug', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('throws "Share not found" on 404', async () => {
+	it('throws ShareNotFoundError on 404', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('not found', { status: 404 })))
 		);
 
 		await expect(getShareBySlug('missing-slug')).rejects.toThrow('Share not found or not published');
+		await expect(getShareBySlug('missing-slug')).rejects.toBeInstanceOf(ShareNotFoundError);
 	});
 
-	it('throws generic error on other non-ok status', async () => {
+	it('throws a plain (non-ShareNotFoundError) error on other non-ok status', async () => {
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
 		);
 
 		await expect(getShareBySlug('some-slug')).rejects.toThrow('Failed to fetch share');
+		await expect(getShareBySlug('some-slug')).rejects.not.toBeInstanceOf(ShareNotFoundError);
 	});
 
 	it('returns parsed share on 200', async () => {
@@ -231,5 +241,35 @@ describe('validateSession', () => {
 		const result = await validateSession('slug', 'good-token');
 		expect(result.valid).toBe(true);
 		expect(result.share_id).toBe('share-xyz');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getSitemapXml — proxy to Control Plane
+// ---------------------------------------------------------------------------
+
+describe('getSitemapXml', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('throws on non-ok response', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response('error', { status: 500, statusText: 'Internal Server Error' })))
+		);
+
+		await expect(getSitemapXml()).rejects.toThrow('Failed to fetch sitemap.xml');
+	});
+
+	it('returns the XML body on 200', async () => {
+		const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n';
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(() => Promise.resolve(new Response(xml, { status: 200 })))
+		);
+
+		const result = await getSitemapXml();
+		expect(result).toBe(xml);
 	});
 });

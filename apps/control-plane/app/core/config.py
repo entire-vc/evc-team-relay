@@ -32,7 +32,14 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(default=30)
 
     relay_public_url: AnyUrl = Field(default="wss://relay.localhost")
-    relay_token_ttl_minutes: int = Field(default=30)
+    # TR-22: relay-token is a stateless CWT with no jti/revocation-list — remove_member
+    # cannot invalidate an already-issued token, so this TTL is the entire exposure
+    # window during which a removed member can still write to the CRDT doc. Keep this
+    # short; relay-server enforces exp per-message (not just at connect), confirmed in
+    # ghcr.io/entire-vc/evc-relay-server (crates/y-sweet-core/src/doc_connection.rs
+    # DocConnection::send + crates/relay/src/server.rs handle_socket), so shrinking this
+    # value directly shrinks the write-after-removal window.
+    relay_token_ttl_minutes: int = Field(default=5)
 
     # CORS settings
     cors_allowed_origins: str = Field(
@@ -176,6 +183,14 @@ class Settings(BaseSettings):
     agent_key_max_per_share: int = Field(default=20, description="Max active agent keys per share")
     agent_key_creation_rate_per_hour: int = Field(
         default=10, description="Max agent key creations per user per hour"
+    )
+
+    # Data retention (TR-48): email_queue/webhook_deliveries accumulate PII
+    # (recipient addresses, full HTML bodies, webhook payloads) with no purge —
+    # rows older than this are hard-deleted by the background retention worker.
+    data_retention_days: int = Field(
+        default=90,
+        description="Age (days) past which email_queue/webhook_deliveries rows are purged",
     )
 
     # Argus CRM integration (S7: contact dedup + cross-product suppression-read)

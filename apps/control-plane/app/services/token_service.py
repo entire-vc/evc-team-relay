@@ -88,10 +88,13 @@ def issue_relay_token(
     # against.
     #
     # share_id is additionally embedded as CWT_CLAIM_SHARE (-80203) so the
-    # relay-server CAN cross-check the share→doc binding independently if it
-    # supports that claim. Relay-server (System3) enforcement of this claim is
-    # tracked separately — see TODO(H6-System3) follow-up task.
-    # TODO(H6-System3): verify relay-server enforces CWT_CLAIM_SHARE and scope.
+    # relay-server COULD cross-check the share→doc binding independently, but
+    # confirmed (TR-22, 2026-07-21) that our relay-server fork does not read this
+    # claim today — cwt.rs/auth.rs never reference -80203. It's inert, forward-compat
+    # only, until relay-server gains support.
+    # TODO(H6-relay-server): implement CWT_CLAIM_SHARE enforcement in
+    # ghcr.io/entire-vc/evc-relay-server (crates/y-sweet-core/src/cwt.rs
+    # parse_claims_map + auth.rs) — separate task from TR-22, file if not already open.
     private_key = request.app.state.relay_private_key
     key_id = request.app.state.relay_key_id
     relay_url = str(settings.relay_public_url).rstrip("/")

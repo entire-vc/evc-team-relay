@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from datetime import timezone as _tz
 from uuid import UUID
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from minio import Minio
@@ -717,8 +718,11 @@ def update_share_content(
     Only works for document shares (not folders).
 
     Access control:
-    - Requires authentication via session cookie (for protected shares) or JWT token
-    - User must have editor role on the share
+    - Requires a JWT (Bearer token) proving the caller is the share owner or
+      an editor-role member — for BOTH protected and private shares. A
+      protected share's web_session cookie (knowledge of the view password)
+      is a read-only credential and is never sufficient for write (TR-13,
+      #7d32a104).
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -747,26 +751,35 @@ def update_share_content(
             detail="Only document shares can be edited via web",
         )
 
-    # Check authentication and editor role
-    # For protected shares, validate session
-    if share.visibility == models.ShareVisibility.PROTECTED:
-        session_token = request.cookies.get("web_session")
-        if not session_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-            )
-        if not WebSessionService.validate_web_session(session_token, share.id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or expired session",
-            )
-        # For protected shares with password, we can't determine editor role
-        # So we allow editing if authenticated
-    elif share.visibility == models.ShareVisibility.PRIVATE:
-        # For private shares, require JWT token and check editor role
+    # Check authentication and editor role.
+    #
+    # TR-13 (#7d32a104): PROTECTED shares used to be allowed to write here
+    # just by presenting a valid web_session cookie — i.e. by knowing the
+    # share's view password. The old comment even said the quiet part
+    # aloud: "we can't determine editor role [from a password alone], so
+    # we allow editing if authenticated" — but knowing a share's password
+    # is proof of VIEW access, not of editor identity. A protected share's
+    # password only ever governed read visibility; write has always
+    # required a real user account with owner/editor role, exactly like
+    # PRIVATE shares — the visibility distinction is irrelevant for write,
+    # so both now go through the identical JWT + owner-or-editor check.
+    if share.visibility in (
+        models.ShareVisibility.PROTECTED,
+        models.ShareVisibility.PRIVATE,
+    ):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
+            # A PROTECTED share's web_session cookie proves only that the
+            # caller knows the view password — distinguish "presented a
+            # credential, just not a strong enough one" (403) from "no
+            # credential of any kind" (401) for clearer client feedback.
+            if share.visibility == models.ShareVisibility.PROTECTED and request.cookies.get(
+                "web_session"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Editor role required to edit this share",
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
@@ -830,15 +843,28 @@ def update_share_content(
     }
 
 
+def _get_indexable_shares(db: Session) -> list[models.Share]:
+    """Shares eligible for robots.txt/sitemap.xml: published, indexable, and
+    genuinely PUBLIC (TR-44) — without the visibility check a private/protected
+    share flipped to web_published+web_noindex=false would leak its slug."""
+    stmt = select(models.Share).where(
+        models.Share.web_published == True,  # noqa: E712
+        models.Share.web_noindex == False,  # noqa: E712
+        models.Share.web_slug.isnot(None),
+        models.Share.visibility == models.ShareVisibility.PUBLIC,
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
 @router.get("/robots.txt", response_class=Response)
 def get_robots_txt(db: Session = Depends(get_db)) -> Response:
     """
     Dynamic robots.txt for web publishing domain.
 
     Default behavior: Disallow all (Disallow: /)
-    For shares with web_noindex=false: Add Allow: /{slug}
+    For public shares with web_noindex=false: Add Allow: /{slug}
 
-    This ensures only shares explicitly marked for indexing are crawlable.
+    This ensures only public shares explicitly marked for indexing are crawlable.
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -854,13 +880,7 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
         "",
     ]
 
-    # Find all published shares that allow indexing
-    stmt = select(models.Share).where(
-        models.Share.web_published == True,  # noqa: E712
-        models.Share.web_noindex == False,  # noqa: E712
-        models.Share.web_slug.isnot(None),
-    )
-    indexable_shares = db.execute(stmt).scalars().all()
+    indexable_shares = _get_indexable_shares(db)
 
     # Add Allow rules for indexable shares
     if indexable_shares:
@@ -869,7 +889,7 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
             lines.append(f"Allow: /{share.web_slug}")
         lines.append("")
 
-    # Add sitemap reference (for future implementation)
+    # Add sitemap reference
     if indexable_shares:
         domain = settings.web_publish_domain
         if not domain.startswith("http"):
@@ -878,6 +898,49 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
 
     content = "\n".join(lines)
     return Response(content=content, media_type="text/plain")
+
+
+@router.get("/sitemap.xml", response_class=Response)
+def get_sitemap_xml(db: Session = Depends(get_db)) -> Response:
+    """
+    Dynamic sitemap.xml (TR-61) for the shares robots.txt advertises.
+
+    Same eligibility as robots.txt's Allow rules: published, web_noindex=false,
+    and visibility=PUBLIC (TR-44) — kept in one place (_get_indexable_shares)
+    so the two endpoints can't drift apart on that filter.
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled",
+        )
+
+    domain = settings.web_publish_domain
+    if not domain.startswith("http"):
+        domain = f"https://{domain}"
+    domain = domain.rstrip("/")
+
+    indexable_shares = _get_indexable_shares(db)
+
+    urls = []
+    for share in indexable_shares:
+        loc = escape(f"{domain}/{share.web_slug}")
+        entry = [f"  <url>\n    <loc>{loc}</loc>"]
+        if share.web_content_updated_at:
+            lastmod = share.web_content_updated_at.strftime("%Y-%m-%d")
+            entry.append(f"    <lastmod>{lastmod}</lastmod>")
+        entry.append("  </url>")
+        urls.append("\n".join(entry))
+
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls)
+        + ("\n" if urls else "")
+        + "</urlset>\n"
+    )
+    return Response(content=content, media_type="application/xml")
 
 
 def _get_minio_client() -> Minio:

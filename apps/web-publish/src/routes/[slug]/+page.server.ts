@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent } from '$lib/api';
+import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -105,7 +105,11 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;
-		console.error('Failed to load share:', err);
-		throw error(404, 'Share not found or not published');
+		if (err instanceof ShareNotFoundError) {
+			console.error('Share not found:', err);
+			throw error(404, 'Share not found or not published');
+		}
+		console.error('Upstream error loading share:', err);
+		throw error(503, 'Service temporarily unavailable. Please try again shortly.');
 	}
 };

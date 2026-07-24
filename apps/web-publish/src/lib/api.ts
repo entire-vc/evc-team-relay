@@ -24,6 +24,18 @@ const CONTROL_PLANE_URL =
 		? process.env.CONTROL_PLANE_URL
 		: 'http://control-plane:8000';
 
+/**
+ * Thrown when the Control Plane confirms the share genuinely does not exist
+ * (its 404). Distinct from network/timeout/5xx failures, which should be
+ * surfaced to the reader as a transient outage, not a missing page.
+ */
+export class ShareNotFoundError extends Error {
+	constructor(message = 'Share not found or not published') {
+		super(message);
+		this.name = 'ShareNotFoundError';
+	}
+}
+
 export interface FolderItem {
 	path: string;
 	name: string;
@@ -80,7 +92,7 @@ export async function getShareBySlug(slug: string, agentKey?: string): Promise<W
 
 	if (!response.ok) {
 		if (response.status === 404) {
-			throw new Error('Share not found or not published');
+			throw new ShareNotFoundError();
 		}
 		throw new Error(`Failed to fetch share: ${response.statusText}`);
 	}
@@ -139,6 +151,19 @@ export async function getRobotsTxt(): Promise<string> {
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch robots.txt: ${response.statusText}`);
+	}
+
+	return response.text();
+}
+
+/**
+ * Fetch sitemap.xml content from Control Plane.
+ */
+export async function getSitemapXml(): Promise<string> {
+	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/sitemap.xml`);
+
+	if (!response.ok) {
+		throw new Error(`Failed to fetch sitemap.xml: ${response.statusText}`);
 	}
 
 	return response.text();

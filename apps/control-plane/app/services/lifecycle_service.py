@@ -23,6 +23,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import exists, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -39,6 +40,7 @@ from app.services import argus_service
 from app.services.email_service import (
     EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE,
     EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H,
+    EmailService,
     get_email_service,
 )
 
@@ -105,28 +107,54 @@ def _already_handled(db: Session, user_id: uuid.UUID, trigger_key: str) -> bool:
     return row is not None and row.state in ("sent", "suppressed")
 
 
-def _mark_sent(db: Session, user_id: uuid.UUID, trigger_key: str) -> None:
-    """Upsert lifecycle_state to sent (idempotent via unique constraint)."""
-    now = datetime.now(timezone.utc)
-    existing = db.execute(
-        select(LifecycleState).where(
-            LifecycleState.user_id == user_id,
-            LifecycleState.trigger_key == trigger_key,
+def _queue_and_mark_sent(
+    db: Session,
+    email_svc: EmailService,
+    user_id: uuid.UUID,
+    trigger_key: str,
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    email_type: str,
+) -> bool:
+    """Queue the nudge email and claim the trigger in ONE transaction (TR-18).
+
+    queue_email() and marking the trigger sent used to be two independent
+    commits. A crash between them left the email queued but the trigger
+    unclaimed — the next cycle's _already_handled() found nothing and fired
+    the same trigger again, queuing a duplicate nudge. Committing both writes
+    together closes that window: a crash now lands on neither side of it, so
+    the next cycle retries from a clean state instead of double-sending.
+
+    The lifecycle_state unique constraint (user_id, trigger_key) is a second,
+    independent guard — it catches a genuine race (e.g. overlapping worker
+    cycles) that _already_handled()'s own read can't, since that read and
+    this write aren't atomic with each other. Caught here, not left to
+    propagate, so one conflicting user doesn't abort the rest of the batch.
+
+    Returns False (email rolled back, nothing sent) if the trigger was
+    already claimed by someone else; True on success.
+    """
+    email_svc.queue_email(db, to_email, subject, text_body, html_body, email_type, commit=False)
+    db.add(
+        LifecycleState(
+            user_id=user_id,
+            trigger_key=trigger_key,
+            state="sent",
+            sent_at=datetime.now(timezone.utc),
         )
-    ).scalar_one_or_none()
-    if existing is None:
-        db.add(
-            LifecycleState(
-                user_id=user_id,
-                trigger_key=trigger_key,
-                state="sent",
-                sent_at=now,
-            )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.warning(
+            "Lifecycle trigger already claimed, skipping duplicate send",
+            extra={"user_id": str(user_id), "trigger_key": trigger_key},
         )
-    else:
-        existing.state = "sent"
-        existing.sent_at = now
-    db.commit()
+        return False
+    return True
 
 
 # ------------------------------------------------------------------
@@ -208,11 +236,18 @@ def process_t1_no_share_24h(db: Session, launch_cutoff: datetime) -> int:
         html, text = _render_template("lifecycle-no-share-24h", ctx)
         subject = "Шара в Team Relay — нужна помощь с подключением?"
 
-        email_svc.queue_email(
-            db, user.email, subject, text, html, EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H
-        )
-        _mark_sent(db, user.id, trigger_key)
-        sent += 1
+        if _queue_and_mark_sent(
+            db,
+            email_svc,
+            user.id,
+            trigger_key,
+            user.email,
+            subject,
+            text,
+            html,
+            EMAIL_TYPE_LIFECYCLE_NO_SHARE_24H,
+        ):
+            sent += 1
 
     return sent
 
@@ -278,11 +313,18 @@ def process_t2_inactive_after_share(db: Session, launch_cutoff: datetime) -> int
         html, text = _render_template("lifecycle-inactive-after-share", ctx)
         subject = "Как дела с шарой в Team Relay?"
 
-        email_svc.queue_email(
-            db, user.email, subject, text, html, EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE
-        )
-        _mark_sent(db, user.id, trigger_key)
+        if _queue_and_mark_sent(
+            db,
+            email_svc,
+            user.id,
+            trigger_key,
+            user.email,
+            subject,
+            text,
+            html,
+            EMAIL_TYPE_LIFECYCLE_INACTIVE_AFTER_SHARE,
+        ):
+            sent += 1
         seen_users.add(user.id)
-        sent += 1
 
     return sent
