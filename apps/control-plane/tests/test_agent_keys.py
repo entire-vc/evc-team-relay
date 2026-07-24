@@ -47,6 +47,16 @@ def test_settings_has_agent_key_creation_rate_per_hour() -> None:
     assert settings.agent_key_creation_rate_per_hour > 0
 
 
+def test_settings_has_agent_key_default_ttl_days() -> None:
+    """Settings must expose agent_key_default_ttl_days (TR-45 default-expiry fix)."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    assert hasattr(settings, "agent_key_default_ttl_days")
+    assert isinstance(settings.agent_key_default_ttl_days, int)
+    assert settings.agent_key_default_ttl_days > 0
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/web/shares/{share_id}/agent-keys  — the regressed 500 endpoint
 # ---------------------------------------------------------------------------
@@ -97,6 +107,63 @@ def test_create_agent_key_with_expiry(client: TestClient) -> None:
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["expires_at"] is not None
+
+
+def test_create_agent_key_omitted_expiry_gets_default_ttl(client: TestClient) -> None:
+    """TR-45: omitting expires_at must apply the default TTL, not create an
+    unbounded key. Before the fix this asserted `expires_at is None` (a stale
+    access grant that never expires); the audit found 37 such keys in prod.
+    """
+    from app.core.config import get_settings
+
+    token = login(client, "bootstrap@example.com", "super-secret")
+    share_id = create_share(client, token, path="vault/default-ttl.md")
+
+    before = datetime.now(timezone.utc)
+    resp = client.post(
+        f"/v1/web/shares/{share_id}/agent-keys",
+        json={"label": "no-expiry-specified"},
+        headers=auth_headers(token),
+    )
+    after = datetime.now(timezone.utc)
+    assert resp.status_code == 201, resp.text
+
+    expires_at = datetime.fromisoformat(resp.json()["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    ttl_days = get_settings().agent_key_default_ttl_days
+    assert before + timedelta(days=ttl_days) <= expires_at <= after + timedelta(days=ttl_days)
+
+    # Must show up as active in the list, same as an explicit-future-expiry key.
+    list_resp = client.get(
+        f"/v1/web/shares/{share_id}/agent-keys",
+        headers=auth_headers(token),
+    )
+    key_in_list = next(k for k in list_resp.json() if k["label"] == "no-expiry-specified")
+    assert key_in_list["is_active"]
+
+
+def test_create_agent_key_explicit_expiry_not_overridden_by_default(client: TestClient) -> None:
+    """An explicitly-supplied expires_at must be used exactly as given, not
+    silently replaced by the default TTL (non-breaking for existing callers).
+    """
+    token = login(client, "bootstrap@example.com", "super-secret")
+    share_id = create_share(client, token, path="vault/explicit-not-overridden.md")
+
+    # Deliberately shorter than the default TTL so the two are distinguishable.
+    explicit = datetime.now(timezone.utc) + timedelta(days=1)
+    resp = client.post(
+        f"/v1/web/shares/{share_id}/agent-keys",
+        json={"label": "explicit-short-lived", "expires_at": explicit.isoformat()},
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 201, resp.text
+
+    expires_at = datetime.fromisoformat(resp.json()["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    assert abs((expires_at - explicit).total_seconds()) < 5
 
 
 def test_create_agent_key_empty_label_rejected(client: TestClient) -> None:

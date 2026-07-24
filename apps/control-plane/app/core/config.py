@@ -192,6 +192,13 @@ class Settings(BaseSettings):
     agent_key_creation_rate_per_hour: int = Field(
         default=10, description="Max agent key creations per user per hour"
     )
+    agent_key_default_ttl_days: int = Field(
+        default=90,
+        description=(
+            "Default expiry applied when a caller omits expires_at at key creation "
+            "(TR-45) — matches the prod-DB-password rotation cadence used elsewhere."
+        ),
+    )
 
     # Data retention (TR-48): email_queue/webhook_deliveries accumulate PII
     # (recipient addresses, full HTML bodies, webhook payloads) with no purge —
