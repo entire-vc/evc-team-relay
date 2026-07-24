@@ -52,9 +52,7 @@ def create_invite(
     if payload.expires_in_days:
         expires_at = security.utcnow() + timedelta(days=payload.expires_in_days)
     else:
-        expires_at = security.utcnow() + timedelta(
-            days=get_settings().invite_default_ttl_days
-        )
+        expires_at = security.utcnow() + timedelta(days=get_settings().invite_default_ttl_days)
 
     # Generate unique token
     token = generate_secure_token()

@@ -107,9 +107,7 @@ class TestInviteCreation:
         assert invite["role"] == "viewer"
         assert invite["max_uses"] is None  # Unlimited uses
 
-    def test_create_invite_explicit_null_expires_in_days_gets_default(
-        self, client: TestClient
-    ):
+    def test_create_invite_explicit_null_expires_in_days_gets_default(self, client: TestClient):
         """A caller sending expires_in_days: null bypasses the schema's own
         default of 7 (only applied when the field is absent) — this must
         still land on the config default, not on no expiry at all."""
