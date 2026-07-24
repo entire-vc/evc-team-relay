@@ -9,7 +9,7 @@ SENDING before the send attempt, with a lease timeout for crash recovery) —
 see email_service.claim_pending_emails / webhook_service.claim_pending_deliveries.
 
 Revision ID: 202607210003
-Revises: 202607210001
+Revises: 202607240001
 Create Date: 2026-07-21 17:00:00.000000
 
 """
@@ -21,7 +21,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "202607210003"
-down_revision: str | None = "202607210001"
+down_revision: str | None = "202607240001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
