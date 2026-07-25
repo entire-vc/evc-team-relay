@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from app.core import security as sec
 from app.db import models
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -178,7 +177,9 @@ class TestCreateFileToken:
     def test_stranger_returns_403(self, client: TestClient, db_session: Session, owner, stranger):
         share = make_folder_share(db_session, owner, slug="ft-stranger")
         token = login(client, stranger.email, "test123456")
-        r = client.post(f"/shares/{share.id}/file-token", json=FILE_TOKEN_BODY, headers=bearer(token))
+        r = client.post(
+            f"/shares/{share.id}/file-token", json=FILE_TOKEN_BODY, headers=bearer(token)
+        )
         assert r.status_code == 403
 
     def test_path_traversal_rejected(self, client: TestClient, db_session: Session, owner):
@@ -219,7 +220,9 @@ class TestHeadFile:
         token = login(client, owner.email, "test123456")
         data = mint(client, share.id, token)
         with minio_patch(exists=False):
-            r = client.head(f"/shares/{share.id}/files/attachments/photo.png", headers=bearer(data["token"]))
+            r = client.head(
+                f"/shares/{share.id}/files/attachments/photo.png", headers=bearer(data["token"])
+            )
         assert r.status_code == 404
 
     def test_wrong_share_id_returns_403(self, client: TestClient, db_session: Session, owner):
@@ -246,9 +249,7 @@ class TestHeadFile:
     ):
         share = make_folder_share(db_session, owner, slug="head-session-jwt")
         token = login(client, owner.email, "test123456")
-        r = client.head(
-            f"/shares/{share.id}/files/attachments/photo.png", headers=bearer(token)
-        )
+        r = client.head(f"/shares/{share.id}/files/attachments/photo.png", headers=bearer(token))
         assert r.status_code == 401
 
 
