@@ -13,13 +13,18 @@ pulled from a registry.
 > it is not a deploy target. Do not `ssh tw-relay` and run the deploy recipe there.
 
 The `control-plane-migrate` service in `docker-compose.yml` is the **fail-closed gate**: it runs
-`alembic upgrade head` and must exit 0 before `control-plane` (or any worker) starts.
+`alembic upgrade head` and must exit 0 before `control-plane` (or any worker) starts. `web-publish`
+has no migrations, so its deploy skips straight to build + restart.
 
-Two ways to deploy:
-- **[Automated (GitHub Actions)](#automated-deploy-github-actions)** — the default path. Push to
-  `main` (or manual dispatch) runs the gated sequence on `tr-relay-vm`.
-- **[Manual (SSH)](#manual-upgrade-fallback)** — the emergency fallback, also the underlying
-  procedure the pipeline automates.
+Three ways to deploy:
+- **[Automated (GitHub Actions)](#automated-deploy-github-actions)** — control-plane only, and
+  currently disabled (`if: false`, see below). Push to `main` would run the gated sequence on
+  `tr-relay-vm`.
+- **[`scripts/deploy.sh` from a local checkout](#scriptsdeploysh-local-driver)** — the normal path
+  today for both components. Run it from your machine; it rsyncs the source and runs the same
+  build/gate/restart logic on `tr-relay-vm` over SSH.
+- **[Manual (SSH)](#manual-upgrade-fallback)** — the emergency fallback when you're already on the
+  box, or want to run the steps by hand.
 
 ---
 
@@ -80,6 +85,46 @@ environment, which also lets you add a manual-approval protection rule):
 
 ---
 
+## `scripts/deploy.sh` (local driver)
+
+Since the GitHub Actions job is disabled, this is the day-to-day way to ship both
+**control-plane** and **web-publish** — it covers what the Actions workflow above would have
+automated. Run it from a local checkout; it has access to `tr-relay-vm` via the same
+`ProxyJump hel01` alias your `~/.ssh/config` already uses for manual SSH.
+
+```bash
+bash scripts/deploy.sh control-plane   # control-plane + workers (migration gate + edition smoke gate)
+bash scripts/deploy.sh web-publish     # web-publish only (no migrations, no edition gate)
+bash scripts/deploy.sh all             # both, control-plane first
+bash scripts/deploy.sh                 # defaults to control-plane
+```
+
+**What it does**, per component, when `$RELAY_DIR` (default `/opt/relay`) doesn't exist locally
+(i.e. you're not already on the server): rsyncs `apps/<component>/` →
+`tr-relay-vm:/opt/relay/<component>-src/`, then re-invokes itself over SSH on `tr-relay-vm` to run
+the actual build/gate/restart — the exact same server-side logic the (disabled) Actions workflow
+used to run, unified into one script instead of split between a CI rsync step and this script.
+
+- **control-plane**: tag `:prev` → `docker build` → migration gate (fail-closed) →
+  `compose up -d --force-recreate` → health check → edition smoke gate (auto-rolls back on
+  failure). Unchanged from before this script covered web-publish too.
+- **web-publish**: tag `:prev` → `docker build --secret id=github_token,...` (the Dockerfile's
+  `npm ci` needs a GitHub token for scoped package installs; taken from `$GITHUB_TOKEN` in your
+  shell, or read from `tr-relay-vm:/opt/relay/.env` if unset) → `compose up -d --force-recreate` →
+  health check. No migration gate — web-publish has no migrations — and no edition smoke gate,
+  that check is control-plane/billing-specific.
+
+`DRY_RUN=true bash scripts/deploy.sh <component>` builds the image and runs the migration gate
+(control-plane only) but stops before `compose up` — use it to rehearse before a real deploy.
+`SSH_TARGET` overrides the remote host (default `tr-relay-vm`) if you're ever deploying elsewhere.
+
+If you're **already SSH'd into `tr-relay-vm`** with the source already synced, running the script
+there directly (`RELAY_DIR=/opt/relay bash -s -- web-publish < scripts/deploy.sh`, or just running
+a copy of it on the box) skips the rsync/re-invoke step and goes straight to build/restart — that's
+"direct mode", same as how the Actions workflow always invoked it.
+
+---
+
 ## Manual upgrade (fallback)
 
 Use this when CI is unavailable or for an emergency hotfix. It is the same sequence the
@@ -112,9 +157,33 @@ migration failure prevents the app from starting.
 > **Never** run `docker run infra-control-plane:latest` directly — it bypasses the compose
 > dependency graph and the migration gate.
 
+### web-publish
+
+No migration gate — there's nothing to migrate. Source lives in `/opt/relay/web-publish-src/`,
+kept in sync the same way as `control-plane-src/` (rsync from a local checkout, or
+`scripts/deploy.sh web-publish`, which is the recommended path over doing this by hand).
+
+```bash
+# 1. SSH to server
+ssh tr-relay-vm
+cd /opt/relay
+
+# 2. Tag the current image BEFORE overwriting (enables fast rollback)
+docker tag infra-web-publish:latest infra-web-publish:prev
+
+# 3. Build new image — the Dockerfile's `npm ci` needs GITHUB_TOKEN as a BuildKit secret
+GITHUB_TOKEN=$(grep -m1 '^GITHUB_TOKEN=' .env | cut -d= -f2-)
+docker build --secret id=github_token,env=GITHUB_TOKEN -t infra-web-publish:latest web-publish-src/
+
+# 4. Restart
+docker compose up -d --force-recreate web-publish
+```
+
 ---
 
 ## Rollback
+
+**control-plane:**
 
 ```bash
 # 1. Stop app services (keep postgres and minio running — do NOT stop the DB)
@@ -129,6 +198,14 @@ docker compose run --rm control-plane-migrate python -m alembic downgrade <safe-
 
 # 4. Restart with restored image
 docker compose up -d control-plane webhook-worker email-worker
+```
+
+**web-publish** (no migrations to revert):
+
+```bash
+docker compose stop web-publish
+docker tag infra-web-publish:prev infra-web-publish:latest
+docker compose up -d web-publish
 ```
 
 ---
@@ -184,8 +261,11 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
   repo's `infra/docker-compose.yml` is the `build:`-context variant of the same gate. The deploy
   pipeline deliberately syncs **only** `apps/control-plane/` → `control-plane-src/` and leaves
   the server's compose file and `.env` alone.
-- **web-publish / relay-server** are not (re)built by the deploy pipeline — it covers the
-  control-plane and its workers only. Rebuild those manually if their source changes.
+- **web-publish** is covered by `scripts/deploy.sh web-publish` (see above) — merges to
+  `apps/web-publish/` do NOT deploy themselves; someone has to run the script. This was a real gap
+  (task `c3f38d9a`): three merged fixes sat undeployed for up to 3 days because nothing rebuilt the
+  container. **relay-server** (the Rust Yjs relay, separate repo `evc-relay-server`) is still not
+  covered by anything here — rebuild it manually if its source changes.
 - **`infra/Caddyfile` is host-managed and NOT synced by the deploy pipeline** (same gap as the
   compose file above). A fix applied here must ALSO be applied live on `tr-relay-vm`
   (`/opt/relay/Caddyfile`, content-preserving write + `caddy validate` + `caddy reload` inside
@@ -221,8 +301,9 @@ The same `service_completed_successfully` guard applies to `webhook-worker` and 
 ## References
 
 - `CLAUDE-workflow.md §1b` — shared deploy-discipline rule (migration before code, always)
-- `.github/workflows/deploy.yml` — automated deploy pipeline (gated)
-- `scripts/deploy.sh` — on-server build → migrate-gate → restart logic
+- `.github/workflows/deploy.yml` — automated deploy pipeline (control-plane only, currently gated off)
+- `scripts/deploy.sh` — rsync (driver mode) → build → migrate-gate (control-plane only) → restart,
+  for both control-plane and web-publish
 - `infra/docker-compose.yml` — dev/local compose template (build-context variant of same gate)
 - `apps/control-plane/app/db/migrations/versions/` — Alembic migration files
 - `apps/control-plane/alembic.ini` — Alembic configuration
