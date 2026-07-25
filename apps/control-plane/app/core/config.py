@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(default=30)
 
     relay_public_url: AnyUrl = Field(default="wss://relay.localhost")
+    control_plane_public_url: str = Field(
+        default="http://localhost:8000",
+        description=(
+            "Externally-reachable base URL of this control-plane API (e.g. "
+            "https://cp.tr.entire.vc). Used to build the absolute base_url "
+            "returned by POST /shares/{id}/file-token, since uvicorn runs "
+            "without --proxy-headers and Request.base_url would otherwise "
+            "reflect the internal container address, not the public one."
+        ),
+    )
     # TR-22: relay-token is a stateless CWT with no jti/revocation-list — remove_member
     # cannot invalidate an already-issued token, so this TTL is the entire exposure
     # window during which a removed member can still write to the CRDT doc. Keep this
