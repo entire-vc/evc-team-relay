@@ -24,6 +24,12 @@ def _get_user_from_token(db: Session, token: str) -> models.User:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         ) from exc
 
+    if payload.get("scope") == "file":
+        # File tokens (security.create_file_token) are single-file, few-minutes
+        # grants for the /shares/{id}/files/{path}/* routes only — they must
+        # never double as a general session credential elsewhere.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
     subject = payload.get("sub")
     if not subject:
         raise HTTPException(

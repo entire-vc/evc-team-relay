@@ -77,6 +77,38 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
 
 
+def create_file_token(
+    subject: str,
+    share_id: str,
+    path: str,
+    sha256: str,
+    content_type: str,
+    content_length: int,
+    expires_minutes: int = 10,
+) -> str:
+    """Mint a short-lived, path-scoped token for attachment (CAS) access.
+
+    Deliberately NOT create_access_token with extra claims: this token must
+    never be usable as a general session credential (see the "scope" check
+    in deps._get_user_from_token) — it grants access to exactly one file's
+    HEAD/download-url/upload-url for a few minutes, nothing else.
+    """
+    settings = get_settings()
+    expire_delta = timedelta(minutes=expires_minutes)
+    to_encode = {
+        "sub": subject,
+        "scope": "file",
+        "share_id": share_id,
+        "path": path,
+        "sha256": sha256,
+        "content_type": content_type,
+        "content_length": content_length,
+        "exp": utcnow() + expire_delta,
+        "iat": utcnow(),
+    }
+    return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
 # Ed25519 keypair generation and relay token signing
 
 
