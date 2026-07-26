@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -56,9 +55,7 @@ def make_folder_share(
 def make_agent_key(db: Session, share: models.Share, scopes: str = "read") -> str:
     raw = "tr_agent_" + secrets.token_hex(24)
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
-    ak = models.ShareAgentKey(
-        share_id=share.id, key_hash=key_hash, label="test-key", scopes=scopes
-    )
+    ak = models.ShareAgentKey(share_id=share.id, key_hash=key_hash, label="test-key", scopes=scopes)
     db.add(ak)
     db.commit()
     return raw
@@ -75,9 +72,24 @@ def add_member(db: Session, share: models.Share, user: models.User) -> None:
 
 
 MIXED_ITEMS = [
-    {"path": "artifact.md", "type": "sync-artifact", "content": "artifact content", "mime": "text/markdown"},
-    {"path": "vault-doc.md", "type": "doc", "content": "vault doc", "mime": "text/markdown"},
-    {"path": "another-artifact.txt", "type": "sync-artifact", "content": "other artifact", "mime": "text/plain"},
+    {
+        "path": "artifact.md",
+        "type": "sync-artifact",
+        "content": "artifact content",
+        "mime": "text/markdown",
+    },
+    {
+        "path": "vault-doc.md",
+        "type": "doc",
+        "content": "vault doc",
+        "mime": "text/markdown",
+    },
+    {
+        "path": "another-artifact.txt",
+        "type": "sync-artifact",
+        "content": "other artifact",
+        "mime": "text/plain",
+    },
 ]
 
 
@@ -88,6 +100,7 @@ MIXED_ITEMS = [
 def web_enabled(monkeypatch):
     monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
     from app.core.config import get_settings
+
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -96,6 +109,7 @@ def web_enabled(monkeypatch):
 @pytest.fixture
 def second_user(db_session: Session) -> models.User:
     from app.core import security as sec
+
     user = models.User(
         email="member@example.com",
         password_hash=sec.get_password_hash("test123456"),
@@ -111,6 +125,7 @@ def second_user(db_session: Session) -> models.User:
 @pytest.fixture
 def stranger_user(db_session: Session) -> models.User:
     from app.core import security as sec
+
     user = models.User(
         email="stranger@example.com",
         password_hash=sec.get_password_hash("test123456"),
@@ -219,7 +234,12 @@ class TestDownloadBearerAuth:
     """Bearer JWT auth on GET /v1/web/shares/{id}/download."""
 
     ITEMS = [
-        {"path": "file.md", "type": "sync-artifact", "content": "hello world", "mime": "text/markdown"},
+        {
+            "path": "file.md",
+            "type": "sync-artifact",
+            "content": "hello world",
+            "mime": "text/markdown",
+        },
     ]
 
     def test_no_auth_returns_401(

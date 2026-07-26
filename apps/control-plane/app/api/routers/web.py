@@ -1511,7 +1511,9 @@ def _auth_share_read_access(share: models.Share, request: Request, db: Session) 
             select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
         ).scalar_one_or_none()
         if agent_key is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key"
+            )
         if agent_key.share_id != share.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
@@ -1571,13 +1573,14 @@ def _auth_share_read_access(share: models.Share, request: Request, db: Session) 
         except HTTPException:
             raise
         except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required: provide X-Agent-Key header or Authorization: Bearer <token>",
+        detail=(
+            "Authentication required: provide X-Agent-Key header "
+            "or Authorization: Bearer <token>"
+        ),
         headers={"WWW-Authenticate": "Bearer"},
     )
 
