@@ -74,10 +74,8 @@ broken migration makes the `dry_run` run fail at the gate step with the app unto
 Set these under **Settings → Secrets and variables → Actions** (or scoped to the `production`
 environment, which also lets you add a manual-approval protection rule):
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-All eight are set as of 2026-07-26. The workflow fails closed on the first step if any required
-one is missing or empty.
+Both are set as of 2026-07-26. The workflow fails closed on its first step if either is missing
+or empty.
 
 | Secret | Required | Description |
 |--------|----------|-------------|
