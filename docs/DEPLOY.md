@@ -74,14 +74,12 @@ broken migration makes the `dry_run` run fail at the gate step with the app unto
 Set these under **Settings → Secrets and variables → Actions** (or scoped to the `production`
 environment, which also lets you add a manual-approval protection rule):
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-All eight are set as of 2026-07-26. The workflow fails closed on the first step if any required
-one is missing or empty.
+Both are set as of 2026-07-26. The workflow fails closed on its first step if either is missing
+or empty.
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `TW_RELAY_SSH_KEY` | ✅ | Private half of the dedicated `ghdeploy-team-relay@hel01-20260726` ed25519 deploy key. Public half is in `tr-relay-vm:~/.ssh/authorized_keys` **and** in `hel01:/home/ghdeploy/.ssh/authorized_keys` (restricted, see network note). |
+| `TW_RELAY_SSH_KEY_B64` | ✅ | Private half of the dedicated `ghdeploy-team-relay@hel01-20260726` ed25519 deploy key, **base64-encoded**. Public half is in `tr-relay-vm:~/.ssh/authorized_keys` **and** in `hel01:/home/ghdeploy/.ssh/authorized_keys` (restricted, see network note). |
 | `TW_RELAY_KNOWN_HOSTS_B64` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`), **base64-encoded**. There is no TOFU fallback — an unknown or changed host key fails the deploy. |
 
 Only those two. Everything else the job needs — `TARGET_HOST`, `TARGET_USER`, `TARGET_PORT`,
@@ -95,20 +93,31 @@ evc-spark's `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PATH`.
 > resulting `no pinned host key` failure was impossible to diagnose from the run output. Plain
 > `env:` keeps the logs readable and puts the value under code review.
 
-> ⚠️ **Why that one is base64 and the SSH key is not.** A raw multi-line value does not
-> round-trip reliably through `gh secret set` — the first cut of this workflow uploaded a
-> 12-line `known_hosts` and the runner received only its **last** line, leaving the ProxyJump
-> hop entirely unpinned. (The multi-line `TW_RELAY_SSH_KEY` was measured arriving intact at 418
-> bytes / 6 newlines, so this is not a blanket rule about multi-line secrets.) Regenerate with:
+> ⚠️ **Why both are base64.** A raw multi-line value does not survive `gh secret set` intact.
+> Measured on this repo during the 2026-07-26 bring-up: a 12-line `known_hosts` arrived at the
+> runner as its **last line only** (94 bytes, 0 newlines), leaving the ProxyJump hop entirely
+> unpinned; and the 432-byte / 8-line private key arrived as **418 bytes / 7 lines**, which
+> presents as a bare `Permission denied (publickey)`. Base64 is a single line, so there is
+> nothing to truncate — verified byte-identical on round-trip.
+>
+> Regenerate them with:
 >
 > ```bash
+> # known_hosts (both hops)
 > { ssh-keyscan -t rsa,ecdsa,ed25519 66.151.34.194
 >   ssh hel01 'ssh-keyscan -t rsa,ecdsa,ed25519 10.10.10.40'
 > } | base64 | tr -d '\n' | gh secret set TW_RELAY_KNOWN_HOSTS_B64 -R entire-vc/evc-team-relay
+>
+> # private key
+> base64 < /path/to/deploy_key | tr -d '\n' \
+>   | gh secret set TW_RELAY_SSH_KEY_B64 -R entire-vc/evc-team-relay
 > ```
 >
-> The workflow does not trust the value either way: after decoding it asserts with
-> `ssh-keygen -F` that **both** hops are actually pinned, and refuses to deploy otherwise.
+> **The workflow does not trust either value.** After decoding it asserts that both SSH hops are
+> actually pinned (`ssh-keygen -F`) and that the private key's fingerprint matches
+> `DEPLOY_KEY_FINGERPRINT`, pinned in plain `env:`. If you rotate the key, update that
+> fingerprint in the same commit — otherwise the deploy fails closed, by design, naming the
+> mismatch rather than dying as an anonymous auth error.
 
 > **Network note.** `tr-relay-vm` (`10.10.10.40`) has no public address; it sits on the private
 > Helsinki network (`vmbr1`, `10.10.10.0/24`) behind hel01 (`66.151.34.194`). The workflow reaches
