@@ -73,7 +73,20 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      RELAY_DIR: ${{ secrets.TW_RELAY_PATH || '/opt/relay' }}
+      # Deliberately NOT secrets. None of these are sensitive — the target IP is
+      # named in this file's own header, in docs/DEPLOY.md and in the fleet's
+      # CLAUDE.md — and putting them in secrets actively hurt: GitHub masks every
+      # secret as `***` in the logs, so when TW_RELAY_HOST turned out to carry two
+      # stray characters the resulting "no pinned host key" failure was
+      # undebuggable from the run output. Same convention as evc-spark's deploy.yml
+      # (DEPLOY_HOST/DEPLOY_USER/DEPLOY_PATH in plain env). Only the SSH key and
+      # the pinned host keys are secrets, because only those are actually secret.
+      RELAY_DIR: /opt/relay
+      TARGET_HOST: 10.10.10.40
+      TARGET_USER: root
+      TARGET_PORT: '22'
+      PROXY_HOST: 66.151.34.194
+      PROXY_USER: ghdeploy
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,18 +95,13 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.TW_RELAY_SSH_KEY }}
           KNOWN_HOSTS_B64: ${{ secrets.TW_RELAY_KNOWN_HOSTS_B64 }}
-          TARGET_HOST: ${{ secrets.TW_RELAY_HOST }}
-          TARGET_USER: ${{ secrets.TW_RELAY_USER }}
-          TARGET_PORT: ${{ secrets.TW_RELAY_PORT || '22' }}
-          PROXY_HOST: ${{ secrets.TW_RELAY_PROXY_HOST }}
-          PROXY_USER: ${{ secrets.TW_RELAY_PROXY_USER }}
         run: |
           set -euo pipefail
 
           # Fail closed on a missing secret. Without this an empty HOST would
           # turn into an ssh to nowhere with a confusing error three steps later.
           missing=""
-          for v in SSH_KEY KNOWN_HOSTS_B64 TARGET_HOST TARGET_USER PROXY_HOST PROXY_USER; do
+          for v in SSH_KEY KNOWN_HOSTS_B64; do
             [ -n "${!v:-}" ] || missing="$missing $v"
           done
           if [ -n "$missing" ]; then
