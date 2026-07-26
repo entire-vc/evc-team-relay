@@ -18,10 +18,11 @@ has no migrations, so its deploy skips straight to build + restart.
 
 Three ways to deploy:
 - **[Automated (GitHub Actions)](#automated-deploy-github-actions)** — control-plane only, and
-  currently disabled (`if: false`, see below). Push to `main` would run the gated sequence on
-  `tr-relay-vm`.
-- **[`scripts/deploy.sh` from a local checkout](#scriptsdeploysh-local-driver)** — the normal path
-  today for both components. Run it from your machine; it rsyncs the source and runs the same
+  **live since 2026-07-26**. A push to `main` touching `apps/control-plane/**` or
+  `scripts/deploy.sh` runs the gated sequence on `tr-relay-vm` with no manual step.
+- **[`scripts/deploy.sh` from a local checkout](#scriptsdeploysh-local-driver)** — still the path
+  for **web-publish** (which CD does not cover), and the fallback for control-plane when Actions
+  is unavailable. Run it from your machine; it rsyncs the source and runs the same
   build/gate/restart logic on `tr-relay-vm` over SSH.
 - **[Manual (SSH)](#manual-upgrade-fallback)** — the emergency fallback when you're already on the
   box, or want to run the steps by hand.
@@ -34,11 +35,15 @@ Workflow: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
 On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh).
 
 **Triggers**
-- `push` to `main` touching `apps/control-plane/**`, `scripts/deploy.sh`, or the workflow itself.
+- `push` to `main` touching `apps/control-plane/**` or `scripts/deploy.sh`.
+  Note this deliberately excludes `.github/**`: CI-plumbing edits are not a reason to restart
+  production, and a workflow listing its own path would redeploy prod the instant it merged.
 - `workflow_dispatch` (manual), with a `dry_run` boolean input.
 
 **What it does** (one job, `environment: production`):
-1. Loads an SSH key and trusts the `tr-relay-vm` host key.
+1. Writes the deploy key + pinned host keys and builds an SSH config that reaches
+   `tr-relay-vm` via `ProxyJump` through `ghdeploy@hel01`, then proves connectivity with a
+   cheap `hostname` call before touching anything.
 2. `rsync -az --delete apps/control-plane/ → tr-relay-vm:/opt/relay/control-plane-src/`
    (syncs only the app source; never touches the server-managed `docker-compose.yml` / `.env`).
 3. Runs `scripts/deploy.sh` over SSH, which on the server: tags the current image as
@@ -71,25 +76,52 @@ environment, which also lets you add a manual-approval protection rule):
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `TW_RELAY_SSH_KEY` | ✅ | Private SSH key (PEM) whose public half is in `tr-relay-vm:~/.ssh/authorized_keys`. Use a dedicated deploy key, not a personal one. |
-| `TW_RELAY_HOST` | ✅ | Deploy host address (e.g. `10.10.10.40` for `tr-relay-vm`, current prod). Unset — this job is currently disabled (`if: ${{ false }}`, see below). |
-| `TW_RELAY_USER` | ✅ | SSH user with permission to run `docker` (e.g. `root`). |
-| `TW_RELAY_PORT` | — | SSH port. Defaults to `22`. |
-| `TW_RELAY_PATH` | — | Deploy root on the server. Defaults to `/opt/relay`. |
-| `TW_RELAY_KNOWN_HOSTS` | — | Pinned host key line(s) from `ssh-keyscan tr-relay-vm`. If unset, the workflow falls back to TOFU `ssh-keyscan` at run time. **Pinning is recommended.** |
+All eight are set as of 2026-07-26. The workflow fails closed on the first step if any required
+one is missing or empty.
 
-> **Network note.** The workflow runs on GitHub-hosted runners and would SSH to `tr-relay-vm`
-> (`10.10.10.40`), a private IP reachable only via `ProxyJump hel01` — GitHub-hosted runners cannot
-> reach it directly. Re-enabling this job requires a `tailscale/github-action` step before the SSH
-> steps (the fleet's standard), or moving the job to a self-hosted runner on the tailnet.
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `TW_RELAY_SSH_KEY` | ✅ | Private half of the dedicated `ghdeploy-team-relay@hel01-20260726` ed25519 deploy key. Public half is in `tr-relay-vm:~/.ssh/authorized_keys` **and** in `hel01:/home/ghdeploy/.ssh/authorized_keys` (restricted, see network note). |
+| `TW_RELAY_HOST` | ✅ | Deploy host address — `10.10.10.40` (`tr-relay-vm`, current prod). |
+| `TW_RELAY_USER` | ✅ | SSH user on the target with permission to run `docker` — `root`. |
+| `TW_RELAY_PROXY_HOST` | ✅ | ProxyJump host — `66.151.34.194` (hel01). |
+| `TW_RELAY_PROXY_USER` | ✅ | ProxyJump user — `ghdeploy`. |
+| `TW_RELAY_PORT` | — | SSH port on the target. Defaults to `22`. |
+| `TW_RELAY_PATH` | — | Deploy root on the server. Defaults to `/opt/relay`. |
+| `TW_RELAY_KNOWN_HOSTS` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`). Unlike the previous revision there is no TOFU fallback — an unknown or changed host key fails the deploy. |
+
+> **Network note.** `tr-relay-vm` (`10.10.10.40`) has no public address; it sits on the private
+> Helsinki network (`vmbr1`, `10.10.10.0/24`) behind hel01 (`66.151.34.194`). The workflow reaches
+> it from a stock `ubuntu-latest` runner via `ProxyJump` through hel01's `ghdeploy` account — the
+> same pattern evc-mesh (`.10`), evc-spark (`.30`), evc-argus (`.60`), contenthub (`.70`), tgbot
+> (`.80`) and sites (`.100`) already deploy with.
+>
+> `ghdeploy` is not a shell account (`/usr/sbin/nologin`), and this repo's key is pinned in its
+> `authorized_keys` as:
+>
+> ```
+> command="/bin/false",restrict,port-forwarding,permitopen="10.10.10.40:22" ssh-ed25519 AAAA... ghdeploy-team-relay@hel01-20260726
+> ```
+>
+> so the credential can do exactly one thing: open a TCP forward to port 22 of this product's own
+> VM. Verified 2026-07-26 — a shell attempt returns *"This account is currently not available"*,
+> and forwarding to a sibling VM (`.20` billing, `.30` spark) is refused with
+> *"administratively prohibited"*.
+>
+> ⚠️ **Do not move this job to a self-hosted runner.** This repository is public and forkable, and
+> `ci.yml`/`trivy.yml` trigger on `pull_request`. GitHub runs a fork PR's workflow file *from the
+> PR branch*, so a self-hosted runner registered here could be hijacked by a fork PR that
+> re-points `runs-on` at it — onto a machine holding a production SSH key. Secrets are never
+> exposed to fork-PR workflows, which is precisely why the GitHub-hosted + secret design is the
+> safe one here.
 
 ---
 
 ## `scripts/deploy.sh` (local driver)
 
-Since the GitHub Actions job is disabled, this is the day-to-day way to ship both
-**control-plane** and **web-publish** — it covers what the Actions workflow above would have
-automated. Run it from a local checkout; it has access to `tr-relay-vm` via the same
+CD covers **control-plane** only, so this remains the way to ship **web-publish**, and the
+fallback for control-plane when Actions is unavailable. Run it from a local checkout; it has
+access to `tr-relay-vm` via the same
 `ProxyJump hel01` alias your `~/.ssh/config` already uses for manual SSH.
 
 ```bash
@@ -102,8 +134,8 @@ bash scripts/deploy.sh                 # defaults to control-plane
 **What it does**, per component, when `$RELAY_DIR` (default `/opt/relay`) doesn't exist locally
 (i.e. you're not already on the server): rsyncs `apps/<component>/` →
 `tr-relay-vm:/opt/relay/<component>-src/`, then re-invokes itself over SSH on `tr-relay-vm` to run
-the actual build/gate/restart — the exact same server-side logic the (disabled) Actions workflow
-used to run, unified into one script instead of split between a CI rsync step and this script.
+the actual build/gate/restart — the exact same server-side logic the Actions workflow invokes,
+unified into one script instead of split between a CI rsync step and this script.
 
 - **control-plane**: tag `:prev` → `docker build` → migration gate (fail-closed) →
   `compose up -d --force-recreate` → health check → edition smoke gate (auto-rolls back on
