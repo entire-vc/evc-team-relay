@@ -69,7 +69,33 @@ permissions:
   contents: read
 
 jobs:
+  # ── Gate: do not ship control-plane code that does not lint and pass tests ──
+  #
+  # Until this landed, deploy.yml had NO relationship to ci.yml — no `needs:`,
+  # no `workflow_run`, and branch protection carries no required_status_checks.
+  # So `main` sat red for 17 straight days (since 2026-07-09) while every push
+  # deployed to production regardless. A check that gates nothing also hides new
+  # breakage, because a job that is always red is a job nobody reads.
+  #
+  # This runs the SAME reusable definition ci.yml runs, so the gate cannot drift
+  # from CI. It is scoped to the control-plane on purpose: the deploy job below
+  # rsyncs `apps/control-plane/` and calls `deploy.sh control-plane`, so the
+  # svelte jobs are not in this deploy's blast radius and must not be able to
+  # block it. web-publish is still deployed by hand; when it gets an automated
+  # path it gets its own gate, not a share of this one.
+  #
+  # Cost: ~10 min (pytest) added before prod is touched. That is the price of
+  # not shipping untested code, and it is paid in parallel with nothing else —
+  # the on-server migration gate and edition smoke gate in scripts/deploy.sh
+  # still run after this, and still fail closed with a rollback to `:prev`.
+  #
+  # A gate can only fail closed: if these checks fail, prod keeps running the
+  # previous image and the deploy workflow goes red with the reason.
+  gate:
+    uses: ./.github/workflows/checks-control-plane.yml
+
   deploy:
+    needs: [gate]
     runs-on: ubuntu-latest
     environment: production
     env:
