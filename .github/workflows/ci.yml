@@ -52,6 +52,15 @@ jobs:
 
   typecheck-svelte:
     runs-on: ubuntu-latest
+    # apps/web-publish/.npmrc points @entire-vc/* at npm.pkg.github.com, so
+    # `npm ci` needs a token that may read this org's packages. Without it npm
+    # sends no credential and GitHub Packages answers 401 "unauthenticated" —
+    # which is exactly how this job and test-svelte were born red on 2026-07-09
+    # (#104) and stayed red for every run after. Same fix the web-publish Docker
+    # build already got in #30, just applied to the bare-runner jobs too.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +72,10 @@ jobs:
 
       - name: Install deps
         working-directory: apps/web-publish
+        # .npmrc reads the token from ${GITHUB_TOKEN}; an unset var expands to
+        # an empty _authToken, which npm sends as an anonymous request.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Typecheck
@@ -71,6 +84,10 @@ jobs:
 
   test-svelte:
     runs-on: ubuntu-latest
+    # See typecheck-svelte above: private @entire-vc packages need packages:read.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +99,8 @@ jobs:
 
       - name: Install deps
         working-directory: apps/web-publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Run tests
