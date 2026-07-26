@@ -82,13 +82,18 @@ one is missing or empty.
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `TW_RELAY_SSH_KEY` | ✅ | Private half of the dedicated `ghdeploy-team-relay@hel01-20260726` ed25519 deploy key. Public half is in `tr-relay-vm:~/.ssh/authorized_keys` **and** in `hel01:/home/ghdeploy/.ssh/authorized_keys` (restricted, see network note). |
-| `TW_RELAY_HOST` | ✅ | Deploy host address — `10.10.10.40` (`tr-relay-vm`, current prod). |
-| `TW_RELAY_USER` | ✅ | SSH user on the target with permission to run `docker` — `root`. |
-| `TW_RELAY_PROXY_HOST` | ✅ | ProxyJump host — `66.151.34.194` (hel01). |
-| `TW_RELAY_PROXY_USER` | ✅ | ProxyJump user — `ghdeploy`. |
-| `TW_RELAY_PORT` | — | SSH port on the target. Defaults to `22`. |
-| `TW_RELAY_PATH` | — | Deploy root on the server. Defaults to `/opt/relay`. |
-| `TW_RELAY_KNOWN_HOSTS_B64` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`), **base64-encoded**. Unlike the previous revision there is no TOFU fallback — an unknown or changed host key fails the deploy. |
+| `TW_RELAY_KNOWN_HOSTS_B64` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`), **base64-encoded**. There is no TOFU fallback — an unknown or changed host key fails the deploy. |
+
+Only those two. Everything else the job needs — `TARGET_HOST`, `TARGET_USER`, `TARGET_PORT`,
+`PROXY_HOST`, `PROXY_USER`, `RELAY_DIR` — lives in plain `env:` at the top of the job, matching
+evc-spark's `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PATH`.
+
+> **Why they are not secrets.** None of them are sensitive: the target IP is named in this very
+> document, in the workflow's own header comment, and in the fleet CLAUDE.md. Storing them as
+> secrets was actively harmful — GitHub masks every secret as `***` in run logs, so when
+> `TW_RELAY_HOST` turned out to hold two stray characters (13 bytes for an 11-byte address), the
+> resulting `no pinned host key` failure was impossible to diagnose from the run output. Plain
+> `env:` keeps the logs readable and puts the value under code review.
 
 > ⚠️ **Why that one is base64 and the SSH key is not.** A raw multi-line value does not
 > round-trip reliably through `gh secret set` — the first cut of this workflow uploaded a
