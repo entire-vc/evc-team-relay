@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
+import { renderMarkdown } from '$lib/markdown';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -67,11 +68,11 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 		const isFolder = share.kind === 'folder';
 		let content: string | null = null;
 		let readmeContent: string | null = null;
+		const folderItems = isFolder ? (share.web_folder_items || []) : [];
 
 		if (!isFolder) {
 			content = share.web_content ?? `# ${share.path}\n\n> **Content not yet synced**\n>\n> Refresh after syncing from Obsidian.`;
 		} else {
-			const folderItems = share.web_folder_items || [];
 			const readmePath = findReadme(folderItems);
 
 			if (readmePath) {
@@ -87,6 +88,16 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			}
 		}
 
+		// Render markdown to HTML server-side so the document body is present in the
+		// SSR output (non-JS crawlers/AI scrapers/social unfurlers never run the
+		// client-side render in MarkdownViewer's onMount) — TR-37.
+		const contentHtml = content
+			? await renderMarkdown(content, { slug: share.web_slug, folderItems })
+			: null;
+		const readmeHtml = readmeContent
+			? await renderMarkdown(readmeContent, { slug: share.web_slug, folderItems })
+			: null;
+
 		const sessionToken = share.visibility === 'protected' && isAuthenticated
 			? cookies.get('web_session')
 			: undefined;
@@ -94,9 +105,11 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 		return {
 			share,
 			content,
+			contentHtml,
 			isFolder,
-			folderItems: isFolder ? (share.web_folder_items || []) : [],
+			folderItems,
 			readmeContent,
+			readmeHtml,
 			needsPassword,
 			sessionToken,
 			authToken,

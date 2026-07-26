@@ -190,3 +190,63 @@ describe('estimateReadingTime', () => {
 		expect(estimateReadingTime(md)).toBe(estimateReadingTime(noFm));
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Concurrent-call isolation (TR-37)
+// ---------------------------------------------------------------------------
+// renderMarkdown() now runs inside SvelteKit's server load(), where one Node
+// process serves many requests concurrently. Math and embed/slug resolution
+// used to go through module-level mutable state (mathStore, _renderContext)
+// that a second concurrent call would reset/overwrite mid-render, bleeding
+// one document's content into another's. These prove two overlapping calls
+// never cross-contaminate.
+// ---------------------------------------------------------------------------
+
+describe('renderMarkdown — concurrent-call isolation', () => {
+	it('does not cross-contaminate math between two concurrent renders', async () => {
+		const docA = '$$x^2$$';
+		const docB = '$$y^3$$';
+
+		const [htmlA, htmlB] = await Promise.all([
+			renderMarkdown(docA),
+			renderMarkdown(docB)
+		]);
+
+		expect(htmlA).toContain('x^2');
+		expect(htmlA).not.toContain('y^3');
+		expect(htmlB).toContain('y^3');
+		expect(htmlB).not.toContain('x^2');
+	});
+
+	it('does not cross-contaminate embed/slug resolution between two concurrent renders', async () => {
+		const doc = '![[photo.png]]';
+
+		const [htmlA, htmlB] = await Promise.all([
+			renderMarkdown(doc, { slug: 'slug-A', folderItems: [] }),
+			renderMarkdown(doc, { slug: 'slug-B', folderItems: [] })
+		]);
+
+		expect(htmlA).toContain('/slug-A/_assets/photo.png');
+		expect(htmlA).not.toContain('/slug-B/_assets/photo.png');
+		expect(htmlB).toContain('/slug-B/_assets/photo.png');
+		expect(htmlB).not.toContain('/slug-A/_assets/photo.png');
+	});
+
+	it('does not cross-contaminate across many concurrent renders with mixed content', async () => {
+		const inputs = Array.from({ length: 10 }, (_, i) => ({
+			slug: `slug-${i}`,
+			math: `${i}^2`
+		}));
+
+		const results = await Promise.all(
+			inputs.map((input) =>
+				renderMarkdown(`![[photo.png]]\n\n$$${input.math}$$`, { slug: input.slug, folderItems: [] })
+			)
+		);
+
+		results.forEach((html, i) => {
+			expect(html).toContain(`/slug-${i}/_assets/photo.png`);
+			expect(html).toContain(inputs[i].math);
+		});
+	});
+});

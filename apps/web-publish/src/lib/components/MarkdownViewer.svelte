@@ -1,20 +1,35 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { browser } from '$app/environment';
 	import { renderMarkdown } from '$lib/markdown';
 
 	interface Props {
 		content: string;
+		/**
+		 * Pre-rendered HTML for the initial paint, produced server-side (e.g. in a
+		 * +page.server.ts load()). Without this, the body only ever renders in
+		 * onMount/$effect — both browser-only — so SSR output (what non-JS
+		 * crawlers/AI scrapers/social unfurlers see) has no content at all (TR-37).
+		 */
+		initialHtml?: string;
 		class?: string;
 		slug?: string;
 		folderItems?: Array<{ path: string; name: string; type: string; content?: string }>;
 	}
 
-	let { content, class: className = '', slug, folderItems }: Props = $props();
+	let { content, initialHtml, class: className = '', slug, folderItems }: Props = $props();
 
-	let renderedHtml = $state('');
-	let isRendering = $state(true);
+	// These deliberately capture only the value initialHtml/content had when this
+	// component was created (an SSR seed, not a value that should reset already-
+	// rendered content if the parent's props happen to change later) — untrack()
+	// makes that one-time-snapshot intent explicit instead of a missed dependency.
+	let renderedHtml = $state(untrack(() => initialHtml ?? ''));
+	let isRendering = $state(untrack(() => initialHtml === undefined));
 	let contentEl: HTMLDivElement | undefined = $state();
+	// Tracks the content we've last rendered client-side, so the initial $effect run
+	// doesn't redundantly re-render (and flash the skeleton) when initialHtml already
+	// covers the current content.
+	let lastRenderedContent = untrack(() => (initialHtml !== undefined ? content : undefined));
 
 	/**
 	 * Initialize mermaid diagrams in the rendered content.
@@ -111,38 +126,39 @@
 		});
 	}
 
-	onMount(async () => {
+	async function renderAndEnhance() {
+		isRendering = true;
 		try {
 			renderedHtml = await renderMarkdown(content, { slug, folderItems });
-			await tick();
-			await initMermaid();
-			attachDelegatedHandlers();
 		} catch (error) {
 			console.error('Failed to render markdown:', error);
 			renderedHtml = '<p class="error">Failed to render document</p>';
 		} finally {
 			isRendering = false;
 		}
+		await tick();
+		await initMermaid();
+		attachDelegatedHandlers();
+	}
+
+	onMount(() => {
+		// initialHtml already covers the current content (server-rendered) — just
+		// wire up the client-only enhancements against the existing DOM.
+		if (initialHtml !== undefined) {
+			void (async () => {
+				await tick();
+				await initMermaid();
+				attachDelegatedHandlers();
+			})();
+		}
 	});
 
-	// Re-render when content changes
+	// Render on first mount when there's no server-rendered HTML to start from, and
+	// re-render whenever content changes thereafter (e.g. live edits).
 	$effect(() => {
-		if (content) {
-			isRendering = true;
-			renderMarkdown(content, { slug, folderItems })
-				.then(async (html) => {
-					renderedHtml = html;
-					await tick();
-					await initMermaid();
-					attachDelegatedHandlers();
-				})
-				.catch((error) => {
-					console.error('Failed to render markdown:', error);
-					renderedHtml = '<p class="error">Failed to render document</p>';
-				})
-				.finally(() => {
-					isRendering = false;
-				});
+		if (content && content !== lastRenderedContent) {
+			lastRenderedContent = content;
+			void renderAndEnhance();
 		}
 	});
 </script>

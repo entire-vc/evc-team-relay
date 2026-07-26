@@ -209,6 +209,76 @@ describe('load() — private share', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Server-rendered HTML body (TR-37)
+// ---------------------------------------------------------------------------
+// MarkdownViewer only ever rendered the body in onMount/$effect (browser-only),
+// so a non-JS crawler/AI scraper got a body-less HTML shell. load() must render
+// the markdown to HTML itself so the SSR output has real content.
+// ---------------------------------------------------------------------------
+
+describe('load() — server-rendered HTML (contentHtml/readmeHtml)', () => {
+	it('returns contentHtml rendered from the document body', async () => {
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({ visibility: 'public', web_content: '# Hello\n\nWorld.' })
+		);
+
+		const data = await load({
+			params: { slug: 'test-slug' },
+			cookies: makeCookies(),
+			url: makeUrl()
+		});
+
+		expect(data.contentHtml).toMatch(/<h1[^>]*>Hello<\/h1>/);
+		expect(data.contentHtml).toContain('World.');
+	});
+
+	it('returns readmeHtml rendered from a folder README', async () => {
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({
+				kind: 'folder',
+				visibility: 'public',
+				web_content: null,
+				web_folder_items: [{ path: 'README.md', name: 'README.md', type: 'doc' }]
+			})
+		);
+		vi.mocked(api.getFolderFileContent).mockResolvedValue({
+			path: 'README.md',
+			name: 'README.md',
+			type: 'doc',
+			content: '# Folder Overview'
+		});
+
+		const data = await load({
+			params: { slug: 'test-slug' },
+			cookies: makeCookies(),
+			url: makeUrl()
+		});
+
+		expect(data.readmeHtml).toMatch(/<h1[^>]*>Folder Overview<\/h1>/);
+	});
+
+	it('readmeHtml is null when the folder has no README', async () => {
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({
+				kind: 'folder',
+				visibility: 'public',
+				web_content: null,
+				web_folder_items: [{ path: 'notes.md', name: 'notes.md', type: 'doc' }]
+			})
+		);
+
+		const data = await load({
+			params: { slug: 'test-slug' },
+			cookies: makeCookies(),
+			url: makeUrl()
+		});
+
+		expect(data.readmeHtml).toBeNull();
+		expect(data.contentHtml).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // 404 — unknown share
 // ---------------------------------------------------------------------------
 

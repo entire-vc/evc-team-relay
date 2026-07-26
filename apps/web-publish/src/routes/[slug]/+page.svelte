@@ -186,7 +186,7 @@
 				<div class="flex-1 min-w-0 max-w-[800px]">
 					{#if data.readmeContent}
 						<!-- Show README.md content -->
-						<MarkdownViewer content={data.readmeContent} slug={data.share.web_slug} folderItems={data.folderItems} />
+						<MarkdownViewer content={data.readmeContent} initialHtml={data.readmeHtml || undefined} slug={data.share.web_slug} folderItems={data.folderItems} />
 					{:else if data.folderItems.length === 0}
 						<Card class="text-center border-dashed">
 							<CardHeader class="pb-2">
@@ -235,6 +235,7 @@
 					{#if hasRealtimeSync}
 						<LiveMarkdownViewer
 							content={data.content || ''}
+							initialHtml={data.contentHtml || undefined}
 							docId={data.share.web_doc_id}
 							slug={data.share.web_slug}
 							sessionToken={data.sessionToken}
@@ -250,7 +251,7 @@
 							folderItems={data.folderItems}
 						/>
 					{:else}
-						<MarkdownViewer content={data.content || ''} slug={data.share.web_slug} folderItems={data.folderItems} />
+						<MarkdownViewer content={data.content || ''} initialHtml={data.contentHtml || undefined} slug={data.share.web_slug} folderItems={data.folderItems} />
 					{/if}
 				</div>
 			</div>
