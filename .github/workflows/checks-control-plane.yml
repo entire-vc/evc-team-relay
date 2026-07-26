@@ -1,0 +1,60 @@
+name: Checks (control-plane)
+
+# The control-plane's lint + test suite, factored out of ci.yml so that ci.yml
+# and deploy.yml run the SAME checks instead of two copies that drift.
+#
+# Why this exists: until 2026-07-26 `deploy.yml` shipped to production on every
+# push to main with no relationship to `ci.yml` whatsoever — no `needs:`, no
+# `workflow_run`, and no `required_status_checks` in branch protection. CI was
+# red on every run for 17 days and deployed anyway, because nothing connected
+# the two. Making both callers depend on one reusable definition is what turns
+# "CI is green" into an actual precondition for reaching prod.
+#
+# Scope is deliberately control-plane only — NOT the svelte jobs. deploy.yml
+# rsyncs `apps/control-plane/` and runs `deploy.sh control-plane`; it does not
+# ship web-publish at all. Gating a backend deploy on a frontend test would
+# block correct deploys for an unrelated failure. When web-publish gets its own
+# automated deploy path, it gets its own gate alongside this one.
+
+on:
+  workflow_call:
+
+jobs:
+  lint-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Lint with Ruff
+        working-directory: apps/control-plane
+        run: |
+          uv sync --extra dev --extra test
+          uv run ruff check app/ tests/
+          uv run ruff format --check app/ tests/
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run tests
+        working-directory: apps/control-plane
+        run: |
+          uv sync --extra dev --extra test
+          uv run pytest -v --tb=short
