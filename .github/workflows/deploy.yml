@@ -87,13 +87,17 @@ jobs:
       TARGET_PORT: '22'
       PROXY_HOST: 66.151.34.194
       PROXY_USER: ghdeploy
+      # Fingerprint of ghdeploy-team-relay@hel01-20260726. Pinned so a truncated,
+      # swapped or rotated key fails with that fact stated, instead of as an
+      # anonymous "Permission denied (publickey)".
+      DEPLOY_KEY_FINGERPRINT: 'SHA256:5DdPar8rAhyfVMEs42EN0zYRFA8a5DDdzMEtsx/cc+E'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configure SSH (ProxyJump through hel01 into the private network)
         env:
-          SSH_KEY: ${{ secrets.TW_RELAY_SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.TW_RELAY_SSH_KEY_B64 }}
           KNOWN_HOSTS_B64: ${{ secrets.TW_RELAY_KNOWN_HOSTS_B64 }}
         run: |
           set -euo pipefail
@@ -101,7 +105,7 @@ jobs:
           # Fail closed on a missing secret. Without this an empty HOST would
           # turn into an ssh to nowhere with a confusing error three steps later.
           missing=""
-          for v in SSH_KEY KNOWN_HOSTS_B64; do
+          for v in SSH_KEY_B64 KNOWN_HOSTS_B64; do
             [ -n "${!v:-}" ] || missing="$missing $v"
           done
           if [ -n "$missing" ]; then
@@ -110,8 +114,27 @@ jobs:
           fi
 
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/tr_deploy
+
+          # Both secrets travel base64-encoded, for the same reason: a raw
+          # multi-line value does NOT survive `gh secret set` intact. Measured on
+          # this repo: a 12-line known_hosts arrived as its last line only, and a
+          # 432-byte/8-line private key arrived as 418 bytes/7 lines. Base64 is a
+          # single line, so there is nothing to truncate.
+          printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/tr_deploy
           chmod 600 ~/.ssh/tr_deploy
+
+          # Assert the key is the one we expect. Without this, every way the key
+          # can be wrong — truncated, rotated, replaced — surfaces identically as
+          # "Permission denied (publickey)" from a host that cannot tell you why.
+          actual_fp="$(ssh-keygen -y -f ~/.ssh/tr_deploy 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+          if [ -z "$actual_fp" ]; then
+            echo "::error::TW_RELAY_SSH_KEY_B64 did not decode into a usable private key"
+            exit 1
+          fi
+          if [ "$actual_fp" != "$DEPLOY_KEY_FINGERPRINT" ]; then
+            echo "::error::deploy key fingerprint mismatch: got $actual_fp, expected $DEPLOY_KEY_FINGERPRINT"
+            exit 1
+          fi
 
           # Pinned host keys for BOTH hops, with StrictHostKeyChecking on, so a
           # MITM on either hop fails the job instead of silently deploying
