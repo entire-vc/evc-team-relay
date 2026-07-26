@@ -88,7 +88,22 @@ one is missing or empty.
 | `TW_RELAY_PROXY_USER` | ✅ | ProxyJump user — `ghdeploy`. |
 | `TW_RELAY_PORT` | — | SSH port on the target. Defaults to `22`. |
 | `TW_RELAY_PATH` | — | Deploy root on the server. Defaults to `/opt/relay`. |
-| `TW_RELAY_KNOWN_HOSTS` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`). Unlike the previous revision there is no TOFU fallback — an unknown or changed host key fails the deploy. |
+| `TW_RELAY_KNOWN_HOSTS_B64` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`), **base64-encoded**. Unlike the previous revision there is no TOFU fallback — an unknown or changed host key fails the deploy. |
+
+> ⚠️ **Why that one is base64 and the SSH key is not.** A raw multi-line value does not
+> round-trip reliably through `gh secret set` — the first cut of this workflow uploaded a
+> 12-line `known_hosts` and the runner received only its **last** line, leaving the ProxyJump
+> hop entirely unpinned. (The multi-line `TW_RELAY_SSH_KEY` was measured arriving intact at 418
+> bytes / 6 newlines, so this is not a blanket rule about multi-line secrets.) Regenerate with:
+>
+> ```bash
+> { ssh-keyscan -t rsa,ecdsa,ed25519 66.151.34.194
+>   ssh hel01 'ssh-keyscan -t rsa,ecdsa,ed25519 10.10.10.40'
+> } | base64 | tr -d '\n' | gh secret set TW_RELAY_KNOWN_HOSTS_B64 -R entire-vc/evc-team-relay
+> ```
+>
+> The workflow does not trust the value either way: after decoding it asserts with
+> `ssh-keygen -F` that **both** hops are actually pinned, and refuses to deploy otherwise.
 
 > **Network note.** `tr-relay-vm` (`10.10.10.40`) has no public address; it sits on the private
 > Helsinki network (`vmbr1`, `10.10.10.0/24`) behind hel01 (`66.151.34.194`). The workflow reaches
