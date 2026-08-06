@@ -84,6 +84,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:
@@ -98,6 +99,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:
@@ -142,6 +144,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:
@@ -160,6 +163,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:
@@ -186,6 +190,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:
@@ -207,6 +212,7 @@ services:
     build:
       context: ../apps/control-plane
       dockerfile: Dockerfile
+    image: infra-control-plane:latest
     env_file:
       - ./.env
     environment:

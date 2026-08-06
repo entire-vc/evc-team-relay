@@ -48,7 +48,8 @@ On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh).
    (syncs only the app source; never touches the server-managed `docker-compose.yml` / `.env`).
 3. Runs `scripts/deploy.sh` over SSH, which on the server: tags the current image as
    `:prev`, builds `infra-control-plane:latest`, runs the **migration gate**, and — only on
-   gate success — `docker compose up -d control-plane webhook-worker email-worker`.
+   gate success — `docker compose up -d control-plane webhook-worker email-worker
+   listmonk-sync-worker lifecycle-worker`.
 
 **Fail-closed guarantee.** `scripts/deploy.sh` runs under `set -euo pipefail` and the migration
 gate is an explicit check:
@@ -57,7 +58,7 @@ gate is an explicit check:
 if ! docker compose run --rm control-plane-migrate; then
   die "MIGRATION GATE FAILED — app NOT restarted ..."   # exits non-zero
 fi
-docker compose up -d control-plane webhook-worker email-worker   # unreachable on failure
+docker compose up -d control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker   # unreachable on failure
 ```
 
 A non-zero exit from `alembic upgrade head` ends the script (and fails the workflow step)
@@ -208,7 +209,7 @@ docker build -t infra-control-plane:latest control-plane-src/
 docker compose run --rm control-plane-migrate
 
 # 5. Restart app services ONLY after migrate exits 0
-docker compose up -d control-plane webhook-worker email-worker
+docker compose up -d control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker
 ```
 
 Using `docker compose up -d` (whole stack) is also safe: the `depends_on:
@@ -248,7 +249,7 @@ docker compose up -d --force-recreate web-publish
 
 ```bash
 # 1. Stop app services (keep postgres and minio running — do NOT stop the DB)
-docker compose stop control-plane webhook-worker email-worker
+docker compose stop control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker
 
 # 2. Restore previous image
 docker tag infra-control-plane:prev infra-control-plane:latest
@@ -258,8 +259,12 @@ docker compose run --rm control-plane-migrate python -m alembic current
 docker compose run --rm control-plane-migrate python -m alembic downgrade <safe-revision>
 
 # 4. Restart with restored image
-docker compose up -d control-plane webhook-worker email-worker
+docker compose up -d control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker
 ```
+
+Since 2026-08-06 all five services (`control-plane`, `webhook-worker`, `email-worker`,
+`listmonk-sync-worker`, `lifecycle-worker`) share the single `infra-control-plane:latest` tag —
+step 2 rolls back all five at once, by construction. There is no per-worker `:prev` tag to manage.
 
 **web-publish** (no migrations to revert):
 
@@ -285,6 +290,19 @@ docker compose run --rm control-plane-migrate python -m alembic history
 
 ## docker-compose.yml gate
 
+**All six control-plane-family services MUST share one image tag: `infra-control-plane:latest`.**
+`control-plane`, `control-plane-migrate`, `webhook-worker`, `email-worker`,
+`listmonk-sync-worker`, and `lifecycle-worker` all run the exact same image — only `command:`
+differs. `scripts/deploy.sh` only ever builds and tags `infra-control-plane:latest` (step 2 of
+`deploy_control_plane`); it never builds anything else. Any service in this family declaring its
+own distinct `image:` (e.g. `infra-webhook-worker:latest`) will **never be rebuilt by the deploy
+pipeline** — it sits on whatever content it had the day someone first `docker build`-ed that tag
+by hand, silently drifting from the rest of the fleet. This is exactly what happened
+2026-07-25 → 2026-08-06: the four workers held `cryptography==48.0.1` while `control-plane` had
+already moved to `50.0.0` (task `#148cdf9e`). Every `up -d --force-recreate` looked successful —
+the containers restarted fine — because recreate only swaps which image tag a container runs,
+it does not rebuild that tag.
+
 The production `docker-compose.yml` must include:
 
 ```yaml
@@ -301,6 +319,7 @@ control-plane-migrate:
   restart: "no"
 
 control-plane:
+  image: infra-control-plane:latest
   depends_on:
     postgres:
       condition: service_healthy
@@ -308,20 +327,56 @@ control-plane:
       condition: service_completed_successfully   # <-- fail-closed gate
     minio-init:
       condition: service_completed_successfully
+
+webhook-worker:
+  image: infra-control-plane:latest        # <-- same tag as control-plane, NOT infra-webhook-worker
+  command: ["python", "-m", "app.workers.webhook_worker"]
+
+email-worker:
+  image: infra-control-plane:latest        # <-- same tag, NOT infra-email-worker
+  command: ["python", "-m", "app.workers.email_worker"]
+
+listmonk-sync-worker:
+  image: infra-control-plane:latest        # <-- same tag, NOT infra-listmonk-sync-worker
+  command: ["python", "-m", "app.workers.listmonk_sync_worker"]
+
+lifecycle-worker:
+  image: infra-control-plane:latest        # <-- same tag, NOT infra-lifecycle-worker
+  command: ["python", "-m", "app.workers.lifecycle_worker"]
 ```
 
-The same `service_completed_successfully` guard applies to `webhook-worker` and `email-worker`
-(they depend on `control-plane` which transitively requires migrate to succeed).
+The same `service_completed_successfully` guard applies to every worker (they either depend on
+`control-plane` directly, or transitively require `control-plane-migrate` to succeed).
+
+**Verifying the gate holds** (agent-runnable, no eyeballing):
+
+```bash
+ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webhook-worker-1 relay-listmonk-sync-worker-1 relay-lifecycle-worker-1; do echo -n \"\$c: \"; docker exec \$c python -c 'import cryptography;print(cryptography.__version__)'; done"
+# all five lines must print the same version
+```
 
 ---
 
 ## Notes & limitations
 
 - **Server-managed compose.** The production `docker-compose.yml` lives on `tr-relay-vm`
-  (`/opt/relay/`) and uses `image: infra-control-plane:latest` (built locally), whereas the
-  repo's `infra/docker-compose.yml` is the `build:`-context variant of the same gate. The deploy
-  pipeline deliberately syncs **only** `apps/control-plane/` → `control-plane-src/` and leaves
-  the server's compose file and `.env` alone.
+  (`/opt/relay/`) and uses `image: infra-control-plane:latest` (built locally) on all six
+  control-plane-family services, whereas the repo's `infra/docker-compose.yml` is the
+  `build:`-context variant of the same gate (each service keeps its own `build:` block for
+  self-contained local/self-hosted bring-up, but all six also tag `image: infra-control-plane:latest`
+  so a rebuild-then-recreate cycle can't leave one service behind — see §docker-compose.yml gate).
+  The deploy pipeline deliberately syncs **only** `apps/control-plane/` → `control-plane-src/` and
+  leaves the server's compose file and `.env` alone — this means fixing the compose *structure*
+  (as opposed to the app source) always requires a manual edit on `tr-relay-vm` itself, backed up
+  first (`cp docker-compose.yml docker-compose.yml.bak-<ts>-<reason>`).
+- **Worker image consolidation (2026-08-06, task `#148cdf9e`).** Before this date `webhook-worker`,
+  `email-worker`, `listmonk-sync-worker`, and `lifecycle-worker` each had their own `image:` tag
+  (`infra-webhook-worker:latest` etc.), built once by hand and never touched again by
+  `scripts/deploy.sh` — 12 days of dependency drift went undetected because `--force-recreate`
+  makes a stale container look freshly deployed. All four now share `infra-control-plane:latest`
+  with `control-plane`; the old per-worker tags are left on the host (unused, not deleted) as a
+  rollback path. The old tags will accumulate as dead weight — safe to `docker rmi` them after a
+  few successful deploys confirm the new tag is stable.
 - **web-publish** is covered by `scripts/deploy.sh web-publish` (see above) — merges to
   `apps/web-publish/` do NOT deploy themselves; someone has to run the script. This was a real gap
   (task `c3f38d9a`): three merged fixes sat undeployed for up to 3 days because nothing rebuilt the

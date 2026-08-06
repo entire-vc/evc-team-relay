@@ -111,7 +111,7 @@ deploy_control_plane() {
   fi
 
   log "restarting app services"
-  docker compose up -d --force-recreate control-plane webhook-worker email-worker
+  docker compose up -d --force-recreate control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker
 
   # 5. Post-deploy health check (best-effort, non-fatal — restart already issued).
   log "waiting for control-plane health"
@@ -147,7 +147,7 @@ deploy_control_plane() {
     printf '\n\033[1;31m!! EDITION SMOKE GATE FAILED: edition=%s billing_enabled=%s\033[0m\n' "$_edition" "$_billing" >&2
     printf '\033[1;31m!! Rolling back to infra-control-plane:prev\033[0m\n' >&2
     docker tag infra-control-plane:prev "$image" 2>/dev/null || true
-    docker compose up -d --force-recreate control-plane webhook-worker email-worker 2>/dev/null || true
+    docker compose up -d --force-recreate control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker 2>/dev/null || true
     die "Edition smoke gate failed — rolled back to prev image. Prod /server/info must return edition=enterprise + billing_enabled=true. This repo's main IS the enterprise source (settled in TR·edition/billing #f75f04bb, byte-diffed against /opt/relay/control-plane-src), so a community reading here means the built image or its runtime env drifted — check the build args and $RELAY_DIR/.env, not which repo the source came from."
   fi
   log "smoke gate PASSED: edition=enterprise billing_enabled=true"
