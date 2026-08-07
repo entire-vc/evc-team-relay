@@ -58,3 +58,59 @@ jobs:
         run: |
           uv sync --extra dev --extra test
           uv run pytest -v --tb=short
+
+  alembic-migration-smoke:
+    # Fresh-DB migration smoke — nothing else in this workflow exercises the
+    # alembic graph against a real database. Without this, a broken revision
+    # chain (a down_revision pointing at a script that doesn't exist) only
+    # ever surfaces on a self-hoster's first `alembic upgrade head` against an
+    # empty database — prod never notices, because prod's alembic_version is
+    # already past the break. That's exactly what shipped in v1.9.0 for two
+    # months (GH #177 / Mesh #1ca96abc): every fresh install failed at
+    # `KeyError: '202602190001'` before creating a single table.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: control_plane
+          POSTGRES_PASSWORD: control_plane
+          POSTGRES_DB: control_plane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://control_plane:control_plane@localhost:5432/control_plane
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install deps
+        working-directory: apps/control-plane
+        run: uv sync --extra dev --extra test
+
+      - name: Migration graph integrity (exactly one head)
+        working-directory: apps/control-plane
+        run: |
+          heads=$(uv run alembic heads)
+          echo "$heads"
+          count=$(grep -c '(head)' <<< "$heads")
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly 1 alembic head, found $count — resolve the split before merging"
+            exit 1
+          fi
+
+      - name: Fresh-DB alembic upgrade head
+        working-directory: apps/control-plane
+        run: uv run alembic upgrade head
