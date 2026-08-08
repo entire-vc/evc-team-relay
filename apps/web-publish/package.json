@@ -47,7 +47,7 @@
     "marked-footnote": "^1.4.0",
     "marked-highlight": "^2.2.4",
     "mermaid": "^11.16.1",
-    "tailwind-merge": "^2.6.1",
+    "tailwind-merge": "^3.6.0",
     "y-websocket": "^2.0.4",
     "yjs": "^13.6.31"
   },
