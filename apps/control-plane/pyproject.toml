@@ -30,7 +30,7 @@ dependencies = [
     "prometheus-client>=0.20.0,<1.0",
     "python-json-logger>=2.0.0,<5.0",
     # CBOR Web Token (CWT) support for y-sweet relay-server — built manually via cbor2 (cwt lib unused, removed to allow cryptography>=46)
-    "cbor2>=5.6.0,<6.0",
+    "cbor2>=5.6.0,<7.0",
     # MinIO for asset storage
     "minio>=7.2.0,<8.0",
 ]
