@@ -10,7 +10,11 @@ import re
 from datetime import datetime
 from datetime import timezone as _tz
 from uuid import UUID
-from xml.sax.saxutils import escape
+
+# escape() only character-escapes a string we build for XML *output* (the
+# sitemap <loc> entry below) — it never parses XML, so the XXE/entity-expansion
+# risk use-defused-xml exists to catch does not apply here.
+from xml.sax.saxutils import escape  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from minio import Minio
