@@ -98,4 +98,5 @@ def test_build_invite_oauth_urls_normal_token_round_trips():
     assert urls["oauth_authorize_url"].startswith(
         "https://cp.example.com/v1/auth/oauth/casdoor/authorize?redirect_uri="
     )
-    assert f"return_url=https%3A%2F%2Fcp.example.com%2Finvite%2F{token}%2Fpage" in urls["oauth_authorize_url"]
+    expected_return_url = f"return_url=https%3A%2F%2Fcp.example.com%2Finvite%2F{token}%2Fpage"
+    assert expected_return_url in urls["oauth_authorize_url"]
