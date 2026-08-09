@@ -16,5 +16,12 @@ COPY alembic.ini /app/alembic.ini
 
 RUN pip install --upgrade pip && pip install --no-cache-dir .
 
+# Non-root runtime user. admin_ui.py writes uploaded favicons/logos to
+# app/static/uploads at runtime, so that path needs to be writable by it.
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    mkdir -p /app/app/static/uploads && \
+    chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
