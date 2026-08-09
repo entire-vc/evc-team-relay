@@ -45,10 +45,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         # else reaching here (a real but malformed stored hash) is more
         # likely a genuine data issue, so log it — the alternative is an
         # ordinary-looking 401 with zero trace of the underlying corruption.
+        # Log only the exception type, never str(e) — passlib's ValueError
+        # message can echo back the malformed hash it failed to parse, and
+        # this is password-verification code. Rule still fires on proximity
+        # to plain_password/hashed_password in scope; nothing secret is
+        # actually interpolated below (only the exception's type name).
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         logger.warning(
-            "Password verification failed on an unverifiable hash (%s: %s)",
+            "Password verification failed on an unverifiable hash (%s)",
             type(e).__name__,
-            e,
         )
         return False
 

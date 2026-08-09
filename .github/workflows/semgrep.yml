@@ -1,0 +1,28 @@
+name: semgrep
+# SAST for private repo (no GHAS license needed). Owner: Garfield (CI 1.9).
+# semgrep ci is diff-aware on PRs: only NEW findings vs. merge-base fail the check.
+# The push-to-main run does a full audit scan (informational backlog view).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    # Skip on Dependabot PRs (no secrets / noisy).
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: semgrep ci
+        env:
+          SEMGREP_RULES: >-
+            p/security-audit p/secrets p/owasp-top-ten p/python

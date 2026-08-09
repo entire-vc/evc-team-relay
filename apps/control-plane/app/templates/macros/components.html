@@ -13,6 +13,10 @@
     'icon': 'btn-icon'
   } %}
   {% if href %}
+    {# This macro is not called anywhere yet (grep confirms zero callers) —
+       whoever wires it up must pass an already scheme-validated href
+       (reject javascript:/data:), same as every other href in this file. #}
+    <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
     <a href="{{ href }}"
        class="btn btn-{{ variant }} {{ size_classes[size] }} {{ class }}"
        {% if disabled %}aria-disabled="true" tabindex="-1"{% endif %}

@@ -14,6 +14,9 @@
 </div>
 
 <p style="text-align: center;">
+    <!-- invite_url = trusted base_url (get_base_url, never client headers) +
+         secrets.token_hex(32) — no attacker-controlled content. -->
+    <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
     <a href="{{ invite_url }}" class="button">Accept Invitation</a>
 </p>
 

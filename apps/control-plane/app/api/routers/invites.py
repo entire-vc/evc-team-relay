@@ -19,7 +19,7 @@ from app.schemas import invite as invite_schema
 from app.services import auth_service, invite_service, share_service
 from app.services.instance_settings_service import get_branding
 from app.services.notification_service import get_notification_service
-from app.utils.url import get_base_url
+from app.utils.url import build_invite_oauth_urls, get_base_url
 
 router = APIRouter(prefix="/shares", tags=["invites"])
 limiter = Limiter(key_func=get_remote_address)
@@ -216,15 +216,11 @@ def invite_page(
     invite_info = invite_service.get_invite_public_info(db, token)
     settings = get_settings()
 
-    # Build OAuth URLs with correct scheme (HTTPS behind proxy)
+    # Build OAuth URLs with correct scheme (HTTPS behind proxy) — see
+    # build_invite_oauth_urls() docstring for why `token` is quoted here.
     base_url = get_base_url(request)
-    invite_page_url = f"{base_url}/invite/{token}/page"
-    oauth_callback_url = f"{base_url}/v1/auth/oauth/{settings.oauth_provider_name}/callback"
-    oauth_authorize_url = (
-        f"{base_url}/v1/auth/oauth/{settings.oauth_provider_name}/authorize"
-        f"?redirect_uri={oauth_callback_url}"
-        f"&return_url={invite_page_url}"
-    )
+    oauth_urls = build_invite_oauth_urls(base_url, token, settings.oauth_provider_name)
+    oauth_authorize_url = oauth_urls["oauth_authorize_url"]
 
     branding = get_branding(db)
     return templates.TemplateResponse(

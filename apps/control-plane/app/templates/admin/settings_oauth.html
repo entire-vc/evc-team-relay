@@ -47,6 +47,10 @@
             <td><code>OAUTH_ISSUER_URL</code></td>
             <td>
                 {% if oauth_config.issuer_url %}
+                <!-- oauth_config.issuer_url is settings.oauth_issuer_url: deploy-time
+                     env config, never DB/request data. Admin-only diagnostics page
+                     (get_current_admin_from_cookie). -->
+                <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
                 <a href="{{ oauth_config.issuer_url }}" target="_blank" rel="noopener">{{ oauth_config.issuer_url }}</a>
                 {% else %}
                 <span class="text-muted">Not set</span>

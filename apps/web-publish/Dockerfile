@@ -30,6 +30,10 @@ COPY --from=builder /app/build ./build
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
+# node:20-alpine ships a non-root "node" user (uid 1000) — use it instead of root
+RUN chown -R node:node /app
+USER node
+
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
