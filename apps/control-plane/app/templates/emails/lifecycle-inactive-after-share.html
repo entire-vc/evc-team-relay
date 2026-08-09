@@ -16,6 +16,10 @@ webpublish-публикации или при совместном редакт�
 
 <p style="font-size:12px;color:#999;margin-top:32px;padding-top:16px;border-top:1px solid #eee;">
     Отписаться от советов:
+    <!-- unsubscribe_url = settings.relay_public_url (deploy config) + an
+         HMAC-SHA256 hex digest (make_unsubscribe_token) — no attacker-
+         controlled content. -->
+    <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
     <a href="{{ unsubscribe_url }}" style="color:#999;">{{ unsubscribe_url }}</a>
 </p>
 {% endblock %}

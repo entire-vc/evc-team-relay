@@ -230,7 +230,13 @@
                             <!-- User needs to authenticate -->
                             {% if oauth_enabled %}
                                 <!-- OAuth Sign In -->
+                                <!-- oauth_authorize_url: base_url is trusted (get_base_url,
+                                     never client headers); the invite `token` path param
+                                     it's built from is quote()d by build_invite_oauth_urls()
+                                     before being embedded, so it can't inject an extra
+                                     query param/fragment. -->
                                 <div class="text-center">
+                                    <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
                                     <a href="{{ oauth_authorize_url }}"
                                        class="btn btn-primary btn-full">
                                         Sign in
