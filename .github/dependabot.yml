@@ -28,6 +28,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    ignore:
+      # @sveltejs/kit 2.x declares peerDependencies.typescript = "^5.3.3 || ^6.0.0".
+      # TypeScript 7 is outside that range → npm ci fails on ERESOLVE before typecheck (PR #183).
+      # LIFT when SvelteKit widens the range to 7.x — check with one command:
+      #   npm view @sveltejs/kit peerDependencies.typescript
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
 
   # GitHub Actions workflows
   - package-ecosystem: "github-actions"
