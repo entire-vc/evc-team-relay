@@ -884,3 +884,75 @@ class TestInviteAuditLogs:
         log = redeemed_logs[0]
         assert log["details"]["role"] == "viewer"
         assert log["details"]["is_new_user"] is True
+
+
+class TestInviteSSRPage:
+    """Regression tests for the SSR /invite/{token}/page + /accept flow.
+
+    #69689ba1: both endpoints called `templates.TemplateResponse(name, context)`
+    (the pre-Starlette-2.x positional form). Once the installed starlette version
+    stopped accepting it, `name` bound to the context dict and Jinja2 tried to use
+    it as an unhashable template-cache key -> 500 for every token, including
+    nonexistent ones (the handler never got as far as validating the token).
+    """
+
+    def test_invite_page_valid_token_renders(self, client: TestClient):
+        """A real invite token must render the page, not 500."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/test.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        invite_resp = client.post(
+            f"/shares/{share_resp.json()['id']}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        page_resp = client.get(f"/invite/{token}/page")
+        assert page_resp.status_code == 200
+        assert "text/html" in page_resp.headers["content-type"]
+        # Behavioral assert on content, not just status (§1n) — the accept
+        # form must actually be in the rendered markup, not an error page.
+        assert (
+            f'action="/invite/{token}/accept"' in page_resp.text
+            or "accept" in page_resp.text.lower()
+        )
+
+    def test_invite_page_nonexistent_token_is_not_500(self, client: TestClient):
+        """A made-up token must not 500 — the handler must reach token validation."""
+        page_resp = client.get(
+            "/invite/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef/page"
+        )
+        assert page_resp.status_code < 500, page_resp.text
+
+    def test_invite_accept_register_renders_success(self, client: TestClient):
+        """POST /accept (register action) must render the success page, not 500."""
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "vault/test.md", "visibility": "private"},
+            headers=auth_headers(admin_token),
+        )
+        invite_resp = client.post(
+            f"/shares/{share_resp.json()['id']}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(admin_token),
+        )
+        token = invite_resp.json()["token"]
+
+        accept_resp = client.post(
+            f"/invite/{token}/accept",
+            data={
+                "action": "register",
+                "email": "ssr-newuser@test.com",
+                "password": "password123",
+                "confirm_password": "password123",
+            },
+        )
+        assert accept_resp.status_code == 200, accept_resp.text
+        assert "text/html" in accept_resp.headers["content-type"]
