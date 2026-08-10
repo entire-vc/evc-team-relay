@@ -917,7 +917,10 @@ class TestInviteSSRPage:
         assert "text/html" in page_resp.headers["content-type"]
         # Behavioral assert on content, not just status (§1n) — the accept
         # form must actually be in the rendered markup, not an error page.
-        assert f'action="/invite/{token}/accept"' in page_resp.text or "accept" in page_resp.text.lower()
+        assert (
+            f'action="/invite/{token}/accept"' in page_resp.text
+            or "accept" in page_resp.text.lower()
+        )
 
     def test_invite_page_nonexistent_token_is_not_500(self, client: TestClient):
         """A made-up token must not 500 — the handler must reach token validation."""
