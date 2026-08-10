@@ -34,8 +34,7 @@ templates = Jinja2Templates(directory="app/templates")
 def _invite_response(request: Request, db: Session, template_ctx: dict) -> HTMLResponse:
     """Render invite.html with branding injected."""
     template_ctx["branding"] = get_branding(db)
-    template_ctx["request"] = request
-    return templates.TemplateResponse("invite.html", template_ctx)
+    return templates.TemplateResponse(request=request, name="invite.html", context=template_ctx)
 
 
 @router.post(
@@ -224,9 +223,9 @@ def invite_page(
 
     branding = get_branding(db)
     return templates.TemplateResponse(
-        "invite.html",
-        {
-            "request": request,
+        request=request,
+        name="invite.html",
+        context={
             "token": token,
             "invite_info": invite_info,
             "current_user": current_user,
