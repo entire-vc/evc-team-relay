@@ -25,7 +25,20 @@
 #   IMAGE               control-plane image tag                      (default infra-control-plane:latest)
 #   WEB_PUBLISH_IMAGE   web-publish image tag                        (default infra-web-publish:latest)
 #   GITHUB_TOKEN         BuildKit secret for web-publish's `npm ci`   (else read from $RELAY_DIR/.env)
-#   DRY_RUN             if "true": run gates/build but do NOT restart (rehearsal)
+#   DRY_RUN             if "true": rehearsal only — see below for exactly what that means
+#
+# DRY_RUN=true is a genuine no-side-effects rehearsal, not "build for real but skip the
+# restart": the image is always built into a throwaway `:candidate` tag first, and only
+# promoted to `:latest` (with the outgoing image captured as `:prev` for rollback) on a
+# REAL run. A dry run never touches `:latest` or `:prev`. For control-plane specifically,
+# the migration gate in dry-run mode runs `alembic upgrade head --sql` — Alembic's offline
+# mode, which renders the SQL a real upgrade would execute and validates the revision graph
+# (catches a broken down_revision / multiple heads) WITHOUT connecting to the database at
+# all. It does not apply anything. This matters: earlier revisions of this script ran the
+# REAL `alembic upgrade head` against prod even under DRY_RUN=true, and separately let a
+# dry-run build silently overwrite `:latest`, corrupting the `:prev` rollback point on the
+# very next real deploy (#507d6021, incident on #d94a6aa2). Neither can happen now — dry-run
+# has no write path to the database or to the `:latest`/`:prev` tags.
 #
 set -euo pipefail
 
@@ -74,10 +87,41 @@ cd "$RELAY_DIR" || die "deploy root $RELAY_DIR not found on this host"
 
 deploy_control_plane() {
   local image="$IMAGE"
+  local candidate="${image%:*}:candidate"
 
   [ -d control-plane-src ] || die "control-plane-src/ missing in $RELAY_DIR — source sync did not run"
 
-  # 1. Tag the current image for fast rollback (skip on first-ever deploy).
+  # 1. Always build into a throwaway candidate tag — NEVER directly into "$image".
+  #    This is what keeps a dry run from touching :latest at all: promotion to
+  #    :latest (and capturing the outgoing image as :prev) only happens below,
+  #    after the DRY_RUN check, on a real run.
+  log "building $candidate from control-plane-src/"
+  docker build -t "$candidate" control-plane-src/
+
+  if [ "$DRY_RUN" = "true" ]; then
+    # Offline migration check: `alembic upgrade head --sql` renders the SQL a
+    # real upgrade would execute and validates the revision graph (catches a
+    # broken down_revision / multiple heads) WITHOUT opening a database
+    # connection — env.py's run_migrations_offline() never calls .connect().
+    # Verified empirically before wiring this in: a deliberately broken
+    # down_revision fails this command (KeyError, exit 1); the real graph
+    # renders full SQL base->head with an unreachable DB host, exit 0. Needs
+    # a Postgres-dialect DATABASE_URL to render Postgres DDL (JSONB etc.) —
+    # a real one, from .env, though nothing in it is ever dialed.
+    log "DRY_RUN=true — offline migration check against $candidate (no DB connection, no writes)"
+    if ! docker run --rm --env-file "$RELAY_DIR/.env" "$candidate" \
+         python -m alembic upgrade head --sql; then
+      die "DRY_RUN migration check FAILED — the migration graph itself is broken (or the offline check's own environment is), not a real-deploy-only issue. Investigate before attempting a real deploy. :latest and :prev are untouched."
+    fi
+    log "DRY_RUN migration check passed (offline SQL render, zero DB connections)"
+    log "DRY_RUN complete — $candidate left tagged for inspection. :latest and :prev untouched."
+    return 0
+  fi
+
+  # --- Real deploy from here: promote the candidate, THEN gate against the DB ---
+
+  # 2. Tag the current image for fast rollback (skip on first-ever deploy).
+  #    Done here, not before the build, so a dry run never overwrites this.
   if docker image inspect "$image" >/dev/null 2>&1; then
     log "tagging current image -> infra-control-plane:prev (rollback point)"
     docker tag "$image" infra-control-plane:prev
@@ -85,13 +129,14 @@ deploy_control_plane() {
     log "no existing $image — first deploy, nothing to tag for rollback"
   fi
 
-  # 2. Build the new image from the freshly-synced source.
-  log "building $image from control-plane-src/"
-  docker build -t "$image" control-plane-src/
+  log "promoting $candidate -> $image"
+  docker tag "$candidate" "$image"
 
-  # 3. Migration gate — FAIL-CLOSED.
+  # 3. Migration gate — FAIL-CLOSED, against the real database.
   #    docker compose run returns the migrate container's exit code; alembic failure
-  #    => non-zero => we abort here and the app is NEVER restarted.
+  #    => non-zero => we abort here and the app is NEVER restarted. The migrate
+  #    service is pinned to image: infra-control-plane:latest in docker-compose.yml,
+  #    so it picks up the image we just promoted above, not a stale one.
   #
   #    -T:        disable pseudo-TTY (non-interactive CI run).
   #    </dev/null: prevent docker compose run from inheriting bash's stdin.
@@ -105,11 +150,6 @@ deploy_control_plane() {
   log "migration gate passed (schema at head)"
 
   # 4. Restart app services — only reachable when migrate exited 0.
-  if [ "$DRY_RUN" = "true" ]; then
-    log "DRY_RUN=true — gate passed, skipping 'compose up -d' (rehearsal only)"
-    return 0
-  fi
-
   log "restarting app services"
   docker compose up -d --force-recreate control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker
 
@@ -157,10 +197,38 @@ deploy_control_plane() {
 
 deploy_web_publish() {
   local image="$WEB_PUBLISH_IMAGE"
+  local candidate="${image%:*}:candidate"
 
   [ -d web-publish-src ] || die "web-publish-src/ missing in $RELAY_DIR — source sync did not run"
 
-  # 1. Tag the current image for fast rollback (skip on first-ever deploy).
+  # 1. Build into a throwaway candidate tag — NEVER directly into "$image". This
+  #    is what keeps a dry run from touching :latest/:prev; see deploy_control_plane
+  #    for why (#507d6021, an earlier dry-run-then-real-run sequence corrupted
+  #    :prev because the build overwrote :latest regardless of DRY_RUN).
+  #    The Dockerfile's `npm ci` reads GITHUB_TOKEN via a BuildKit secret mount
+  #    (never baked into a layer) — pull it from the environment, falling back
+  #    to the server's own $RELAY_DIR/.env so this works unattended too.
+  local github_token="${GITHUB_TOKEN:-}"
+  if [ -z "$github_token" ] && [ -f "$RELAY_DIR/.env" ]; then
+    github_token="$(grep -m1 '^GITHUB_TOKEN=' "$RELAY_DIR/.env" | cut -d= -f2-)"
+  fi
+  [ -n "$github_token" ] || die "GITHUB_TOKEN not set and not found in $RELAY_DIR/.env — required as the npm-ci build secret"
+
+  log "building $candidate from web-publish-src/"
+  GITHUB_TOKEN="$github_token" docker build --secret id=github_token,env=GITHUB_TOKEN -t "$candidate" web-publish-src/
+
+  # web-publish has no migrations — no fail-closed gate needed here. Do not add
+  # one; control-plane's gate above is the only migration-bearing component.
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log "DRY_RUN complete — $candidate built and left tagged for inspection. :latest and :prev untouched."
+    return 0
+  fi
+
+  # --- Real deploy from here: promote the candidate, then restart ---
+
+  # 2. Tag the current image for fast rollback (skip on first-ever deploy).
+  #    Done here, not before the build, so a dry run never overwrites this.
   if docker image inspect "$image" >/dev/null 2>&1; then
     log "tagging current image -> infra-web-publish:prev (rollback point)"
     docker tag "$image" infra-web-publish:prev
@@ -168,27 +236,10 @@ deploy_web_publish() {
     log "no existing $image — first deploy, nothing to tag for rollback"
   fi
 
-  # 2. Build. The Dockerfile's `npm ci` reads GITHUB_TOKEN via a BuildKit secret
-  #    mount (never baked into a layer) — pull it from the environment, falling
-  #    back to the server's own $RELAY_DIR/.env so this works unattended too.
-  local github_token="${GITHUB_TOKEN:-}"
-  if [ -z "$github_token" ] && [ -f "$RELAY_DIR/.env" ]; then
-    github_token="$(grep -m1 '^GITHUB_TOKEN=' "$RELAY_DIR/.env" | cut -d= -f2-)"
-  fi
-  [ -n "$github_token" ] || die "GITHUB_TOKEN not set and not found in $RELAY_DIR/.env — required as the npm-ci build secret"
-
-  log "building $image from web-publish-src/"
-  GITHUB_TOKEN="$github_token" docker build --secret id=github_token,env=GITHUB_TOKEN -t "$image" web-publish-src/
-
-  # web-publish has no migrations — no fail-closed gate needed here. Do not add
-  # one; control-plane's gate above is the only migration-bearing component.
+  log "promoting $candidate -> $image"
+  docker tag "$candidate" "$image"
 
   # 3. Restart — no migration gate to wait on.
-  if [ "$DRY_RUN" = "true" ]; then
-    log "DRY_RUN=true — image built, skipping 'compose up -d' (rehearsal only)"
-    return 0
-  fi
-
   log "restarting web-publish"
   docker compose up -d --force-recreate web-publish
 
