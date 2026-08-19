@@ -101,6 +101,17 @@ Response:
 | GET | `/v1/admin/settings/branding` | Admin | Get branding |
 | PUT | `/v1/admin/settings/branding` | Admin | Update branding |
 
+### Agent Keys
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/v1/web/shares/{share_id}/agent-keys` | Owner/Admin | Create key (raw key shown once; defaults to `["read","write"]`) |
+| GET | `/v1/web/shares/{share_id}/agent-keys` | Owner/Admin | List keys (never returns the secret) |
+| PATCH | `/v1/web/shares/{share_id}/agent-keys/{key_id}` | Owner/Admin | Change scopes in place, without rotating the secret |
+| DELETE | `/v1/web/shares/{share_id}/agent-keys/{key_id}` | Owner/Admin | Revoke key |
+
+Scopes are literal — `write` does not imply `read`. See `docs/agent-keys.md`.
+
 ### Webhooks
 
 | Method | Endpoint | Auth | Description |

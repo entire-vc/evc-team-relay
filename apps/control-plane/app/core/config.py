@@ -220,6 +220,17 @@ class Settings(BaseSettings):
             "(TR-45) — matches the prod-DB-password rotation cadence used elsewhere."
         ),
     )
+    agent_key_lenient_read_grace: bool = Field(
+        default=True,
+        description=(
+            "Phase-1 migration switch for the unified read-scope policy (#b69d73fb, "
+            "ADR-0001). While true, a write-only key is still admitted through a read "
+            "gate — as it always was on /files, /assets and share metadata — and each "
+            "such call is logged as a WARNING naming the key. Set false to enforce the "
+            "literal policy on every read route. Withdraw only once the WARNING has "
+            "been quiet for a full window and the keys it named carry 'read'."
+        ),
+    )
     invite_default_ttl_days: int = Field(
         default=30,
         description=(

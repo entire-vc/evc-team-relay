@@ -13,7 +13,7 @@ An agent key is a per-share API token you create inside the Obsidian plugin. Age
 | Property | Value |
 |----------|-------|
 | Format | `tr_agent_` + 48 hex characters |
-| Scope | `write` — upload files to one specific share |
+| Scopes | `read`, `write` — new keys get both by default; pass `"scopes": ["write"]` for an upload-only key |
 | Bound to | A single share (not your whole account) |
 | Revealed | Once on creation — copy it and store it securely |
 | Max per share | 20 active keys |
@@ -86,9 +86,33 @@ Click **I've copied this key — close** to dismiss.
 
 | Scope | What it allows |
 |-------|---------------|
-| `write` | Upload files to the share via `POST /v1/web/shares/{slug}/upload` |
+| `write` | Upload files to the share via `POST /v1/web/shares/{slug}/upload` and `/sync-upload` |
+| `read` | List and read the share's files: `GET /v1/web/shares/{id}/files-index`, `/download`, `/files`, `/assets`, and share metadata |
 
-The `write` scope is the only scope currently available. An agent key grants no read access — it cannot list files, read content, or access any other share.
+A key created without an explicit `scopes` field — which is what the Obsidian plugin does — gets
+**both** scopes. To create an upload-only "drop box" key that can never read the share, pass
+`"scopes": ["write"]` explicitly when calling the API.
+
+Scopes are literal: `write` does **not** imply `read`. A key without `read` is refused on every
+read route, and the refusal is the same on all of them. (Before 2026-08-19 this was inconsistent —
+a write-only key could read through `/files` while `/download` answered
+`403 Agent key does not have read scope`. See ADR-0001 in `apps/control-plane/docs/adrs/`.)
+
+An agent key is still bound to exactly one share and grants no access to any other.
+
+### Changing the scopes of an existing key
+
+Scopes can be widened or narrowed in place, without rotating the secret, so an integration already
+holding the key does not have to be reconfigured:
+
+```bash
+curl -X PATCH "https://cp.example.com/v1/web/shares/{share_id}/agent-keys/{key_id}" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scopes": ["read", "write"]}'
+```
+
+Owner or admin only, like creating and revoking. A revoked key cannot be edited back into service.
 
 The share it is bound to must have **web publishing enabled**. If you turn off web publishing, all agent keys for that share stop working immediately.
 
@@ -183,11 +207,16 @@ The file appears in your Obsidian vault under `agent-output/report.md` on the ne
 |------|---------------|---------------------|
 | `upsert_file` | ✅ works (slug required) | ✅ works (UUID required) |
 | `list_shares` | ❌ requires credentials | ✅ works |
-| `list_files` | ❌ requires credentials | ✅ works |
-| `read_file` | ❌ requires credentials | ✅ works |
+| `list_files` | ✅ works (key needs `read`) | ✅ works |
+| `read_file` | ✅ works (key needs `read`) | ✅ works |
 | `delete_file` | ❌ requires credentials | ✅ works |
 
-For agents that only write (e.g. automated report publishing), agent keys are sufficient. For agents that also read or navigate shares, use email/password credentials.
+Reading works with an agent key that carries the `read` scope — which new keys get by default.
+A key created before 2026-08-19, or one created explicitly as `["write"]`, has no `read` scope and
+is refused on those calls; grant it `read` with the `PATCH` above rather than issuing a new key.
+
+`list_shares` and `delete_file` still need credentials: a key is bound to a single share, so there
+is no list of shares for it to return, and deletion is not covered by either scope.
 
 ---
 
@@ -235,7 +264,8 @@ The key is invalidated immediately. Any agent using it will receive `403 Forbidd
 | `403 Forbidden: Agent key has been revoked` | Key was revoked | Create a new key in the plugin |
 | `403 Forbidden: Agent key has expired` | Key TTL elapsed | Create a new key in the plugin |
 | `403 Forbidden: Agent key not valid for this share` | Key bound to different share | Use the correct key for this share slug |
-| `403 Forbidden: does not have write scope` | Internal state error | Revoke key and create a new one |
+| `403 Forbidden: does not have write scope` | Key was created read-only | Grant `write` via `PATCH .../agent-keys/{key_id}` |
+| `403 Forbidden: does not have read scope` | Key has no `read` scope (all keys created before 2026-08-19 via the plugin) | Grant `read` via `PATCH .../agent-keys/{key_id}` |
 | `404 Not Found` | Share slug wrong, or web publishing disabled | Verify the slug in plugin settings; enable web publishing |
 | `409 Conflict` | 20-key limit reached | Revoke unused keys first |
 | `413 Request Entity Too Large` | File exceeds 25 MB | Split the file or use a smaller payload |

@@ -26,7 +26,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core import security
+from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
@@ -89,19 +89,43 @@ def _require_private_web_auth(
                 if exp.tzinfo is None:
                     exp = exp.replace(tzinfo=_tz.utc)
             if exp is None or exp >= security.utcnow():
-                scopes = {s.strip() for s in agent_key.scopes.split(",") if s.strip()}
+                scopes = agent_key_scopes.parse_scopes(agent_key.scopes)
                 has_any = bool(scopes & {"read", "write"})
-                # write implies read: a write-scoped key satisfies a read requirement
-                if required_scope == "read":
-                    has_required = bool(scopes & {"read", "write"})
-                else:
-                    has_required = required_scope in scopes
+                # Single source of truth for the policy — see ADR-0001 and
+                # app/core/agent_key_scopes.py. This route family used to answer
+                # "write implies read" while /download and /files-index answered
+                # the literal question, so one key read the same document through
+                # one route and was refused it through the other (#b69d73fb).
+                has_required = agent_key_scopes.check(
+                    scopes,
+                    required_scope,
+                    grace=get_settings().agent_key_lenient_read_grace,
+                    key_id=agent_key.id,
+                    share_id=share.id,
+                    route=request.url.path,
+                )
                 if has_any and not has_required:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail=f"Agent key does not have {required_scope} scope",
                     )
                 if has_any:
+                    # Record use here too. Until now only _auth_share_read_access
+                    # stamped last_used_at, so every read through this route family
+                    # was invisible in the key's usage record — which is exactly why
+                    # "is anyone reading with a write-only key?" could not be
+                    # answered from the data (#b69d73fb).
+                    #
+                    # Committed here rather than left to the caller: every route in
+                    # this family is a GET that commits nothing, so an uncommitted
+                    # stamp would be silently discarded — the same blind spot in a
+                    # new costume. Failure to record usage must never fail the
+                    # request, hence the rollback-and-continue.
+                    agent_key.last_used_at = security.utcnow()
+                    try:
+                        db.commit()
+                    except Exception:  # pragma: no cover - telemetry must not 500
+                        db.rollback()
                     return  # authenticated via agent key with sufficient scope
 
     # --- User JWT path ---
@@ -1485,7 +1509,12 @@ def _auth_agent_key(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
             )
-    if required_scope and required_scope not in set(agent_key.scopes.split(",")):
+    # Third helper, same policy object (ADR-0001). Only ever called with
+    # required_scope="write" today; routed through the shared check so a future
+    # read-requiring caller cannot silently reintroduce a fourth answer.
+    if required_scope and not agent_key_scopes.satisfies(
+        agent_key_scopes.parse_scopes(agent_key.scopes), required_scope
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Agent key does not have {required_scope} scope",
@@ -1535,7 +1564,19 @@ def _auth_share_read_access(share: models.Share, request: Request, db: Session) 
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
                 )
-        if "read" not in set(agent_key.scopes.split(",")):
+        # Same policy object as _require_private_web_auth — see ADR-0001. These
+        # two helpers used to disagree about whether a write-only key may read,
+        # on route families that return identical bytes (#b69d73fb).
+        #
+        # Deliberately NO grace here. Grace exists to keep the LENIENT routes
+        # behaving exactly as they did while their population is measured; it is
+        # not a licence to widen this one. These routes are UUID-addressable and
+        # therefore reach shares that were never web-published — where a
+        # write-only key can read nothing today. Extending grace here would hand
+        # five external customers' write-only keys read access to unpublished
+        # private vault content, which is the regression this whole change exists
+        # to avoid. Convergence happens by the lenient side tightening.
+        if not agent_key_scopes.satisfies(agent_key_scopes.parse_scopes(agent_key.scopes), "read"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Agent key does not have read scope",
@@ -1583,8 +1624,7 @@ def _auth_share_read_access(share: models.Share, request: Request, db: Session) 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(
-            "Authentication required: provide X-Agent-Key header "
-            "or Authorization: Bearer <token>"
+            "Authentication required: provide X-Agent-Key header or Authorization: Bearer <token>"
         ),
         headers={"WWW-Authenticate": "Bearer"},
     )
