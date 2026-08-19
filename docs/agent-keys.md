@@ -93,10 +93,12 @@ A key created without an explicit `scopes` field — which is what the Obsidian 
 **both** scopes. To create an upload-only "drop box" key that can never read the share, pass
 `"scopes": ["write"]` explicitly when calling the API.
 
-Scopes are literal: `write` does **not** imply `read`. A key without `read` is refused on every
-read route, and the refusal is the same on all of them. (Before 2026-08-19 this was inconsistent —
-a write-only key could read through `/files` while `/download` answered
-`403 Agent key does not have read scope`. See ADR-0001 in `apps/control-plane/docs/adrs/`.)
+Scopes are literal: `write` does **not** imply `read`. A key without `read` is meant to be refused
+on every read route, with the same refusal on all of them — this is enforced from phase 3 of the
+rollout (see ADR-0001 in `apps/control-plane/docs/adrs/`); a write-only key on a **published**
+share may still read through `/files`/`/assets` during the phase-1/phase-2 grace period, logged as
+a WARNING. (Before 2026-08-19 this split was permanent, not a grace period — a write-only key could
+read through `/files` while `/download` answered `403 Agent key does not have read scope`.)
 
 An agent key is still bound to exactly one share and grants no access to any other.
 

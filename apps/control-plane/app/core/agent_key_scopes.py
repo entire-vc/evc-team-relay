@@ -30,8 +30,9 @@ literal ``read`` and reads through them today.  So the tightening ships behind
   through a read gate, exactly as before, but every such call is logged as a
   WARNING naming the key and the route.  Behaviour is unchanged; the previously
   invisible population becomes measurable.
-* grace **off** (phase 2) — the literal policy applies everywhere and the two
-  route families finally agree.
+* grace **off** (phase 3, after phase 2 migrates the keys the WARNING names) —
+  the literal policy applies everywhere and the two route families finally
+  agree.
 
 Flipping is a config change, so it is reversible in seconds without a redeploy.
 """
