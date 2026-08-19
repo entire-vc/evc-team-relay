@@ -991,6 +991,7 @@ class TestPrivateShareAuth:
                 "web_publish_enabled": True,
                 "web_publish_domain": "docs.test.com",
                 "web_frame_ancestors": None,
+                "agent_key_lenient_read_grace": True,
             },
         )()
 
@@ -1610,6 +1611,7 @@ def _web_enabled_settings(extra: dict | None = None):
         "relay_token_ttl_minutes": 30,
         "relay_public_url": "wss://relay.example.com",
         "web_frame_ancestors": None,
+        "agent_key_lenient_read_grace": True,
     }
     if extra:
         base.update(extra)
@@ -1896,6 +1898,7 @@ class TestPrivateShareWebAuth:
             "relay_token_ttl_minutes": 30,
             "relay_public_url": "wss://relay.test",
             "web_frame_ancestors": None,
+            "agent_key_lenient_read_grace": True,
         }
         if extra:
             fields.update(extra)

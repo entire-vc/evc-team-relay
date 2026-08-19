@@ -79,7 +79,20 @@ _VALID_SCOPES = {"read", "write"}
 class AgentKeyCreateRequest(BaseModel):
     label: str | None = Field(default=None, min_length=1)
     expires_at: datetime | None = None
-    scopes: list[str] = Field(default_factory=lambda: ["write"])
+    # Default is read+write, not write-only (#b69d73fb, ADR-0001).
+    #
+    # The Obsidian plugin is the only user-facing way to create an agent key and
+    # it does not send `scopes` at all — CreateAgentKeyRequest carries only
+    # `label` and `expires_at` — so this default is what every key made through
+    # the product UI gets. With the old write-only default those keys silently
+    # could not read: the MCP server's read_file (GET .../download) answered
+    # "Agent key does not have read scope" to a key the user had just created
+    # for exactly that purpose. Seven such keys exist in production.
+    #
+    # A drop-box key that may write but never read remains available and is now
+    # what it should be: an explicit `{"scopes": ["write"]}`, which is the right
+    # shape for a deliberate restriction.
+    scopes: list[str] = Field(default_factory=lambda: ["read", "write"])
 
     @field_validator("label")
     @classmethod
@@ -217,6 +230,38 @@ def create_agent_key(
     )
 
 
+def _to_list_item(k: models.ShareAgentKey, now: datetime) -> "AgentKeyListItem":
+    """Serialise a key row for the API.
+
+    Shared by list and PATCH so the two cannot drift — is_active in particular
+    is a derived value, and a second hand-rolled copy of that expression is how
+    endpoints start disagreeing about the same row.
+    """
+    return AgentKeyListItem(
+        id=str(k.id),
+        label=k.label,
+        share_id=str(k.share_id),
+        scopes=list(k.scopes.split(",")) if "," in k.scopes else [k.scopes],
+        created_by=str(k.created_by) if k.created_by else None,
+        last_used_at=k.last_used_at,
+        expires_at=k.expires_at,
+        revoked_at=k.revoked_at,
+        created_at=k.created_at,
+        is_active=(
+            k.revoked_at is None
+            and (
+                k.expires_at is None
+                or (
+                    k.expires_at.replace(tzinfo=timezone.utc)
+                    if k.expires_at.tzinfo is None
+                    else k.expires_at
+                )
+                > now
+            )
+        ),
+    )
+
+
 @router.get("", response_model=list[AgentKeyListItem])
 def list_agent_keys(
     share_id: str,
@@ -230,32 +275,7 @@ def list_agent_keys(
     keys = db.execute(stmt).scalars().all()
 
     now = security.utcnow()
-    return [
-        AgentKeyListItem(
-            id=str(k.id),
-            label=k.label,
-            share_id=str(k.share_id),
-            scopes=list(k.scopes.split(",")) if "," in k.scopes else [k.scopes],
-            created_by=str(k.created_by) if k.created_by else None,
-            last_used_at=k.last_used_at,
-            expires_at=k.expires_at,
-            revoked_at=k.revoked_at,
-            created_at=k.created_at,
-            is_active=(
-                k.revoked_at is None
-                and (
-                    k.expires_at is None
-                    or (
-                        k.expires_at.replace(tzinfo=timezone.utc)
-                        if k.expires_at.tzinfo is None
-                        else k.expires_at
-                    )
-                    > now
-                )
-            ),
-        )
-        for k in keys
-    ]
+    return [_to_list_item(k, now) for k in keys]
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_200_OK)
@@ -292,3 +312,78 @@ def revoke_agent_key(
         )
 
     return {"id": key_id, "revoked_at": agent_key.revoked_at.isoformat()}
+
+
+class AgentKeyScopesUpdateRequest(BaseModel):
+    scopes: list[str]
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("scopes must not be empty")
+        invalid = set(v) - _VALID_SCOPES
+        if invalid:
+            raise ValueError(f"invalid scopes: {invalid}; allowed: {_VALID_SCOPES}")
+        return sorted(set(v))
+
+
+@router.patch("/{key_id}", response_model=AgentKeyListItem)
+def update_agent_key_scopes(
+    share_id: str,
+    key_id: str,
+    payload: AgentKeyScopesUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AgentKeyListItem:
+    """Change an existing key's scopes without rotating the secret.
+
+    Added for the ADR-0001 migration (#b69d73fb). Keys created before the
+    default changed are write-only, and under the unified literal policy they
+    stop being able to read. The only previous way to grant them `read` was
+    revoke-and-reissue, which changes the raw key and therefore requires
+    reconfiguring whatever integration holds it — a coordination cost heavy
+    enough that owners would reasonably skip the migration and just discover
+    the breakage later. Editing the scopes in place keeps the secret stable,
+    so granting `read` is a one-call, non-disruptive change.
+
+    Owner/admin only, exactly like create and revoke: scopes are the
+    authorization surface, so widening them must need the same standing as
+    minting a key in the first place. A revoked key is not editable — bringing
+    one back by granting scopes would quietly undo a revocation.
+    """
+    share, user_id = _require_share_owner_or_admin(share_id, request, db)
+
+    stmt = select(models.ShareAgentKey).where(
+        models.ShareAgentKey.id == uuid.UUID(key_id),
+        models.ShareAgentKey.share_id == uuid.UUID(share_id),
+    )
+    agent_key = db.execute(stmt).scalar_one_or_none()
+    if not agent_key:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent key not found")
+
+    if agent_key.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent key has been revoked; issue a new key instead",
+        )
+
+    previous = agent_key.scopes
+    agent_key.scopes = ",".join(payload.scopes)
+    db.commit()
+    db.refresh(agent_key)
+
+    logger.info(
+        "agent_key.scopes_updated",
+        extra={
+            "event": "agent_key.scopes_updated",
+            "key_id": key_id,
+            "share_id": share_id,
+            "previous_scopes": previous,
+            "new_scopes": agent_key.scopes,
+            "updated_by": str(user_id),
+            "ip": request.client.host if request.client else None,
+        },
+    )
+
+    return _to_list_item(agent_key, security.utcnow())
