@@ -1255,7 +1255,6 @@ async def upload_mesh_artifact(
 
     share_identifier: folder UUID (private/sync shares) or web_slug (web-published shares only).
     """
-    import hashlib
     import uuid as _uuid_mod
 
     settings = get_settings()
@@ -1286,42 +1285,16 @@ async def upload_mesh_artifact(
             detail="Upload only supported for folder shares",
         )
 
-    # Agent-key auth (B1)
-    raw_key = request.headers.get("X-Agent-Key")
-    if not raw_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required"
-        )
-
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    key_stmt = select(models.ShareAgentKey).where(models.ShareAgentKey.key_hash == key_hash)
-    agent_key = db.execute(key_stmt).scalar_one_or_none()
-
-    if agent_key is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
-
-    if agent_key.share_id != share.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key not valid for this share"
-        )
-
-    if agent_key.revoked_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
-        )
-
-    if agent_key.expires_at is not None:
-        from datetime import timezone as _tz
-
-        expires_at = agent_key.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=_tz.utc)
-        if expires_at < security.utcnow():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
-            )
-
-    if "write" not in set(agent_key.scopes.split(",")):
+    # Agent-key auth (B1). Identity/standing via the shared resolver (same cycle
+    # every X-Agent-Key call site needs); scope via the shared literal policy
+    # (ADR-0001) — this route previously carried its own inline copy of both,
+    # which is how a fourth, undetected scope-check divergence became possible
+    # after #b69d73fb consolidated the other three (task #3870a0f1). Deliberately
+    # NOT routed through the full `_auth_agent_key()` wrapper: that also enforces
+    # `agent_key_creator_authorized`, a check this route has never applied, and
+    # this is a scope-consolidation refactor, not a change to who can upload.
+    agent_key = _resolve_share_agent_key(share, request, db)
+    if not agent_key_scopes.satisfies(agent_key_scopes.parse_scopes(agent_key.scopes), "write"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Agent key does not have write scope"
         )
@@ -1468,16 +1441,19 @@ def _resolve_share_for_agent(share_identifier: str, db: Session) -> models.Share
     return share
 
 
-def _auth_agent_key(
-    share: models.Share, request: Request, db: Session, required_scope: str | None = None
+def _resolve_share_agent_key(
+    share: models.Share, request: Request, db: Session
 ) -> models.ShareAgentKey:
-    """Validate X-Agent-Key header against the given share.
+    """Look up and validate the X-Agent-Key header against the given share.
 
-    Returns the ShareAgentKey row on success; raises HTTPException on failure.
-    If required_scope is given, the key must have that scope (e.g. "read" or "write").
+    Covers only identity/standing (hash lookup, share match, revoked, expired) —
+    NOT scope. Every X-Agent-Key call site needs this same cycle; previously
+    ``upload_mesh_artifact`` carried its own copy (task #3870a0f1), which is how
+    a fourth, undetected scope-check divergence became possible after #b69d73fb
+    consolidated the other three. Scope policy stays out of this helper on
+    purpose — callers apply ``agent_key_scopes`` themselves, since what "the
+    right scope" means differs per route (see ADR-0001).
     """
-    import hashlib
-
     raw_key = request.headers.get("X-Agent-Key")
     if not raw_key:
         raise HTTPException(
@@ -1500,8 +1476,6 @@ def _auth_agent_key(
             status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has been revoked"
         )
     if agent_key.expires_at is not None:
-        from datetime import timezone as _tz
-
         exp = agent_key.expires_at
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=_tz.utc)
@@ -1509,6 +1483,18 @@ def _auth_agent_key(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
             )
+    return agent_key
+
+
+def _auth_agent_key(
+    share: models.Share, request: Request, db: Session, required_scope: str | None = None
+) -> models.ShareAgentKey:
+    """Validate X-Agent-Key header against the given share.
+
+    Returns the ShareAgentKey row on success; raises HTTPException on failure.
+    If required_scope is given, the key must have that scope (e.g. "read" or "write").
+    """
+    agent_key = _resolve_share_agent_key(share, request, db)
     # Third helper, same policy object (ADR-0001). Only ever called with
     # required_scope="write" today; routed through the shared check so a future
     # read-requiring caller cannot silently reintroduce a fourth answer.

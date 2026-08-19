@@ -614,6 +614,77 @@ class TestAgentKeyReadScope:
             )
         assert resp.status_code == 403, resp.text
 
+    @pytest.mark.parametrize("grace", ["true", "false"])
+    def test_upload_verdict_unaffected_by_grace_flag(
+        self,
+        client: TestClient,
+        test_user: models.User,
+        db_session: Session,
+        web_enabled,
+        monkeypatch,
+        grace,
+    ):
+        """Task #3870a0f1 — upload_mesh_artifact requires a literal `write` scope
+
+        via the shared agent_key_scopes module (not an inline copy). Grace
+        (AGENT_KEY_LENIENT_READ_GRACE) only ever widens a `required == "read"`
+        check (see agent_key_scopes.would_be_denied_without_grace) — it must
+        have zero effect on this route's `required == "write"` verdict, in
+        either direction, on or off.
+        """
+        monkeypatch.setenv("AGENT_KEY_LENIENT_READ_GRACE", grace)
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            share = make_folder_share(db_session, test_user, slug=f"grace-{grace}-upload")
+            write_key, _ = make_agent_key(db_session, share, scopes="write")
+            read_key, _ = make_agent_key(db_session, share, scopes="read")
+
+            with minio_patch():
+                write_resp = client.post(
+                    f"/v1/web/shares/grace-{grace}-upload/upload?path=file.md",
+                    content=b"data",
+                    headers={"X-Agent-Key": write_key, "Content-Type": "text/plain"},
+                )
+            assert write_resp.status_code == 200, write_resp.text
+
+            with minio_patch():
+                read_resp = client.post(
+                    f"/v1/web/shares/grace-{grace}-upload/upload?path=other.md",
+                    content=b"data",
+                    headers={"X-Agent-Key": read_key, "Content-Type": "text/plain"},
+                )
+            assert read_resp.status_code == 403, read_resp.text
+        finally:
+            get_settings.cache_clear()
+
+    def test_upload_route_actually_calls_the_shared_scope_module(
+        self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
+    ):
+        """Mutation-style proof, not just an inline reading of the diff: force
+
+        agent_key_scopes.satisfies() to always return False and confirm a
+        write-only key that would otherwise succeed now gets 403. If this
+        route still carried its own inline `"write" not in set(...)` copy
+        (the pre-#3870a0f1 shape), patching the module would have no effect
+        and this test would fail to fail — i.e. it would pass for the wrong
+        reason. Restored via monkeypatch's own teardown.
+        """
+        from app.core import agent_key_scopes
+
+        share = make_folder_share(db_session, test_user, slug="mutation-upload")
+        write_key, _ = make_agent_key(db_session, share, scopes="write")
+
+        with patch.object(agent_key_scopes, "satisfies", return_value=False):
+            with minio_patch():
+                resp = client.post(
+                    "/v1/web/shares/mutation-upload/upload?path=file.md",
+                    content=b"data",
+                    headers={"X-Agent-Key": write_key, "Content-Type": "text/plain"},
+                )
+        assert resp.status_code == 403, resp.text
+
     def test_wrong_share_key_returns_403_on_files_index(
         self, client: TestClient, test_user: models.User, db_session: Session, web_enabled
     ):
