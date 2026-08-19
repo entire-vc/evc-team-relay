@@ -136,12 +136,34 @@ class TestProcessQueuedEmailReleasesClaim:
         email = _make_email(
             db_session, status=EmailStatus.SENDING, claimed_at=datetime.now(timezone.utc)
         )
-        email_service.email_enabled = False  # log-and-mark-sent path
+        email_service.email_enabled = True
+        email_service._send_smtp = lambda msg: True  # type: ignore[method-assign]
 
         result = await email_service.process_queued_email(db_session, email)
 
         assert result is True
         assert email.status == EmailStatus.SENT
+        assert email.claimed_at is None
+
+    @pytest.mark.asyncio
+    async def test_disabled_transport_clears_claim_without_marking_sent(
+        self, db_session: Session, email_service: EmailService
+    ):
+        """TR-04 (#ac65cfe5): a disabled transport used to take this exact
+        branch and fabricate SENT — the row released its claim but the DB
+        recorded a delivery that never happened. Disabled now releases the
+        claim back to PENDING instead, so the row is retried for real once
+        EMAIL_ENABLED flips back on."""
+        email = _make_email(
+            db_session, status=EmailStatus.SENDING, claimed_at=datetime.now(timezone.utc)
+        )
+        email_service.email_enabled = False
+
+        result = await email_service.process_queued_email(db_session, email)
+
+        assert result is False
+        assert email.status == EmailStatus.PENDING
+        assert email.sent_at is None
         assert email.claimed_at is None
 
     @pytest.mark.asyncio

@@ -249,11 +249,12 @@ class EmailService:
             email_type: Email type for logging/metrics
 
         Returns:
-            True if sent successfully
+            True if sent successfully. False if disabled (TR-04, #ac65cfe5)
+            or delivery failed — either way, no email left the building.
         """
         if not self.email_enabled:
             self._log_email(to_email, subject, text_body, email_type)
-            return True
+            return False
 
         msg = self._create_mime_message(to_email, subject, text_body, html_body)
         return self._send_smtp(msg)
@@ -326,18 +327,23 @@ class EmailService:
         Returns:
             True if sent successfully
         """
-        email.attempt_count += 1
-
         if not self.email_enabled:
-            # Just log and mark as sent
+            # TR-04 (#ac65cfe5): a disabled transport is not a delivery
+            # outcome — it must not fabricate SENT (the row would then lie
+            # forever about having reached the recipient) and must not burn
+            # retry budget on an attempt that never touched SMTP. Release
+            # the SENDING claim back to PENDING, untouched attempt_count,
+            # so the next worker cycle — or the moment EMAIL_ENABLED flips
+            # back on — picks it up for a real send.
             self._log_email(email.to_email, email.subject, email.body_text, email.email_type)
-            email.status = EmailStatus.SENT
-            email.sent_at = datetime.now(timezone.utc)
-            email.next_retry_at = None
+            email.status = EmailStatus.PENDING
             email.claimed_at = None
+            email.error_message = "Email delivery disabled (EMAIL_ENABLED=false); not sent"
             db.add(email)
             db.commit()
-            return True
+            return False
+
+        email.attempt_count += 1
 
         msg = self._create_mime_message(
             email.to_email, email.subject, email.body_text, email.body_html
