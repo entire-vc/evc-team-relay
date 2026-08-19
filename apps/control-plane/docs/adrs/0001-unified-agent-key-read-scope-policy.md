@@ -9,8 +9,12 @@ found by Daedalus while independently checking the API answer given in
 ## Decision
 
 **A scope is satisfied only by itself. `write` does not imply `read`.** This holds on every route
-that serves share content to an agent key. The policy lives in one place —
-`app/core/agent_key_scopes.py` — and all three auth helpers in `web.py` call it.
+that serves share content to an agent key, and on `POST /v1/web/shares/{id}/upload`'s own `write`
+requirement. The policy lives in one place — `app/core/agent_key_scopes.py` — and every scope check
+in `web.py` calls it: the three auth helpers, plus `upload_mesh_artifact`'s own scope check (folded
+in by task [#3870a0f1](http://mesh.entire.host/t/3870a0f1-08d7-41c2-8c6b-5a733f0f1e72) — that route
+had carried an untouched inline copy since before this ADR, found during cross-verify on this very
+PR, which is exactly the class of defect *One policy, one module* below exists to prevent).
 
 Two coupled changes ship with it:
 
@@ -138,6 +142,14 @@ for a full observation window. Reverting is a config change, not a redeploy.
 ## Consequences
 
 - One policy, one module. A fourth helper cannot quietly invent a fifth answer.
+- Key identity/standing (hash lookup, share match, revoked, expired) is also shared now, via
+  `_resolve_share_agent_key()` — `_auth_agent_key()` and `upload_mesh_artifact` both call it, instead
+  of each carrying its own copy of that cycle. Scope policy deliberately stays **out** of that
+  helper: `upload_mesh_artifact` checks `agent_key_scopes.satisfies(..., "write")` directly and does
+  **not** go through the full `_auth_agent_key()` wrapper, because that wrapper also enforces
+  `agent_key_creator_authorized` — a check this route has never applied. Routing it through the
+  wrapper would be a second, uninvited change riding on a scope-consolidation task; if creator
+  authorization should apply to uploads too, that is its own decision, not a side effect of this one.
 - Agent-key reads are now measurable. "Is anything reading with a write-only key?" became
   answerable at all — previously the data could not represent it.
 - `PATCH .../agent-keys/{key_id}` is a new authorization surface. It is owner/admin-only, matching
@@ -156,3 +168,10 @@ of read routes: for any given key they must all return the same verdict.
 Each test was mutation-checked against the source: reverting the lenient helper, leaking grace into
 the strict helper, dropping the `last_used_at` stamp, and restoring the old creation default each
 turn the intended tests red.
+
+`upload_mesh_artifact`'s own scope check is covered in `tests/test_mesh_upload.py`
+(`TestAgentKeyReadScope`): a route-level test parametrized over the grace flag confirms a write-only
+key still succeeds and a read-only key still gets 403 either way, and a mutation-style test patches
+`agent_key_scopes.satisfies` to force `False` and confirms the route actually calls it — mutation-
+checked the other way too (reverted to the old inline `"write" not in set(...)` copy, confirmed that
+test goes red, restored).
