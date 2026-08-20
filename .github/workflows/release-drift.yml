@@ -1,0 +1,140 @@
+name: Release drift check
+
+# Nothing else notices when `main` runs ahead of the last published release.
+# deploy.yml (our own prod, on push to main) and release.yml (self-hosters,
+# on a version tag) are two independent triggers, and no signal connects
+# "we shipped it to ourselves" to "we shipped it to everyone else" — that gap
+# let a P0 fix sit unreleased for 13 days / 36 commits before anyone noticed
+# (#e15cc24c). This is the sentinel for that gap.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # Monday 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: 'Override the staleness threshold (days) for a manual run, e.g. to prove this check can fail'
+        required: false
+        default: '7'
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # need full history for git describe/rev-list against tags
+
+      - name: Check for stale unreleased changes to shipped code
+        id: drift
+        run: |
+          MAX_AGE_DAYS="${{ github.event.inputs.max_age_days || '7' }}"
+
+          LAST_TAG=$(git describe --tags --abbrev=0)
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+          # Count only commits touching what a release actually ships --
+          # apps/, infra/, scripts/. Of the 36 commits behind the last real
+          # drift incident, ~5 were docs-only; a check that reddens on those
+          # gets ignored within a month and stops catching the real case.
+          DRIFT_COMMITS=$(git rev-list --count "${LAST_TAG}"..origin/main -- apps/ infra/ scripts/)
+          echo "drift_commits=$DRIFT_COMMITS" >> "$GITHUB_OUTPUT"
+
+          if [ "$DRIFT_COMMITS" -eq 0 ]; then
+            echo "No unreleased changes to shipped paths since $LAST_TAG -- clean."
+            echo "is_stale=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Age of the DRIFT, not the age of the last release: measure from
+          # the OLDEST unreleased commit touching shipped code, not from the
+          # tag's own commit time. A release from months ago with one fresh
+          # commit yesterday is not what this check exists to catch; a
+          # release from months ago with a fix sitting unreleased for two
+          # weeks is.
+          OLDEST_DRIFT_SHA=$(git rev-list --reverse "${LAST_TAG}"..origin/main -- apps/ infra/ scripts/ | head -1)
+          OLDEST_DRIFT_TS=$(git log -1 --format=%ct "$OLDEST_DRIFT_SHA")
+          NOW_TS=$(date +%s)
+          AGE_DAYS=$(( (NOW_TS - OLDEST_DRIFT_TS) / 86400 ))
+          echo "age_days=$AGE_DAYS" >> "$GITHUB_OUTPUT"
+          echo "oldest_drift_sha=$OLDEST_DRIFT_SHA" >> "$GITHUB_OUTPUT"
+
+          echo "$DRIFT_COMMITS commit(s) touching apps/infra/scripts unreleased since $LAST_TAG; oldest is $AGE_DAYS day(s) old ($OLDEST_DRIFT_SHA)."
+
+          if [ "$AGE_DAYS" -gt "$MAX_AGE_DAYS" ]; then
+            echo "is_stale=true" >> "$GITHUB_OUTPUT"
+            echo "::error::main has shipped-code changes unreleased for ${AGE_DAYS}d (threshold ${MAX_AGE_DAYS}d) since ${LAST_TAG}. Cut a release: git tag vX.Y.Z && git push origin vX.Y.Z"
+            exit 1
+          else
+            echo "is_stale=false" >> "$GITHUB_OUTPUT"
+            echo "Within the ${MAX_AGE_DAYS}d threshold -- not stale yet."
+          fi
+
+      - name: Open/update a tracking issue when stale
+        if: failure() && steps.drift.outputs.is_stale == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'main has unreleased changes older than the drift threshold';
+            const body = [
+              `**${{ steps.drift.outputs.drift_commits }}** commit(s) touching \`apps/\`, \`infra/\`, or \`scripts/\` are unreleased since \`${{ steps.drift.outputs.last_tag }}\`.`,
+              `Oldest unreleased commit: \`${{ steps.drift.outputs.oldest_drift_sha }}\`, ${{ steps.drift.outputs.age_days }} day(s) old.`,
+              '',
+              'Cut a release: `git tag vX.Y.Z && git push origin vX.Y.Z` (release.yml builds, smoke-tests, and publishes on push of the tag).',
+              '',
+              `_Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'release-drift',
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['release-drift'],
+              });
+            }
+
+      - name: Close the tracking issue once clean
+        if: success() && steps.drift.outputs.is_stale == 'false'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'release-drift',
+            });
+            for (const issue of existing.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: 'A release was cut -- closing, drift check is clean again.',
+              });
+            }
