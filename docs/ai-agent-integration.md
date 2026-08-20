@@ -134,7 +134,7 @@ Add to `opencode.json`:
 
 ### Remote / Shared Deployment (HTTP)
 
-For team-wide or server-side setups, run the MCP server as an HTTP service:
+The server can also speak MCP over HTTP instead of stdio:
 
 ```bash
 RELAY_CP_URL=https://cp.yourdomain.com \
@@ -143,25 +143,52 @@ RELAY_PASSWORD=your-password \
 uvx evc-team-relay-mcp --transport http --port 8888
 ```
 
-Or with Docker:
+> **The HTTP endpoint has no authentication of its own.** Whoever can reach the port
+> can call every tool below using the credentials the server was started with — list
+> your shares, read your documents, write to them. Access control comes entirely from
+> *who can reach the port*, so the server binds `127.0.0.1` by default and is not
+> reachable from the network even on a host with a public IP.
 
-```bash
-cd evc-team-relay-mcp
-docker compose up -d
-```
-
-Then point your MCP client at the HTTP endpoint:
+Point your MCP client at the loopback address:
 
 ```json
 {
   "mcpServers": {
     "evc-relay": {
       "type": "streamable-http",
-      "url": "http://your-server:8888/mcp"
+      "url": "http://127.0.0.1:8888/mcp"
     }
   }
 }
 ```
+
+#### Client on a different machine
+
+Forward the port over SSH rather than exposing it:
+
+```bash
+# on the client machine
+ssh -N -L 8888:127.0.0.1:8888 user@your-server
+```
+
+The client config stays exactly as above, and the server's bind address never changes.
+
+#### Binding to other interfaces (opt-in)
+
+`--host` overrides the bind address:
+
+```bash
+uvx evc-team-relay-mcp --transport http --port 8888 --host 0.0.0.0
+```
+
+Do this **only** behind a reverse proxy that terminates TLS and authenticates callers,
+or behind a firewall that controls who can connect. On an open network it publishes
+full access to your shares to anyone who can reach the port.
+
+A container image and compose file live in the
+[MCP server repository](https://github.com/entire-vc/evc-team-relay-mcp) — follow that
+repository's README for the current container setup rather than the snippet that used
+to live here, so the bind address and the published port stay consistent.
 
 ### Available MCP Tools
 

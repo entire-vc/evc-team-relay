@@ -18,8 +18,9 @@ format = "pretty"
 
 # Auth keys from control plane
 # Get these values from: curl https://cp.YOUR_DOMAIN/keys/public
-# If RELAY_PRIVATE_KEY is set in .env, the control plane uses a stable keypair.
-# Otherwise, it auto-generates one on each startup (check control-plane logs).
+# RELAY_PRIVATE_KEY must be set in .env before the control plane will start — it is
+# required, and no keypair is generated for you. The public half below is derived from
+# it, so it only changes when you change the private key.
 [[auth]]
 key_id = "REPLACE_WITH_KEY_ID"
 public_key = "REPLACE_WITH_PUBLIC_KEY_BASE64"

@@ -18,7 +18,15 @@ infra/data/
 
 ## Automatic Backups
 
-The `postgres-backup` service automatically backs up PostgreSQL daily.
+The `postgres-backup` service dumps PostgreSQL once a day, at `BACKUP_HOUR` UTC.
+
+> **A failed backup does not stop anything and does not tell you.** If `pg_dump`
+> fails, the scheduler logs a `WARN` line inside the container and goes back to
+> sleep — the container stays up and healthy, the previous `_latest` symlink stays
+> in place, and nothing else changes. A stack in this state looks healthy for as long
+> as nobody opens the container log — in practice that can be weeks. Treat the alert
+> and the restore drill below as part of the backup, not as optional extras: the dump
+> is only the half you can see.
 
 ### Configuration
 
@@ -51,6 +59,36 @@ Trigger a backup manually:
 ```bash
 docker compose exec postgres-backup /backup.sh
 ```
+
+## Verifying That Backups Still Work
+
+Three scripts ship with the stack. None of them run on their own — schedule them.
+
+| Script | Answers | Suggested cadence |
+|---|---|---|
+| `infra/backup/backup-age-alert.sh` | "is the newest backup older than it should be?" | hourly, from the Docker host |
+| `infra/backup/restore-test.sh` | "does the newest dump actually restore?" | weekly |
+| `scripts/backup-offsite-alert.sh` | "did the off-site copy keep up?" | daily, if you use off-site |
+
+```bash
+# Host crontab (not in-container): alert when the newest dump is older than 26 hours
+0 * * * * BACKUP_DIR=/srv/evc-team-relay/infra/data/backups POSTGRES_DB=relaycp \
+          MAX_AGE_HOURS=26 TG_ENABLED=true TG_BOT_TOKEN=... TG_CHAT_ID=... \
+          /srv/evc-team-relay/infra/backup/backup-age-alert.sh >> /var/log/backup-age-alert.log 2>&1
+```
+
+Two things worth knowing about what "verified" means here:
+
+- The backup script's own verification is a **gzip integrity check** on the file it
+  just wrote. It says the archive is not truncated. It does not say the dump restores,
+  and it does not look inside.
+- `restore-test.sh` restores the dump into a throwaway container and asserts the key
+  tables come back non-empty. This is the check that distinguishes a backup from a
+  file. Run it on a schedule, not once at install time.
+
+Off-site upload (`BACKUP_S3_ENABLED`, `OFFSITE_S3_ENABLED`) is **off by default** and
+its failures are deliberately non-fatal — the local dump still counts as a success.
+If you rely on the off-site copy, alert on it separately.
 
 ## Full System Backup
 
