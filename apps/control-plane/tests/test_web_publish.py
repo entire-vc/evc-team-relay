@@ -1067,124 +1067,18 @@ class TestPrivateShareAuth:
         assert len(data["web_folder_items"]) == 1
 
 
-class TestWebRelayToken:
-    """Test web relay token endpoint for real-time sync."""
+class TestShareWebDocIdField:
+    """PATCH /v1/shares/{id} persists web_doc_id.
 
-    @pytest.fixture
-    def public_share_with_doc_id(self, db_session: Session, test_user: models.User) -> models.Share:
-        """Create a public share with web_doc_id configured."""
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Public/Realtime.md",
-            visibility=models.ShareVisibility.PUBLIC,
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="public-realtime",
-            web_doc_id="s3rn:relay:relay:test-relay:folder:test-folder:doc:test-doc",
-        )
-        db_session.add(share)
-        db_session.commit()
-        db_session.refresh(share)
-        return share
-
-    @pytest.fixture
-    def protected_share_with_doc_id(
-        self, db_session: Session, test_user: models.User
-    ) -> models.Share:
-        """Create a protected share with web_doc_id configured."""
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Protected/Realtime.md",
-            visibility=models.ShareVisibility.PROTECTED,
-            password_hash=get_password_hash("sharepass123"),
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="protected-realtime",
-            web_doc_id="s3rn:relay:relay:test-relay:folder:test-folder:doc:protected-doc",
-        )
-        db_session.add(share)
-        db_session.commit()
-        db_session.refresh(share)
-        return share
-
-    def test_get_relay_token_public_share(
-        self, client: TestClient, public_share_with_doc_id: models.Share, monkeypatch
-    ):
-        """Test getting relay token for public share."""
-
-        # Enable web publishing
-        monkeypatch.setattr(
-            "app.api.routers.web.get_settings",
-            lambda: type(
-                "Settings",
-                (),
-                {
-                    "web_publish_enabled": True,
-                    "web_publish_domain": "docs.example.com",
-                    "relay_token_ttl_minutes": 30,
-                    "relay_public_url": "wss://relay.example.com",
-                },
-            )(),
-        )
-
-        response = client.get(f"/v1/web/shares/{public_share_with_doc_id.web_slug}/token")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "relay_url" in data
-        assert "token" in data
-        assert "doc_id" in data
-        assert "expires_at" in data
-        assert data["doc_id"] == public_share_with_doc_id.web_doc_id
-        assert data["relay_url"] == "wss://relay.example.com"
-
-    def test_get_relay_token_disabled_web_publish(
-        self, client: TestClient, public_share_with_doc_id: models.Share
-    ):
-        """Test getting relay token fails when web publishing disabled."""
-        # By default web publishing is disabled
-        response = client.get(f"/v1/web/shares/{public_share_with_doc_id.web_slug}/token")
-        # Should return 404 because web publishing is disabled
-        assert response.status_code == 404
-
-    def test_get_relay_token_nonexistent_share(self, client: TestClient):
-        """Test getting relay token for nonexistent share."""
-        response = client.get("/v1/web/shares/nonexistent-slug/token")
-        assert response.status_code == 404
-
-    def test_get_relay_token_protected_share_with_session(
-        self, client: TestClient, protected_share_with_doc_id: models.Share, monkeypatch
-    ):
-        """Test getting relay token succeeds for protected share with valid session."""
-
-        # Enable web publishing
-        monkeypatch.setattr(
-            "app.api.routers.web.get_settings",
-            lambda: type(
-                "Settings",
-                (),
-                {
-                    "web_publish_enabled": True,
-                    "web_publish_domain": "docs.example.com",
-                    "relay_token_ttl_minutes": 30,
-                    "relay_public_url": "wss://relay.example.com",
-                },
-            )(),
-        )
-
-        # Create valid session
-        session_token = WebSessionService.create_web_session(
-            protected_share_with_doc_id.id, hours=24
-        )
-
-        response = client.get(
-            f"/v1/web/shares/{protected_share_with_doc_id.web_slug}/token",
-            cookies={"web_session": session_token},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["doc_id"] == protected_share_with_doc_id.web_doc_id
+    The live-view /token endpoint that used to read this field was removed
+    (#edfd1dd3) — it never worked (JWT format relay-server can't parse,
+    plus web_doc_id was unset on 100% of real shares, plus two further
+    downstream defects the reviewer found). The column itself is a
+    deliberate non-goal of that removal (expand/contract per §1b, a
+    separate decision) — kept for a possible from-scratch live-sync
+    redesign scoped to folder shares. This test just proves the column
+    is still settable via PATCH.
+    """
 
     def test_update_share_with_web_doc_id(self, client: TestClient, test_user: models.User):
         """Test updating share with web_doc_id."""
@@ -1217,6 +1111,46 @@ class TestWebRelayToken:
         )
         assert update_response.status_code == 200
         assert update_response.json()["web_doc_id"] == test_doc_id
+
+
+class TestWebRelayTokenEndpointRemoved:
+    """#edfd1dd3 AC#5: GET /v1/web/shares/{slug}/token no longer exists.
+
+    It used to issue a relay token in a format relay-server can't parse
+    (JWT vs the CWT/legacy-bincode it actually understands), for a
+    live-sync feature that never worked for any real share (web_doc_id
+    was unset on 100% of them) and had two further downstream defects
+    even where it was reachable. Removed rather than fixed — see the
+    task thread for the full decision.
+    """
+
+    def test_token_endpoint_returns_404_for_published_share(
+        self, client: TestClient, test_user: models.User, monkeypatch
+    ):
+        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
+        r = client.post("/auth/login", json={"email": test_user.email, "password": "test123456"})
+        token = r.json()["access_token"]
+        create = client.post(
+            "/v1/shares",
+            json={
+                "kind": "doc",
+                "path": "Removed Token Endpoint.md",
+                # TR-39 guard: private avoids the public+published+no-content
+                # rejection — visibility isn't what this test is about.
+                "visibility": "private",
+                "web_published": True,
+            },
+            headers=_auth_headers(token),
+        )
+        assert create.status_code == 201
+        slug = create.json()["web_slug"]
+
+        response = client.get(f"/v1/web/shares/{slug}/token")
+        assert response.status_code == 404
+
+    def test_token_path_absent_from_openapi_schema(self, client: TestClient):
+        schema = client.get("/openapi.json").json()
+        assert "/v1/web/shares/{slug}/token" not in schema["paths"]
 
 
 class TestFolderFileContentSync:
@@ -1619,7 +1553,7 @@ def _web_enabled_settings(extra: dict | None = None):
 
 
 class TestPrivateShareWebAuthMetadata:
-    """PRIVATE share web access: token endpoint + metadata content gating."""
+    """PRIVATE share web access: metadata content gating."""
 
     @pytest.fixture
     def private_share_with_doc(self, db_session: Session, test_user: models.User) -> models.Share:
@@ -1637,94 +1571,6 @@ class TestPrivateShareWebAuthMetadata:
         db_session.commit()
         db_session.refresh(share)
         return share
-
-    def test_token_private_no_auth_returns_401(
-        self,
-        client: TestClient,
-        private_share_with_doc: models.Share,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        response = client.get(f"/v1/web/shares/{private_share_with_doc.web_slug}/token")
-        assert response.status_code == 401
-
-    def test_token_private_with_jwt_returns_200(
-        self,
-        client: TestClient,
-        private_share_with_doc: models.Share,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        login = client.post(
-            "/auth/login", json={"email": test_user.email, "password": "test123456"}
-        )
-        token = login.json()["access_token"]
-        response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-        assert "token" in response.json()
-
-    def test_token_private_with_agent_key_header_returns_200(
-        self,
-        client: TestClient,
-        private_share_with_doc: models.Share,
-        db_session: Session,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
-        response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token",
-            headers={"X-Agent-Key": raw_key},
-        )
-        assert response.status_code == 200
-        assert "token" in response.json()
-
-    def test_token_private_with_agent_key_query_param_is_rejected(
-        self,
-        client: TestClient,
-        private_share_with_doc: models.Share,
-        db_session: Session,
-        monkeypatch,
-    ):
-        """?agent_key= query param is no longer accepted (TR-14) — even a VALID key
-        sent this way must be rejected, not just ignored: /token has no soft-auth
-        masking path, so with no other credential this is a hard 401."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
-        response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token?agent_key={raw_key}",
-        )
-        assert response.status_code == 401
-
-    def test_token_private_wrong_share_agent_key_returns_401(
-        self,
-        client: TestClient,
-        private_share_with_doc: models.Share,
-        db_session: Session,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        other_share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Other/Doc.md",
-            visibility=models.ShareVisibility.PRIVATE,
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="other-private-doc",
-        )
-        db_session.add(other_share)
-        db_session.commit()
-        raw_key, _ = _make_agent_key(db_session, other_share)
-        response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token",
-            headers={"X-Agent-Key": raw_key},
-        )
-        assert response.status_code == 401
 
     def test_metadata_private_no_auth_strips_content(
         self,
@@ -1776,13 +1622,16 @@ class TestPrivateShareWebAuthMetadata:
         data = response.json()
         assert data["web_content"] is None
 
-    def test_token_private_with_auth_adds_frame_ancestors_header(
+    def test_metadata_private_with_auth_adds_frame_ancestors_header(
         self,
         client: TestClient,
         private_share_with_doc: models.Share,
         db_session: Session,
         monkeypatch,
     ):
+        """Retargeted from the removed /token endpoint (#edfd1dd3) — the metadata
+        endpoint runs the same _require_private_web_auth + _private_embed_headers
+        path on successful PRIVATE auth, so this is equivalent coverage."""
         monkeypatch.setattr(
             "app.api.routers.web.get_settings",
             lambda: _web_enabled_settings(
@@ -1791,7 +1640,7 @@ class TestPrivateShareWebAuthMetadata:
         )
         raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
         response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token",
+            f"/v1/web/shares/{private_share_with_doc.web_slug}",
             headers={"X-Agent-Key": raw_key},
         )
         assert response.status_code == 200
@@ -1799,94 +1648,40 @@ class TestPrivateShareWebAuthMetadata:
         assert "frame-ancestors" in csp
         assert "https://mesh.entire.host" in csp
 
-    def test_token_private_no_frame_ancestors_when_not_configured(
+    def test_metadata_private_no_frame_ancestors_when_not_configured(
         self,
         client: TestClient,
         private_share_with_doc: models.Share,
         db_session: Session,
         monkeypatch,
     ):
+        """Retargeted from the removed /token endpoint (#edfd1dd3) — see the
+        sibling test above for why the metadata endpoint is equivalent coverage."""
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
         raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
         response = client.get(
-            f"/v1/web/shares/{private_share_with_doc.web_slug}/token",
+            f"/v1/web/shares/{private_share_with_doc.web_slug}",
             headers={"X-Agent-Key": raw_key},
         )
         assert response.status_code == 200
         assert "content-security-policy" not in response.headers
 
 
-class TestPrivateShareWebAuthRegression:
-    """Regression: PUBLIC and PROTECTED share behavior unchanged."""
-
-    @pytest.fixture
-    def public_share_with_doc(self, db_session: Session, test_user: models.User) -> models.Share:
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Public/Realtime2.md",
-            visibility=models.ShareVisibility.PUBLIC,
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="public-realtime-reg",
-            web_doc_id="s3rn:relay:relay:test:folder:f2:doc:d2",
-        )
-        db_session.add(share)
-        db_session.commit()
-        db_session.refresh(share)
-        return share
-
-    @pytest.fixture
-    def protected_share_with_doc(self, db_session: Session, test_user: models.User) -> models.Share:
-        from app.core.security import get_password_hash
-
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Protected/Realtime2.md",
-            visibility=models.ShareVisibility.PROTECTED,
-            password_hash=get_password_hash("pass123"),
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="protected-realtime-reg",
-            web_doc_id="s3rn:relay:relay:test:folder:f3:doc:d3",
-        )
-        db_session.add(share)
-        db_session.commit()
-        db_session.refresh(share)
-        return share
-
-    def test_public_token_no_auth_still_200(
-        self,
-        client: TestClient,
-        public_share_with_doc: models.Share,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        response = client.get(f"/v1/web/shares/{public_share_with_doc.web_slug}/token")
-        assert response.status_code == 200
-
-    def test_protected_token_no_session_still_403(
-        self,
-        client: TestClient,
-        protected_share_with_doc: models.Share,
-        monkeypatch,
-    ):
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        response = client.get(f"/v1/web/shares/{protected_share_with_doc.web_slug}/token")
-        assert response.status_code == 403
-
-
 class TestPrivateShareWebAuth:
     """Tests for PRIVATE share web access auth gate (s2).
 
     Covers:
-      - /v1/web/shares/{slug}/token  (relay token)
       - /v1/web/shares/{slug}/files  (folder file content)
-    Both endpoints must:
+    Must:
       - Return 401 when PRIVATE share + no auth
       - Accept Bearer JWT (owner or member)
-      - Accept access_token cookie with valid JWT
       - Accept X-Agent-Key with read or write scope
-    Regression: PUBLIC open without auth, PROTECTED still password-gated.
+
+    (Formerly also covered /v1/web/shares/{slug}/token — removed along with
+    that endpoint, #edfd1dd3. The CSP frame-ancestors coverage that used to
+    live here was retargeted to the metadata endpoint in
+    TestPrivateShareWebAuthMetadata, which runs the same auth+header code
+    path.)
     """
 
     # ── shared helpers ──────────────────────────────────────────────────────
@@ -1931,22 +1726,6 @@ class TestPrivateShareWebAuth:
     # ── fixtures ────────────────────────────────────────────────────────────
 
     @pytest.fixture
-    def private_doc_share(self, db_session: Session, test_user: models.User) -> models.Share:
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Private/Doc.md",
-            visibility=models.ShareVisibility.PRIVATE,
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="private-doc",
-            web_doc_id="s3rn:relay:test:folder:test:doc:private-doc",
-        )
-        db_session.add(share)
-        db_session.commit()
-        db_session.refresh(share)
-        return share
-
-    @pytest.fixture
     def private_folder_share(self, db_session: Session, test_user: models.User) -> models.Share:
         share = models.Share(
             kind=models.ShareKind.FOLDER,
@@ -1963,124 +1742,6 @@ class TestPrivateShareWebAuth:
         db_session.commit()
         db_session.refresh(share)
         return share
-
-    # ── /token endpoint tests ───────────────────────────────────────────────
-
-    def test_private_token_no_auth_returns_401(
-        self,
-        client: TestClient,
-        private_doc_share: models.Share,
-        monkeypatch,
-    ):
-        """PRIVATE + no credentials → 401 (was 403 before s2)."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        r = client.get(f"/v1/web/shares/{private_doc_share.web_slug}/token")
-        assert r.status_code == 401
-
-    def test_private_token_with_bearer_owner_returns_200(
-        self,
-        client: TestClient,
-        db_session: Session,
-        private_doc_share: models.Share,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        """PRIVATE + valid Bearer JWT as owner → 200."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        token = self._login(client, test_user)
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert r.status_code == 200
-        data = r.json()
-        assert data["doc_id"] == private_doc_share.web_doc_id
-
-    def test_private_token_with_access_token_cookie_returns_200(
-        self,
-        client: TestClient,
-        private_doc_share: models.Share,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        """PRIVATE + valid JWT in access_token cookie → 200 (iframe withCredentials path)."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        token = self._login(client, test_user)
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            cookies={"access_token": token},
-        )
-        assert r.status_code == 200
-        assert r.json()["doc_id"] == private_doc_share.web_doc_id
-
-    def test_private_token_with_agent_key_write_scope_returns_200(
-        self,
-        client: TestClient,
-        db_session: Session,
-        private_doc_share: models.Share,
-        monkeypatch,
-    ):
-        """PRIVATE + valid X-Agent-Key (write scope) → 200."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        raw_key, _ = self._make_agent_key(db_session, private_doc_share, scopes="write")
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            headers={"X-Agent-Key": raw_key},
-        )
-        assert r.status_code == 200
-
-    def test_private_token_with_agent_key_read_scope_returns_200(
-        self,
-        client: TestClient,
-        db_session: Session,
-        private_doc_share: models.Share,
-        monkeypatch,
-    ):
-        """PRIVATE + valid X-Agent-Key (read scope) → 200."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        raw_key, _ = self._make_agent_key(db_session, private_doc_share, scopes="read")
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            headers={"X-Agent-Key": raw_key},
-        )
-        assert r.status_code == 200
-
-    def test_private_token_invalid_agent_key_returns_401(
-        self,
-        client: TestClient,
-        private_doc_share: models.Share,
-        monkeypatch,
-    ):
-        """PRIVATE + garbage X-Agent-Key → 401."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            headers={"X-Agent-Key": "tr_agent_notarealkey"},
-        )
-        assert r.status_code == 401
-
-    def test_private_token_frame_ancestors_header_present(
-        self,
-        client: TestClient,
-        db_session: Session,
-        private_doc_share: models.Share,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        """PRIVATE response includes CSP frame-ancestors when web_frame_ancestors is configured."""
-        monkeypatch.setattr(
-            "app.api.routers.web.get_settings",
-            lambda: self._mock_settings({"web_frame_ancestors": "https://mesh.entire.host"}),
-        )
-        token = self._login(client, test_user)
-        r = client.get(
-            f"/v1/web/shares/{private_doc_share.web_slug}/token",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert r.status_code == 200
-        csp = r.headers.get("content-security-policy", "")
-        assert "frame-ancestors" in csp
-        assert "https://mesh.entire.host" in csp
 
     # ── /files endpoint tests ───────────────────────────────────────────────
 
@@ -2132,63 +1793,6 @@ class TestPrivateShareWebAuth:
             headers={"X-Agent-Key": raw_key},
         )
         assert r.status_code == 200
-
-    # ── regression: PUBLIC / PROTECTED behavior unchanged ───────────────────
-
-    def test_public_token_open_without_auth(
-        self,
-        client: TestClient,
-        db_session: Session,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        """Regression: PUBLIC share token endpoint is still open without auth."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Public/Doc.md",
-            visibility=models.ShareVisibility.PUBLIC,
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="pub-regression",
-            web_doc_id="s3rn:relay:test:folder:test:doc:pub",
-        )
-        db_session.add(share)
-        db_session.commit()
-        r = client.get(f"/v1/web/shares/{share.web_slug}/token")
-        assert r.status_code == 200
-
-    def test_protected_token_requires_web_session(
-        self,
-        client: TestClient,
-        db_session: Session,
-        test_user: models.User,
-        monkeypatch,
-    ):
-        """Regression: PROTECTED share still requires web_session cookie, not Bearer JWT."""
-        monkeypatch.setattr("app.api.routers.web.get_settings", lambda: self._mock_settings())
-        from app.core.security import get_password_hash
-
-        share = models.Share(
-            kind=models.ShareKind.DOC,
-            path="Protected/Doc.md",
-            visibility=models.ShareVisibility.PROTECTED,
-            password_hash=get_password_hash("pw"),
-            owner_user_id=test_user.id,
-            web_published=True,
-            web_slug="prot-regression",
-            web_doc_id="s3rn:relay:test:folder:test:doc:prot",
-        )
-        db_session.add(share)
-        db_session.commit()
-
-        # Bearer JWT does NOT grant access to PROTECTED — requires web_session
-        token = self._login(client, test_user)
-        r = client.get(
-            f"/v1/web/shares/{share.web_slug}/token",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert r.status_code == 403
 
 
 class TestFolderItemsContentMerge:

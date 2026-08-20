@@ -71,13 +71,6 @@ export interface SessionValidation {
 	share_id: string | null;
 }
 
-export interface RelayToken {
-	relay_url: string;
-	token: string;
-	doc_id: string;
-	expires_at: string;
-}
-
 /**
  * Fetch share metadata by slug.
  */
@@ -167,33 +160,6 @@ export async function getSitemapXml(): Promise<string> {
 	}
 
 	return response.text();
-}
-
-/**
- * Get relay token for real-time sync.
- * Returns token data for connecting to y-sweet WebSocket.
- */
-export async function getRelayToken(slug: string, sessionToken?: string): Promise<RelayToken> {
-	const headers: Record<string, string> = {};
-	if (sessionToken) {
-		headers['Cookie'] = `web_session=${sessionToken}`;
-	}
-
-	const response = await fetchWithTimeout(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}/token`, {
-		headers
-	});
-
-	if (!response.ok) {
-		if (response.status === 403) {
-			throw new Error('Authentication required for real-time sync');
-		}
-		if (response.status === 404) {
-			throw new Error('Real-time sync not available for this share');
-		}
-		throw new Error(`Failed to get relay token: ${response.statusText}`);
-	}
-
-	return response.json();
 }
 
 export interface ServerInfo {

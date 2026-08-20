@@ -1,12 +1,10 @@
 <script lang="ts">
 	import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
 	import EditableMarkdownViewer from '$lib/components/EditableMarkdownViewer.svelte';
-	import LiveMarkdownViewer from '$lib/components/LiveMarkdownViewer.svelte';
 	import CopyButton from '$lib/components/CopyButton.svelte';
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import { extractTitle, extractDescription, estimateReadingTime } from '$lib/markdown';
-	import { isRealtimeSyncAvailable } from '$lib/yjs';
 	import type { PageData } from './$types';
 	import { page } from '$app/stores';
 	import {
@@ -58,9 +56,6 @@
 			day: 'numeric'
 		})
 	);
-	// Check if real-time sync is available for this share
-	const hasRealtimeSync = $derived(isRealtimeSyncAvailable(data.share.web_doc_id));
-
 	// Toggle TOC visibility
 	function toggleTOC() {
 		showTOC = !showTOC;
@@ -232,16 +227,7 @@
 
 			<div class="flex gap-8 items-start">
 				<div class="flex-1 min-w-0 max-w-[800px]">
-					{#if hasRealtimeSync}
-						<LiveMarkdownViewer
-							content={data.content || ''}
-							initialHtml={data.contentHtml || undefined}
-							docId={data.share.web_doc_id}
-							slug={data.share.web_slug}
-							sessionToken={data.sessionToken}
-							folderItems={data.folderItems}
-						/>
-					{:else if data.canEdit}
+					{#if data.canEdit}
 						<EditableMarkdownViewer
 							content={data.content || ''}
 							slug={data.share.web_slug}
