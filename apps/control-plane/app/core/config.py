@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic import AnyUrl, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +74,44 @@ class Settings(BaseSettings):
         default=None, description="Ed25519 private key in PEM format for signing relay tokens"
     )
     relay_key_id: str = Field(default="relay_cp_dev", description="Key ID for JWT kid header")
+    relay_audience: str | None = Field(
+        default=None,
+        description=(
+            "Expected 'aud' claim relay-server validates CWT tokens against — must equal "
+            "[server].url in relay.toml exactly (e.g. https://tr.entire.vc). NOT the same "
+            "value as relay_public_url: that one is the client-facing WebSocket URL and "
+            "typically carries a wss:// scheme and a /doc/ws path, which the aud claim must "
+            "NOT include. If unset, derived from relay_public_url's host as "
+            "'https://{host}' (see Settings.effective_relay_audience) — correct for the "
+            "standard deploy where relay.toml's [server].url is 'https://{DOMAIN_BASE}'. "
+            "Set explicitly if your relay.toml uses a different [server].url."
+        ),
+    )
+    relay_token_issuer: str = Field(
+        default="relay-server",
+        description=(
+            "'iss' claim on issued CWT tokens. relay-server (ghcr.io/entire-vc/"
+            "evc-relay-server, crates/y-sweet-core/src/auth.rs VALID_ISSUERS) only accepts "
+            "'relay-server', 'auth.system3.dev', or 'auth.system3.md' as of image 0.9.9 — "
+            "the semantically accurate 'relay-control-plane' is NOT in that allowlist. Keep "
+            "the default until relay-server's allowlist is extended; do not hardcode "
+            "'relay-control-plane' in code."
+        ),
+    )
+
+    @property
+    def effective_relay_audience(self) -> str:
+        """The 'aud' claim to embed in issued CWT tokens.
+
+        Explicit relay_audience wins. Otherwise derived from relay_public_url's
+        host, dropping the scheme/path/query relay_public_url carries for WS
+        clients (e.g. 'wss://tr.entire.vc/doc/ws' -> 'https://tr.entire.vc') —
+        matching the standard relay.toml [server].url convention.
+        """
+        if self.relay_audience:
+            return self.relay_audience
+        host = urlsplit(str(self.relay_public_url)).netloc
+        return f"https://{host}"
 
     bootstrap_admin_email: str | None = Field(default=None)
     bootstrap_admin_password: str | None = Field(default=None)

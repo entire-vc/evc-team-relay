@@ -71,6 +71,12 @@ cp relay/relay.toml.example relay/relay.toml
 ```
 
 Edit `relay/relay.toml`:
+- `[server].url` — **must equal `RELAY_AUDIENCE` in `.env` exactly** (or, if you left
+  `RELAY_AUDIENCE` unset, must equal `https://${DOMAIN_BASE}` — the default control-plane
+  derives from `RELAY_PUBLIC_URL`'s host). A mismatch here fails silently: tokens are issued
+  and signed correctly but every WebSocket connection is rejected with no useful log line.
+  Remember there is no separate `relay.` subdomain (step 4 below) — this is
+  `https://yourdomain.com`, not `https://relay.yourdomain.com`.
 - `[store]` — MinIO credentials from `.env` (`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`).
 - `[[auth]]` — `key_id` matches `RELAY_KEY_ID` in `.env` if you set one (defaults to `relay_cp_dev`
   if omitted); `public_key` is the Ed25519 public key derived from the private key you generated
