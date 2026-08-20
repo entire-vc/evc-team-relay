@@ -86,8 +86,8 @@ Click **I've copied this key — close** to dismiss.
 
 | Scope | What it allows |
 |-------|---------------|
-| `write` | Upload files to the share via `POST /v1/web/shares/{slug}/upload` and `/sync-upload` |
-| `read` | List and read the share's files: `GET /v1/web/shares/{id}/files-index`, `/download`, `/files`, `/assets`, and share metadata |
+| `write` | Upload files to the share via `POST /v1/web/shares/{slug}/upload` and `/sync-upload`, and write one document conditionally via `PUT /v1/shares/{id}/sync-write` |
+| `read` | List and read the share's files: `GET /v1/web/shares/{id}/files-index`, `/download`, `/files`, `/assets`, share metadata, and the sync protocol's `GET /v1/shares/{id}/files-index` and `/download` |
 
 A key created without an explicit `scopes` field — which is what the Obsidian plugin does — gets
 **both** scopes. To create an upload-only "drop box" key that can never read the share, pass
@@ -101,6 +101,55 @@ a WARNING. (Before 2026-08-19 this split was permanent, not a grace period — a
 read through `/files` while `/download` answered `403 Agent key does not have read scope`.)
 
 An agent key is still bound to exactly one share and grants no access to any other.
+
+### The sync protocol (`/v1/shares/{id}/…`)
+
+There are two route families, and they are not interchangeable:
+
+| Family | Carries `sha256` / `updated_at`? | Use it for |
+|--------|----------------------------------|------------|
+| `/v1/web/shares/…` | no | web publishing, and fire-and-forget uploads |
+| `/v1/shares/…` | **yes** | two-way sync: reconciling two copies of a document |
+
+Only the second family lets a caller see which version it is holding, so only the second family can
+write without silently discarding somebody else's edit. Since 2026-08-20 the same agent key reaches
+it, with the same literal scopes:
+
+| Endpoint | Scope | Notes |
+|----------|-------|-------|
+| `GET /v1/shares/{id}/files-index` | `read` | returns `path`, `sha256`, `size`, `updated_at` per document |
+| `GET /v1/shares/{id}/download?path=…` | `read` | body, plus `ETag: "<sha256>"` and `X-Updated-At` |
+| `PUT /v1/shares/{id}/sync-write?path=…` | `write` | conditional write — see below |
+
+`sync-write` **requires** a precondition; there is no unconditional form:
+
+* `If-Match: "<sha256>"` — replace the version whose hash you supply. If the stored hash differs
+  (someone edited the document since you read it), the answer is `412 Precondition Failed` and
+  nothing is written — not the index, not the object store.
+* `If-None-Match: *` — create a document that does not exist yet. `412` if it already does.
+* Neither header — `428 Precondition Required`.
+* `If-Match: *` — refused with `428`. It asserts only that the file exists, which is exactly the
+  blind overwrite this endpoint will not perform.
+
+The hash returned by `files-index`, the `ETag` on `download`, and the `ETag` on a successful
+`sync-write` are all the same token, so the read → edit → write loop needs no extra call:
+
+```bash
+ETAG=$(curl -sfI "https://cp.yourdomain.com/v1/shares/$SHARE_ID/download?path=notes/plan.md" \
+  -H "X-Agent-Key: $KEY" | grep -i '^etag:' | cut -d' ' -f2 | tr -d '\r')
+
+curl -sf -X PUT "https://cp.yourdomain.com/v1/shares/$SHARE_ID/sync-write?path=notes/plan.md" \
+  -H "X-Agent-Key: $KEY" \
+  -H "Content-Type: text/markdown" \
+  -H "If-Match: $ETAG" \
+  --data-binary @plan.md
+```
+
+A document written this way lands as `source=sync-artifact`, exactly like one uploaded through
+`/v1/web/shares/{id}/sync-upload`, so the Obsidian plugin picks it up on its next inbound cycle.
+
+Share management stays user-only: an agent key cannot list shares, delete a share, change members,
+or mint attachment file-tokens.
 
 ### Changing the scopes of an existing key
 
@@ -270,6 +319,8 @@ The key is invalidated immediately. Any agent using it will receive `403 Forbidd
 | `403 Forbidden: does not have read scope` | Key has no `read` scope (all keys created before 2026-08-19 via the plugin) | Grant `read` via `PATCH .../agent-keys/{key_id}` |
 | `404 Not Found` | Share slug wrong, or web publishing disabled | Verify the slug in plugin settings; enable web publishing |
 | `409 Conflict` | 20-key limit reached | Revoke unused keys first |
+| `412 Precondition Failed` | `sync-write`: the document changed since you read it, or `If-None-Match: *` on a document that already exists | Re-read it, merge, retry with the new `sha256` |
+| `428 Precondition Required` | `sync-write` without `If-Match`/`If-None-Match`, or with `If-Match: *` | Supply the `sha256` of the version you are replacing |
 | `413 Request Entity Too Large` | File exceeds 25 MB | Split the file or use a smaller payload |
 
 ---
