@@ -49,19 +49,37 @@ You want your team in Obsidian, editing together, publishing docs — without gi
 
 ## Quick Start
 
+Full walkthrough — DNS, production hardening, systemd, troubleshooting — lives in the
+**[Installation Guide](docs/installation.md)**. The short version:
+
 ```bash
 git clone https://github.com/entire-vc/evc-team-relay.git
 cd evc-team-relay/infra
 cp env.example .env
-# Edit .env with your settings
+# Edit .env — at minimum DOMAIN_BASE, ACME_EMAIL, and RELAY_PRIVATE_KEY
+# (generate with: openssl genpkey -algorithm ed25519 -out relay_private.pem
+#  && openssl base64 -A -in relay_private.pem)
+
+cp relay/relay.toml.example relay/relay.toml
+# Edit relay.toml: MinIO credentials from .env, and the [[auth]] public_key
+# derived from the same key (see docs/installation.md step 3)
+
+# Pull the published images instead of building from source — web-publish's
+# build needs a GitHub token scoped to our private packages, which nobody
+# outside the org has. Point releases only; run from evc-team-relay/ (one
+# level up from infra/).
+bash ../scripts/pull-published-images.sh
+
 docker compose up -d
 ```
 
-**Services:**
+**Services** (once DNS points `cp`/`relay`/`docs` at your server and Caddy has issued certs):
 - Control Plane API: `https://cp.yourdomain.com`
 - Relay Server: `wss://relay.yourdomain.com`
 - Web Publish: `https://docs.yourdomain.com`
-- Grafana: `http://localhost:3001`
+
+Monitoring (Prometheus + Grafana) is on the internal Docker network only by default — see
+[Configuration → Monitoring](docs/configuration.md#monitoring) to reach it.
 
 Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) and connect.
 
@@ -96,10 +114,9 @@ Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-o
 ## Documentation
 
 Technical documentation is available in [`docs/`](./docs/):
-- [Configuration](./docs/configuration.md)
+- [Installation](./docs/installation.md)
+- [Configuration](./docs/configuration.md) — includes [Web Publishing](./docs/configuration.md#web-publishing) and [Monitoring](./docs/configuration.md#monitoring)
 - [API Reference](./docs/api.md)
-- [Web Publishing](./docs/web-publish.md)
-- [Monitoring](./docs/monitoring.md)
 
 ---
 

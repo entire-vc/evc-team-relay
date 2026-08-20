@@ -156,8 +156,8 @@ def load_or_generate_relay_keypair(
     if not settings.relay_private_key:
         raise RuntimeError(
             "RELAY_PRIVATE_KEY is required but not set. "
-            "Generate an Ed25519 key and set the RELAY_PRIVATE_KEY environment variable "
-            "(Base64-encoded PEM). See docs/setup.md for instructions."
+            "Generate with: openssl genpkey -algorithm ed25519 -out relay_private.pem "
+            "&& openssl base64 -A -in relay_private.pem — see docs/installation.md step 2."
         )
 
     # Load private key — supports both Base64-encoded (from .env) and raw PEM formats

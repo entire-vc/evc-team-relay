@@ -304,11 +304,17 @@ services:
       start_period: 20s
 
   web-publish:
+    # Building this from source needs a GitHub token with read access to our
+    # private @entire-vc/* packages (see apps/web-publish/.npmrc) — not
+    # available outside the org. Default to the image the release workflow
+    # already publishes publicly (docs/installation.md "Pull the published
+    # images"); `build:` stays below for internal/dev use with GITHUB_TOKEN.
     build:
       context: ../apps/web-publish
       dockerfile: Dockerfile
       args:
         GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    image: infra-web-publish:latest
     environment:
       CONTROL_PLANE_URL: http://control-plane:8000
       PUBLIC_CONTROL_PLANE_URL: https://cp.${DOMAIN_BASE}

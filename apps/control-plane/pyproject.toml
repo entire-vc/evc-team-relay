@@ -14,7 +14,16 @@ dependencies = [
     "sqlalchemy>=2.0.25,<3.0",
     "alembic>=1.12,<2.0",
     "passlib[bcrypt]>=1.7.4,<2.0",
-    "bcrypt>=3.2,<6.0",
+    # passlib 1.7.4 (last release 2020, unmaintained) probes bcrypt's internal
+    # wrap-bug workaround at import time; bcrypt>=4.1 removed what that probe
+    # relies on, so any fresh install crashes bootstrap_admin_if_needed with
+    # "password cannot be longer than 72 bytes" on EVERY password, unrelated
+    # to actual length. Reproduced empirically on a clean OSS install
+    # (task 0bc89f80): `pip install .` (the Dockerfile's own install path,
+    # which does not use uv.lock) resolves bcrypt 5.0.0 today and the
+    # container never becomes healthy. Pin below the break until passlib is
+    # replaced or fixed upstream.
+    "bcrypt>=3.2,<4.1",
     "PyJWT>=2.8.0,<3.0",
     "cryptography>=50.0.0,<51.0",
     "psycopg[binary]>=3.1,<4.0",
