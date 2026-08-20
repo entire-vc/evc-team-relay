@@ -177,41 +177,6 @@ def load_or_generate_relay_keypair(
     return (private_key, public_base64, key_id)
 
 
-def create_relay_token(
-    private_key: ed25519.Ed25519PrivateKey,
-    key_id: str,
-    doc_id: str,
-    mode: str,
-    expires_minutes: int,
-    audience: str | None = None,
-) -> str:
-    """Create Ed25519-signed JWT for relay-server authentication.
-
-    Args:
-        private_key: Ed25519 private key object
-        key_id: Key identifier for JWT header (kid)
-        doc_id: Document ID for relay access
-        mode: Access mode ("read" or "write")
-        expires_minutes: Token TTL in minutes
-        audience: Relay server URL for 'aud' claim (e.g., wss://tr.example.com)
-
-    Returns:
-        Signed JWT token string
-    """
-    now = utcnow()
-    payload = {
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
-        "doc": doc_id,
-        "mode": mode,
-    }
-
-    if audience:
-        payload["aud"] = audience
-
-    return jwt.encode(payload, private_key, algorithm="EdDSA", headers={"kid": key_id})
-
-
 # CWT claim labels (RFC 8392)
 CWT_CLAIM_ISS = 1  # issuer
 CWT_CLAIM_SUB = 2  # subject
