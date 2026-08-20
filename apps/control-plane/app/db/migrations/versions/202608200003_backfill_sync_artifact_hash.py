@@ -1,8 +1,15 @@
 """Backfill sha256/size/modified_at/source on plugin-pushed web_folder_items.
 
-Revision ID: 202608200001
-Revises: 202607250001
+Revision ID: 202608200003
+Revises: 202608200002
 Create Date: 2026-08-20 00:00:00.000000
+
+Renumbered from 202608200001 -> 202608200003 (unchanged otherwise) after
+merging main: task #ac65cfe5's reconciliation migration (202608200002) landed
+on main first, forking from the same 202607250001 parent this one originally
+did. Rather than merge two heads, this one now chains after it — the two
+migrations touch disjoint data (email_queue vs. web_folder_items) so order
+between them doesn't matter functionally, only the DAG needs to be linear.
 
 Items pushed through POST /shares/{slug}/files (the Obsidian plugin's content-push
 path, fixed alongside this migration) carried `content` but no `sha256`/`source`
@@ -36,8 +43,8 @@ from collections.abc import Sequence
 from alembic import op
 from sqlalchemy import text
 
-revision: str = "202608200001"
-down_revision: str | None = "202607250001"
+revision: str = "202608200003"
+down_revision: str | None = "202608200002"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
