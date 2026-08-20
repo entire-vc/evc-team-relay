@@ -27,6 +27,13 @@ from app.core.security import (
     verify_relay_token_cwt,
 )
 
+# Mirrors relay-server's own allowlist (ghcr.io/entire-vc/evc-relay-server,
+# crates/y-sweet-core/src/auth.rs VALID_ISSUERS, as of image 0.9.9). Not
+# imported from there — different repo/language — so this is a deliberate
+# duplicate, not a shared source of truth; if relay-server's allowlist ever
+# changes, this constant must be updated by hand (#7908e17e).
+RELAY_SERVER_VALID_ISSUERS = ("relay-server", "auth.system3.dev", "auth.system3.md")
+
 # ── Helpers ──────────────────────────────────────────────────
 
 
@@ -303,12 +310,30 @@ class TestCWTClaims:
         _, claims, _, _ = _decode_cwt_raw(token)
         assert CWT_CLAIM_SHARE not in claims
 
-    def test_iss_claim(self):
+    def test_iss_claim_default_is_relay_server_allowlisted(self):
+        """The default issuer must be one relay-server actually accepts.
+
+        Regression test for #7908e17e: the previous default,
+        "relay-control-plane", is NOT in relay-server's VALID_ISSUERS and was
+        rejected with InvalidClaims — this test used to assert that rejected
+        value as the expected/correct behavior, enshrining the bug rather
+        than catching it. Assert allowlist membership, not a specific string,
+        so a future default change that's still valid doesn't spuriously
+        break this test.
+        """
         private_key, _ = _make_keypair()
         token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
 
         _, claims, _, _ = _decode_cwt_raw(token)
-        assert claims[CWT_CLAIM_ISS] == "relay-control-plane"
+        assert claims[CWT_CLAIM_ISS] in RELAY_SERVER_VALID_ISSUERS
+
+    def test_relay_control_plane_issuer_is_not_allowlisted(self):
+        """Negative control for the above: prove the OLD default really would
+        have failed relay-server's check, so the positive assertion isn't
+        vacuously true. If relay-server's allowlist ever grows to include
+        "relay-control-plane", this test should be deleted, not weakened.
+        """
+        assert "relay-control-plane" not in RELAY_SERVER_VALID_ISSUERS
 
     def test_custom_issuer(self):
         private_key, _ = _make_keypair()
@@ -365,7 +390,9 @@ class TestCWTVerification:
 
         claims = verify_relay_token_cwt(public_key, token)
 
-        assert claims["iss"] == "relay-control-plane"
+        # See test_iss_claim_default_is_relay_server_allowlisted (#7908e17e)
+        # for why this asserts allowlist membership, not a specific value.
+        assert claims["iss"] in RELAY_SERVER_VALID_ISSUERS
         assert claims["scope"] == "doc:doc-abc:rw"
         assert "iat" in claims
 
