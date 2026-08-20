@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, joinedload
 
-from app.core import security
+from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.db import models
 from app.schemas import share as share_schema
@@ -673,7 +673,15 @@ def authenticate_agent_key(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
             )
-    if required_scope and required_scope not in set(agent_key.scopes.split(",")):
+    # Scope goes through the shared policy object (ADR-0001), not a local
+    # `scopes.split(",")`: the hand-rolled copy that used to live here did not
+    # strip whitespace, so a key stored as "read, write" — which the PATCH
+    # scopes endpoint can produce — silently failed every check for `write`.
+    # Deliberately NO grace: this helper serves UUID-addressable, possibly
+    # never-published shares, exactly like `_auth_share_read_access`.
+    if required_scope and not agent_key_scopes.satisfies(
+        agent_key_scopes.parse_scopes(agent_key.scopes), required_scope
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Agent key does not have {required_scope} scope",

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import io
+import logging
 import re
 import uuid
 from datetime import timedelta
@@ -28,6 +31,7 @@ from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/shares", tags=["shares"])
 limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=list[share_schema.ShareListItem])
@@ -132,20 +136,83 @@ def _ensure_minio_bucket(client: Minio, bucket_name: str) -> None:
         raise HTTPException(status_code=500, detail=f"Failed to access storage: {e}")
 
 
+# --- Sync-protocol authentication -------------------------------------------
+#
+# The /shares/{id}/files-index + /download + /sync-write trio is the SYNC
+# PROTOCOL: unlike the /v1/web/ family it carries `sha256` and `updated_at`, so
+# it is the only surface on which a caller can reconcile two copies of a
+# document instead of blindly overwriting one with the other.
+#
+# It used to be user-JWT-only (`Depends(deps.get_current_user)`), which meant
+# the agent key a Mesh project is configured with — a credential that is
+# already trusted to write the same share's bytes through
+# /v1/web/shares/{id}/sync-upload — could not read a document's hash, and so
+# could not write safely. Task #ee1745ce extends that SAME key to this
+# protocol; it does not mint a second credential or a service user.
+#
+# Scope policy is the literal one (ADR-0001) via
+# share_service.authenticate_agent_key: `write` does not imply `read`, and
+# there is deliberately no lenient-read grace here — these routes are
+# UUID-addressable and therefore reach shares that were never web-published.
+
+
+def _authorize_share_sync(
+    request: Request,
+    share: models.Share,
+    db: Session,
+    current_user: models.User | None,
+    *,
+    required_scope: str,
+) -> str:
+    """Authorize a sync-protocol request via X-Agent-Key or user JWT.
+
+    Returns "agent_key" or "user". The agent-key branch also checks the key's
+    standing (creator still owner/member/admin) and the literal scope, and
+    stamps last_used_at — committed here, because the read routes commit
+    nothing of their own and an uncommitted stamp would be silently discarded.
+    Failing to record usage must never fail the request.
+    """
+    raw_key = request.headers.get("X-Agent-Key")
+    if raw_key:
+        agent_key = share_service.authenticate_agent_key(
+            db, share, raw_key, required_scope=required_scope
+        )
+        agent_key.last_used_at = security.utcnow()
+        try:
+            db.commit()
+        except Exception:  # pragma: no cover - telemetry must not 500
+            db.rollback()
+        return "agent_key"
+
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
+
+    if required_scope == "write":
+        share_service.ensure_write_access(db, share, current_user)
+    else:
+        share_service.ensure_read_access(db, share, current_user)
+    return "user"
+
+
 @router.get("/{share_id}/files-index", response_model=list[SyncArtifactItem])
 def get_share_files_index(
+    request: Request,
     share_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(deps.get_current_user),
+    current_user: models.User | None = Depends(deps.get_optional_user),
 ) -> list[SyncArtifactItem]:
     """
-    List sync-artifact files for a share (plugin inbound sync, Bearer JWT).
+    List sync-artifact files for a share (sync protocol).
 
     Returns only items uploaded via sync-upload (source=sync-artifact) in
     SyncArtifactItem format expected by the Obsidian plugin InboundFileDownloader.
+    Each item carries `sha256` + `updated_at` — the values a caller feeds back
+    into `If-Match` on PUT /sync-write.
+
+    Auth: Authorization: Bearer <user JWT>, or X-Agent-Key with `read` scope.
     """
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, current_user)
+    _authorize_share_sync(request, share, db, current_user, required_scope="read")
 
     folder_items = share.web_folder_items or []
     result = []
@@ -166,25 +233,48 @@ def get_share_files_index(
     return result
 
 
+def _sync_read_headers(item: dict[str, Any]) -> dict[str, str]:
+    """ETag/Last-Modified for a sync-protocol read.
+
+    The ETag is the item's stored sha256 — the exact token PUT /sync-write
+    expects back in If-Match, so a caller can do read → edit → conditional
+    write off a single GET without a second index call.
+    """
+    headers: dict[str, str] = {}
+    sha256 = item.get("sha256")
+    if sha256:
+        headers["ETag"] = f'"{sha256}"'
+    modified_at = item.get("modified_at")
+    if modified_at:
+        headers["X-Updated-At"] = str(modified_at)
+    return headers
+
+
 @router.get("/{share_id}/download")
 def download_share_file(
+    request: Request,
     share_id: uuid.UUID,
     path: str = Query(..., description="Relative file path within share"),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(deps.get_current_user),
+    current_user: models.User | None = Depends(deps.get_optional_user),
 ) -> Response:
     """
-    Download a sync-artifact file by relative path (plugin inbound sync, Bearer JWT).
+    Download a file by relative path (sync protocol).
 
     Resolution order: inline content in JSONB index → MinIO storage.
+    Responds with `ETag: "<sha256>"` and `X-Updated-At` when the index knows them.
+
+    Auth: Authorization: Bearer <user JWT>, or X-Agent-Key with `read` scope.
     """
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, current_user)
+    _authorize_share_sync(request, share, db, current_user, required_scope="read")
 
     folder_items = share.web_folder_items or []
     for item in folder_items:
         if item.get("path") != path:
             continue
+
+        extra_headers = _sync_read_headers(item)
 
         content_str = item.get("content")
         if content_str is not None:
@@ -192,7 +282,7 @@ def download_share_file(
             content_bytes = (
                 content_str.encode("utf-8") if isinstance(content_str, str) else content_str
             )
-            return Response(content=content_bytes, media_type=mime)
+            return Response(content=content_bytes, media_type=mime, headers=extra_headers)
 
         storage_key = item.get("storage_key")
         if storage_key:
@@ -216,12 +306,239 @@ def download_share_file(
                     detail=f"Failed to retrieve file: {e}",
                 )
             mime = item.get("mime", "application/octet-stream")
-            return Response(content=data, media_type=mime)
+            return Response(content=data, media_type=mime, headers=extra_headers)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"File not found: {path}",
     )
+
+
+# --- Sync-protocol conditional write ----------------------------------------
+
+# Same 25MB ceiling as the web-publish family's mesh/sync uploads.
+MAX_SYNC_WRITE_SIZE = 25 * 1024 * 1024
+
+
+class SyncWriteResult(BaseModel):
+    path: str
+    sha256: str
+    size: int
+    updated_at: str
+
+
+def _parse_etag_value(raw: str) -> str:
+    """Normalise one entity-tag: strip W/ prefix, quotes and case."""
+    value = raw.strip()
+    if value.startswith("W/"):
+        value = value[2:].strip()
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        value = value[1:-1]
+    return value.strip().lower()
+
+
+def _require_sync_precondition(
+    if_match: str | None,
+    if_none_match: str | None,
+    current: dict[str, Any] | None,
+    path: str,
+) -> None:
+    """Enforce compare-and-swap on a sync-protocol write.
+
+    Why this exists at all: before #ee1745ce the server had NO conditional
+    write anywhere — `/v1/web/.../sync-upload` computes the sha256 of whatever
+    body it is handed and stores it, so two writers silently last-write-wins.
+    A credential that can write documents without proving which version it is
+    replacing cannot be given to an automated agent, so the precondition is
+    mandatory rather than opt-in: a write with neither header is 428, never an
+    unchecked overwrite.
+
+    - ``If-Match: <sha256>``  — the item must exist and its stored sha256 must
+      be one of the supplied tags.
+    - ``If-None-Match: *``    — the item must NOT exist (create-only).
+    - ``If-Match: *`` is rejected: RFC-wise it only asserts existence, which is
+      precisely the blind overwrite this endpoint refuses to perform.
+    """
+    if if_match is not None and if_none_match is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Send either If-Match or If-None-Match, not both",
+        )
+
+    if if_none_match is not None:
+        if _parse_etag_value(if_none_match) != "*":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="If-None-Match is only supported as '*' (create-only)",
+            )
+        if current is not None:
+            raise HTTPException(
+                status_code=status.HTTP_412_PRECONDITION_FAILED,
+                detail=f"File already exists: {path}",
+            )
+        return
+
+    if if_match is None:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail=(
+                "If-Match: <sha256> (or If-None-Match: * to create) is required — "
+                "unconditional writes are not accepted on the sync protocol"
+            ),
+        )
+
+    candidates = {_parse_etag_value(part) for part in if_match.split(",") if part.strip()}
+    if "*" in candidates:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="If-Match: * is not accepted — supply the sha256 of the version you replace",
+        )
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="If-Match header is empty"
+        )
+    if current is None:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail=f"File not found: {path}",
+        )
+    stored = str(current.get("sha256") or "").lower()
+    if not stored or stored not in candidates:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail="sha256 mismatch: the file changed since it was read",
+        )
+
+
+@router.put("/{share_id}/sync-write", response_model=SyncWriteResult)
+@limiter.limit("60/minute")
+async def sync_write_file(
+    request: Request,
+    response: Response,
+    share_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path within share"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+    db: Session = Depends(get_db),
+    current_user: models.User | None = Depends(deps.get_optional_user),
+) -> SyncWriteResult:
+    """
+    Write one document into a folder share, conditionally on its current sha256.
+
+    Auth: Authorization: Bearer <user JWT> (owner/editor), or X-Agent-Key with
+    `write` scope. Body: raw bytes, max 25MB.
+
+    Precondition (mandatory): `If-Match: "<sha256>"` to replace a known version,
+    or `If-None-Match: *` to create. A mismatch is 412 and writes nothing —
+    neither the object store nor the index is touched.
+
+    Produces the same index entry shape as the web-publish `sync-upload`
+    (source=sync-artifact), so the written document is immediately visible to
+    GET /shares/{id}/files-index and to the Obsidian plugin's inbound sync.
+    """
+    share = share_service.get_share(db, share_id)
+    if share.kind != models.ShareKind.FOLDER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sync-write only supported for folder shares",
+        )
+    auth_method = _authorize_share_sync(request, share, db, current_user, required_scope="write")
+
+    path = _validate_file_path(path)
+
+    body = await request.body()
+    if len(body) > MAX_SYNC_WRITE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Max size: {MAX_SYNC_WRITE_SIZE // (1024 * 1024)}MB",
+        )
+
+    mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
+    is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
+    sha256 = hashlib.sha256(body).hexdigest()
+
+    # Row lock, then check, then write — in that order and in one transaction.
+    # The web-publish sync-upload deliberately keeps MinIO I/O outside the row
+    # lock (pool-lock hygiene), but that trade is only safe when the write is
+    # unconditional. Here a failed precondition must leave BOTH the index and
+    # the object store untouched, which only holds if the compare and the swap
+    # sit in the same critical section.
+    locked = db.execute(
+        select(models.Share).where(models.Share.id == share.id).with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+
+    folder_items = list(locked.web_folder_items or [])
+    current = next((i for i in folder_items if i.get("path") == path), None)
+    _require_sync_precondition(if_match, if_none_match, current, path)
+
+    settings = get_settings()
+    minio_client = _get_minio_client()
+    _ensure_minio_bucket(minio_client, settings.minio_bucket)
+    # Same storage layout as web-publish sync-upload: text is content-addressed
+    # (dedup for the plugin), binary keeps its path so /_assets/ can serve it.
+    storage_key = (
+        f"sync-uploads/{locked.id}/{sha256}" if is_text else f"web-assets/{locked.id}/{path}"
+    )
+    try:
+        minio_client.put_object(
+            settings.minio_bucket,
+            storage_key,
+            io.BytesIO(body),
+            length=len(body),
+            content_type=mime,
+        )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store document: {e}",
+        )
+
+    now_iso = security.utcnow().isoformat()
+    inline_content = (
+        body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+    )
+    entry = {
+        "path": path,
+        "name": path.split("/")[-1],
+        "type": "doc" if is_text else "asset",
+        "source": "sync-artifact",
+        "mime": mime,
+        "size": len(body),
+        "sha256": sha256,
+        "modified_at": now_iso,
+        "storage_key": storage_key,
+        "content": inline_content,
+    }
+    is_new_file = current is None
+    if is_new_file:
+        folder_items.append(entry)
+    else:
+        current.update(entry)
+
+    locked.web_folder_items = folder_items
+    flag_modified(locked, "web_folder_items")
+    locked.web_content_updated_at = security.utcnow()
+    db.commit()
+
+    logger.info(
+        "sync_write",
+        extra={
+            "event": "sync_write",
+            "auth_method": auth_method,
+            "share_id": str(share_id),
+            "path": path,
+            "sha256": sha256,
+            # NOT "created": that is a reserved LogRecord attribute and
+            # logging raises KeyError on any attempt to overwrite it.
+            "is_new_file": is_new_file,
+        },
+    )
+
+    # The new version's tag, ready to be fed straight back as the next If-Match.
+    response.headers["ETag"] = f'"{sha256}"'
+    return SyncWriteResult(path=path, sha256=sha256, size=len(body), updated_at=now_iso)
 
 
 # --- Attachment (CAS) file-token routes -------------------------------------
