@@ -239,7 +239,7 @@ services:
         condition: service_completed_successfully
 
   relay-server:
-    image: ghcr.io/entire-vc/evc-relay-server:0.9.9
+    image: ghcr.io/entire-vc/evc-relay-server:0.9.12
     depends_on:
       minio:
         condition: service_healthy
