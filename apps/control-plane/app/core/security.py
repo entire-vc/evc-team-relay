@@ -215,7 +215,7 @@ def create_relay_token_cwt(
     mode: str,
     expires_minutes: int,
     audience: str | None = None,
-    issuer: str = "relay-control-plane",
+    issuer: str = "relay-server",
     share_id: str | None = None,
 ) -> str:
     """Create CWT (CBOR Web Token) for relay-server authentication.
@@ -267,9 +267,13 @@ def create_relay_token_cwt(
             tokens with no aud claim (MissingAudience) once it knows to expect one.
         issuer: Token issuer. Must be one of relay-server's VALID_ISSUERS allowlist
             ("relay-server", "auth.system3.dev", "auth.system3.md" as of image 0.9.9) —
-            see Settings.relay_token_issuer. Default kept at "relay-control-plane" for
-            call-site backward-compat, but callers going through token_service.py
-            override this via settings.relay_token_issuer.
+            see Settings.relay_token_issuer. Default is "relay-server", matching
+            Settings.relay_token_issuer's own default (#7908e17e — the previous
+            default here, "relay-control-plane", is NOT in the allowlist and was
+            enshrined as "correct" by two tests that have since been rewritten to
+            assert allowlist membership instead; callers going through
+            token_service.py still override this explicitly via
+            settings.relay_token_issuer).
         share_id: Share UUID the token was issued against (added as CWT_CLAIM_SHARE)
 
     Returns:
