@@ -170,9 +170,9 @@ class TestRelayTokenHappyPath:
         assert claims["exp"] > claims["iat"]
         # aud MUST appear — relay-server rejects tokens missing it. Derived from
         # RELAY_PUBLIC_URL=wss://relay.test (conftest.py) -> https://relay.test.
-        assert claims.get("aud") == "https://relay.test", (
-            "aud missing or wrong — relay-server requires it (#f975dd60)"
-        )
+        assert (
+            claims.get("aud") == "https://relay.test"
+        ), "aud missing or wrong — relay-server requires it (#f975dd60)"
 
     def test_read_mode_scope(self, client: TestClient):
         admin_token = login(client, "bootstrap@example.com", "super-secret")
