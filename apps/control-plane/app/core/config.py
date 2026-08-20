@@ -113,6 +113,39 @@ class Settings(BaseSettings):
         host = urlsplit(str(self.relay_public_url)).netloc
         return f"https://{host}"
 
+    def relay_doc_ws_url(self, doc_id: str) -> str:
+        """Per-doc client-connect URL for the non-deprecated relay-server route.
+
+        relay-server's crates/relay/src/server.rs logs a deprecation warning
+        on every connection through /doc/ws/:doc_id (the route relay_public_url
+        used to point clients at as a static, doc-independent prefix) and
+        recommends /d/:doc_id/ws/:doc_id2 instead — a route that requires the
+        SAME doc_id to appear in both path segments
+        (handle_socket_upgrade_full_path rejects a mismatch with 400). Both
+        routes share identical token verification (verify_socket_token) and
+        identical downstream connection handling, so this is a pure URL-shape
+        change, not a new interaction pattern.
+
+        The client-side YSweetProvider (obsidian-plugin src/client/provider.ts)
+        builds its final WS URL as f"{returned_url}/{doc_id}" (roomname is the
+        doc_id token.docId is keyed on) — so returning
+        "{scheme}://{host}/d/{doc_id}/ws" here makes the client land on
+        .../d/{doc_id}/ws/{doc_id}, satisfying the doubled-doc_id route.
+        This matches the ws_url relay-server's own POST /doc/:doc_id/auth
+        would compute (generate_context_aware_urls) for the same doc_id —
+        we don't call that endpoint (it requires a relay-server *server*
+        token via verify_server_token, a different credential than the
+        per-user CWT control-plane already mints), we just replicate the
+        URL shape it documents as canonical.
+
+        Scheme/host are taken from relay_public_url, dropping whatever path
+        it carries (historically a static "/doc/ws" suffix) — so existing
+        deployments don't need to change their env var; only the path this
+        method returns changes.
+        """
+        parsed = urlsplit(str(self.relay_public_url))
+        return f"{parsed.scheme}://{parsed.netloc}/d/{doc_id}/ws"
+
     bootstrap_admin_email: str | None = Field(default=None)
     bootstrap_admin_password: str | None = Field(default=None)
 

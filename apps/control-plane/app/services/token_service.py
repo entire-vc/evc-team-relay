@@ -161,8 +161,13 @@ def issue_relay_token(
         user_agent=request.headers.get("user-agent"),
     )
 
+    # TR (#b1e88884): relay-server deprecated the flat /doc/ws/:doc_id route
+    # this used to point clients at (static, doc-independent prefix) in favor
+    # of /d/:doc_id/ws/:doc_id2. relay_doc_ws_url() returns a per-doc URL —
+    # see its docstring in app/core/config.py for why this is a drop-in
+    # shape change, not a new client/server interaction pattern.
     return token_schema.RelayTokenResponse(
-        relay_url=str(settings.relay_public_url).rstrip("/"),
+        relay_url=settings.relay_doc_ws_url(payload.doc_id),
         token=token,
         expires_at=expires_at,
     )
