@@ -1128,9 +1128,7 @@ class TestWebRelayTokenEndpointRemoved:
         self, client: TestClient, test_user: models.User, monkeypatch
     ):
         monkeypatch.setattr("app.api.routers.web.get_settings", lambda: _web_enabled_settings())
-        r = client.post(
-            "/auth/login", json={"email": test_user.email, "password": "test123456"}
-        )
+        r = client.post("/auth/login", json={"email": test_user.email, "password": "test123456"})
         token = r.json()["access_token"]
         create = client.post(
             "/v1/shares",
@@ -1795,6 +1793,7 @@ class TestPrivateShareWebAuth:
             headers={"X-Agent-Key": raw_key},
         )
         assert r.status_code == 200
+
 
 class TestFolderItemsContentMerge:
     """PATCH /v1/shares/{id} with web_folder_items must MERGE, not REPLACE (AC1–AC3)."""
