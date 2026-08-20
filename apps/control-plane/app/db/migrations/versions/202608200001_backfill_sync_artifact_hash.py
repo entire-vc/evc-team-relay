@@ -78,7 +78,7 @@ def upgrade() -> None:
             )
             touched += 1
 
-    op.execute(text(f"-- backfilled sync-artifact hash on {touched} share(s)"))
+    print(f"backfilled sync-artifact hash on {touched} share(s)")
 
 
 def downgrade() -> None:
