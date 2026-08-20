@@ -80,6 +80,24 @@ log "Public tables found: ${TABLE_COUNT}"
 [ "${TABLE_COUNT:-0}" -gt 0 ] || fail "Restore produced 0 tables — dump may be empty or corrupt"
 pass "Restore-test PASSED: ${TABLE_COUNT} tables in ${POSTGRES_DB}"
 
+# Verify key tables are non-empty. TABLE_COUNT>0 alone proves only that the
+# dump's SCHEMA restored — a schema-only or truncated backup (e.g. pg_dump
+# run against an app that failed to connect and dumped zero rows) passes
+# that check while containing no actual data. Check row counts on the
+# tables that matter for an actual disaster-recovery, not just "some tables
+# exist".
+KEY_TABLES="users shares share_members"
+for KEY_TABLE in ${KEY_TABLES}; do
+    ROW_COUNT=$(docker exec "${CONTAINER_NAME}" \
+        psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc \
+        "SELECT count(*) FROM ${KEY_TABLE}" 2>/dev/null) \
+        || fail "Key table '${KEY_TABLE}' missing or unreadable in restored DB"
+    ROW_COUNT="${ROW_COUNT//[[:space:]]/}"
+    log "Table ${KEY_TABLE}: ${ROW_COUNT} rows"
+    [ "${ROW_COUNT:-0}" -gt 0 ] || fail "Key table '${KEY_TABLE}' is EMPTY after restore — dump may be a schema-only or truncated backup"
+done
+pass "Key tables non-empty: ${KEY_TABLES}"
+
 echo ""
 echo "=== RESTORE-TEST RESULT ==="
 echo "Backup: ${BACKUP_FILE}"
