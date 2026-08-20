@@ -1,0 +1,81 @@
+name: Hold gate
+
+# Makes the `hold` label an actual gate rather than a note.
+#
+# ## What was broken
+#
+# `hold` was honoured by exactly two consumers — `~/bin/gh-merge` and
+# `~/bin/mesh-merge-train`, both ours. Every merge path GitHub itself offers
+# ignored it: the web "Merge pull request" button, `gh pr merge`, a direct REST
+# PUT, and — since this repository turned one on — the merge queue. Measured
+# twice: PR #613 was labelled `hold` at 18:19 and entered the queue at 18:44,
+# and PR #619 merged at 22:18 with the label still attached, deploying to prod.
+# Both times the wrapper gate worked perfectly and changed nothing.
+#
+# A required status check is the only gate GitHub applies to *every* path,
+# because branch protection is what all of them consult. So the label becomes
+# real by being read here rather than by being read more carefully by us.
+#
+# ## Why it must run on merge_group too
+#
+# A required check that reports nothing on `merge_group` wedges the repository:
+# every queue entry waits forever for a context that is never requested, and
+# `enforce_admins: true` means nobody can override it. Same reasoning as the
+# note at the top of ci.yml, and the same reason this workflow lands and is
+# observed running in both contexts BEFORE it is added to the required list.
+
+on:
+  pull_request:
+    branches: [main]
+    # `labeled` and `unlabeled` matter as much as the code events: applying the
+    # label to an already-green PR has to turn the check red, and removing it
+    # has to turn it green again. Without these two the gate would only ever be
+    # evaluated at push time, which is the moment the author is least likely to
+    # have decided the work needs holding.
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review, converted_to_draft]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: hold-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The job name is the required-check context string. Changing it silently
+  # un-arms the gate — branch protection would keep waiting for a context no
+  # workflow produces, which reads as "pending" rather than as "misconfigured".
+  hold-gate:
+    name: Hold gate
+    runs-on: ubuntu-latest
+    steps:
+      # Both files, not just the list. Fetching the data and forgetting the code
+      # that reads it fails the job — correctly, since this gate refuses on any
+      # unknown — but it fails for a reason that has nothing to do with labels,
+      # and a required check red for the wrong reason is a wedged repository.
+      - name: Check out the gate
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/hold-labels.txt
+            .github/scripts/hold_gate.py
+          sparse-checkout-cone-mode: false
+
+      - name: Confirm the gate was actually checked out
+        run: |
+          test -f .github/scripts/hold_gate.py || { echo "::error::hold_gate.py missing after checkout"; exit 1; }
+          test -f .github/hold-labels.txt      || { echo "::error::hold-labels.txt missing after checkout"; exit 1; }
+
+      - name: Refuse any pull request carrying a hold label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python3 .github/scripts/hold_gate.py

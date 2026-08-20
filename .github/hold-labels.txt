@@ -1,0 +1,33 @@
+# Labels that mean "do not merge this yet".
+#
+# Data, not code, so the list can be changed without touching workflow logic —
+# and so the one place that decides what "held" means is greppable from both the
+# workflow and a human's eye.
+#
+# This list MUST stay identical to HOLD_LABELS in the fleet tooling
+# (bob/scripts/fleet_gate_labels.py), which is what ~/bin/gh-merge and
+# ~/bin/mesh-merge-train read. Two copies of one rule drift silently, and a
+# label that guards some merge paths but not others is worse than no label at
+# all, because it gets believed and then stops being watched — that is exactly
+# the incident this gate exists to close.
+#
+# It drifted immediately. This file shipped with six of the fleet's nine names:
+# `no-merge`, `dont-merge` and `needs-independent-review` were honoured by both
+# wrappers and invisible here, so a PR carrying one would have been refused by
+# `gh-merge` and merged by the queue — the original defect in miniature, inside
+# its own fix. Nothing was exposed (none of the three is a defined label on this
+# repository, so no PR could carry one), which is precisely why writing the
+# warning was not the same as being protected by it. The comparison is now a
+# test: `mesh-merge-train --test` fails if the two lists differ.
+#
+# Blank lines and #-comments are ignored. Matching is case-insensitive.
+
+hold
+no-automerge
+no-merge
+do-not-merge
+dont-merge
+wip
+blocked
+needs-review
+needs-independent-review
