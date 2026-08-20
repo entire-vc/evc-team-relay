@@ -2,7 +2,30 @@
   email {$ACME_EMAIL}
 }
 
+(access_log_redacted) {
+  # A site block with no `log` directive gets zero access-log entries, ever
+  # (Caddy's Caddyfile adapter puts undeclared hosts in `logs.skip_hosts`) —
+  # not "logs but drops WS upgrades", just no log at all for that host. Bit
+  # us in prod: cp.{$DOMAIN_BASE} and {$DOMAIN_BASE} had no `log` block, so
+  # 7 days of real relay-server WS traffic (confirmed via its own metrics)
+  # showed as zero requests in Caddy — looked like dead traffic, wasn't.
+  # Redact `token`/`agent_key` query params — both are live-session secrets
+  # (CWT token, share agent key) and must not land in shipped logs.
+  log {
+    format filter {
+      wrap json
+      fields {
+        request>uri query {
+          replace token REDACTED
+          replace agent_key REDACTED
+        }
+      }
+    }
+  }
+}
+
 cp.{$DOMAIN_BASE} {
+  import access_log_redacted
   handle /metrics* {
     respond 404
   }
@@ -14,6 +37,7 @@ cp.{$DOMAIN_BASE} {
 }
 
 {$DOMAIN_BASE} {
+  import access_log_redacted
   # Browser WebSocket API cannot set custom headers, so this rule extracts
   # ?token= and sets it as an Authorization header instead, for plain HTTP
   # endpoints that need it that way.
@@ -52,6 +76,7 @@ cp.{$DOMAIN_BASE} {
 # Set WEB_PUBLISH_DOMAIN in .env to enable (e.g., docs.example.com)
 # Default 'web-publish.disabled' is a placeholder that won't match real requests
 {$WEB_PUBLISH_DOMAIN:web-publish.disabled} {
+  import access_log_redacted
   reverse_proxy web-publish:3000
 }
 
