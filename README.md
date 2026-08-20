@@ -121,7 +121,8 @@ Technical documentation is available in [`docs/`](./docs/):
 
 - 🌐 [entire.vc](https://entire.vc)
 - 💬 [Discussions](https://github.com/entire-vc/.github/discussions)
-- 📧 in@entire.vc
+- 📧 <support@entire.vc>
+- 🛟 [Where to get help and what to expect](https://github.com/entire-vc/evc-team-relay/blob/main/SUPPORT.md)
 
 ## License
 
