@@ -903,3 +903,64 @@ class TestAgentKeyFileToken:
         )
         assert resp.status_code == 403
         assert "not valid for this share" in err_message(resp)
+
+    def _mint(self, client: TestClient, share_id, raw_key: str) -> str:
+        resp = client.post(
+            f"{BASE}/{share_id}/file-token",
+            json={
+                "path": "attachments/photo.png",
+                "sha256": "a" * 64,
+                "content_type": "image/png",
+                "content_length": 12345,
+            },
+            headers=key_headers(raw_key),
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["token"]
+
+    def test_read_scoped_key_token_cannot_reach_upload_url(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        """The bug this pins (#d4c851af, found on review): create_file_token
+        mints the token with the share OWNER as subject (an agent key has no
+        models.User of its own), and get_file_upload_url's ensure_write_access
+        check re-derives access from that subject — which is always the
+        owner, so it always passes regardless of the minting key's own scope.
+        A read-only key could mint a token and then use it to get a write
+        presigned URL: read escalating to write. Must be 403, and MinIO must
+        never be asked for a presigned URL."""
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share, scopes="read")
+        file_token = self._mint(client, share.id, raw_key)
+
+        mock_client = MagicMock()
+        with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
+            resp = client.post(
+                f"{BASE}/{share.id}/files/attachments/photo.png/upload-url",
+                headers={"Authorization": f"Bearer {file_token}"},
+            )
+        assert resp.status_code == 403, resp.text
+        assert "write scope" in err_message(resp)
+        mock_client.presigned_put_object.assert_not_called()
+
+    def test_read_write_scoped_key_token_reaches_upload_url(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        """Positive control for the test above: a key that genuinely holds
+        write scope must still work end to end — otherwise the 403 above
+        would be meaningless (a broken chain 403s on everything)."""
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share, scopes="read,write")
+        file_token = self._mint(client, share.id, raw_key)
+
+        mock_client = MagicMock()
+        mock_client.bucket_exists.return_value = True
+        mock_client.presigned_put_object.return_value = "https://minio.test/presigned-put"
+        with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
+            resp = client.post(
+                f"{BASE}/{share.id}/files/attachments/photo.png/upload-url",
+                headers={"Authorization": f"Bearer {file_token}"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["uploadUrl"] == "https://minio.test/presigned-put"
+        mock_client.presigned_put_object.assert_called_once()
