@@ -247,7 +247,8 @@ def create_relay_token_cwt(
     Token structure:
     - CWT tag 61 wrapper
     - COSE_Sign1 with Ed25519 signature (EdDSA algorithm)
-    - Claims: iss, iat, exp, scope (-80201), share (-80203)
+    - Protected header: alg (1) + kid (4, bstr)
+    - Claims: iss, iat, exp, aud, scope (-80201), share (-80203)
     - Scope format: "doc:{doc_id}:rw" or "doc:{doc_id}:r"
 
     Security notes (H6, re-verified TR-22 2026-07-21 against our own fork —
@@ -267,16 +268,32 @@ def create_relay_token_cwt(
     - Because there is no jti/revocation-list, remove_member cannot invalidate a
       token already handed to the ex-member — settings.relay_token_ttl_minutes (see
       config.py) is the only lever bounding that exposure window (TR-22, #f63a2bea).
-    - aud is omitted: y-sweet rejects tokens with the aud claim.
+    - kid/aud/iss (2026-08-20, #f975dd60): the previous version of this docstring said
+      "aud is omitted: y-sweet rejects tokens with the aud claim" and omitted kid from
+      the protected header entirely. That was true of upstream y-sweet; it has been
+      false since 2025-10, when we moved to our own fork (evc-relay-server), which
+      REQUIRES kid + aud, and validates iss against a fixed allowlist when present.
+      Result: every CWT issued since the CWT migration (bec43fb, 2026-02-06) failed
+      relay-server's auth check — collab was fully broken in prod for ~6 months,
+      silently, because the missing-kid failure path (auth.rs find_verifying_key)
+      never logs. Root-caused + reproduced live in #f3cb5365; do not reintroduce any
+      of these three omissions.
 
     Args:
         private_key: Ed25519 private key object
-        key_id: Key identifier for COSE header (kid)
+        key_id: Key identifier for COSE header (kid) — REQUIRED for relay-server to find
+            the right verification key; must match a [[auth]] key_id in relay.toml.
         doc_id: Document ID for relay access
         mode: Access mode ("read" or "write")
         expires_minutes: Token TTL in minutes
-        audience: Relay server URL (reserved, not added to claims — y-sweet rejects aud)
-        issuer: Token issuer (default: "relay-control-plane")
+        audience: Expected audience — MUST equal relay.toml's [server].url exactly
+            (see Settings.effective_relay_audience). Required: relay-server rejects
+            tokens with no aud claim (MissingAudience) once it knows to expect one.
+        issuer: Token issuer. Must be one of relay-server's VALID_ISSUERS allowlist
+            ("relay-server", "auth.system3.dev", "auth.system3.md" as of image 0.9.9) —
+            see Settings.relay_token_issuer. Default kept at "relay-control-plane" for
+            call-site backward-compat, but callers going through token_service.py
+            override this via settings.relay_token_issuer.
         share_id: Share UUID the token was issued against (added as CWT_CLAIM_SHARE)
 
     Returns:
@@ -295,6 +312,10 @@ def create_relay_token_cwt(
         CWT_CLAIM_SCOPE: scope,
     }
 
+    # relay-server (evc-relay-server fork) requires aud — see docstring above.
+    if audience:
+        claims[CWT_CLAIM_AUD] = audience
+
     # Bind token to the issuing share — confused-deputy mitigation (H6).
     # Full enforcement requires relay-server (System3) to validate this claim.
     if share_id:
@@ -304,9 +325,12 @@ def create_relay_token_cwt(
     claims_cbor = cbor2.dumps(claims)
 
     # Create COSE_Sign1 message
-    # Protected header: algorithm (EdDSA = -8) only
-    # Note: y-sweet does NOT include kid in protected header
-    protected = {1: -8}  # alg: EdDSA
+    # Protected header: algorithm (EdDSA = -8) + key ID (COSE param 4, bstr).
+    # relay-server's find_verifying_key (auth.rs) reads kid to pick which
+    # relay.toml [[auth]] entry to verify against; without it, tokens only work
+    # by accident (fallback loop over keys_without_id) or not at all if the
+    # matching key has a key_id configured, as prod does (KeyMismatch, silently).
+    protected = {1: -8, 4: key_id.encode("utf-8")}  # alg: EdDSA, kid: bstr
 
     # Encode protected header
     protected_cbor = cbor2.dumps(protected)

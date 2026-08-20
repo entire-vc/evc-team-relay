@@ -41,7 +41,10 @@ These create the first admin user when the database is empty.
 |----------|----------|---------|-------------|
 | `SERVER_NAME` | No | `EVC Team Relay` | Display name shown in plugin |
 | `SERVER_ID` | No | (auto) | Unique identifier, defaults to relay key ID |
-| `RELAY_PUBLIC_URL` | No | `wss://${DOMAIN_BASE}/doc/ws` | Public WebSocket URL for relay server |
+| `RELAY_PUBLIC_URL` | No | `wss://${DOMAIN_BASE}/doc/ws` | Public WebSocket URL for relay server (client-facing) |
+| `RELAY_KEY_ID` | No | `relay_cp_dev` | COSE `kid` embedded in issued tokens; must match a `[[auth]] key_id` in `relay.toml` |
+| `RELAY_AUDIENCE` | No | derived from `RELAY_PUBLIC_URL`'s host as `https://{host}` | `aud` claim on issued tokens — must equal `relay.toml`'s `[server].url` exactly. Distinct from `RELAY_PUBLIC_URL`: that one is the wss:// client URL with a `/doc/ws` path, this must be a bare https:// origin with no path. Set explicitly only if your `[server].url` uses a different host than `RELAY_PUBLIC_URL`. |
+| `RELAY_TOKEN_ISSUER` | No | `relay-server` | `iss` claim on issued tokens. Must be one of relay-server's accepted issuers (`relay-server`, `auth.system3.dev`, `auth.system3.md` as of image `0.9.9`) — leave at the default unless you know your relay-server image accepts a different value. |
 
 ## Logging
 

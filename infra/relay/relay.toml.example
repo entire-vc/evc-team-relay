@@ -1,6 +1,11 @@
 [server]
-# Public URL used by clients; DOMAIN_BASE is interpolated during deploy
-url = "https://relay.example.com"
+# MUST equal RELAY_AUDIENCE in .env exactly (control-plane's aud claim is checked
+# against this string byte-for-byte). DOMAIN_BASE is your base domain, e.g.
+# example.com — installation.md step 4: there is no separate relay. subdomain,
+# so this is https://{DOMAIN_BASE}, NOT https://relay.{DOMAIN_BASE}. If you
+# leave RELAY_AUDIENCE unset, the control-plane derives the same value from
+# RELAY_PUBLIC_URL's host — see docs/configuration.md.
+url = "https://example.com"
 host = "0.0.0.0"
 port = 8080
 

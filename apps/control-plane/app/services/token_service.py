@@ -125,7 +125,6 @@ def issue_relay_token(
     # parse_claims_map + auth.rs) — separate task from TR-22, file if not already open.
     private_key = request.app.state.relay_private_key
     key_id = request.app.state.relay_key_id
-    relay_url = str(settings.relay_public_url).rstrip("/")
 
     token = security.create_relay_token_cwt(
         private_key=private_key,
@@ -133,7 +132,8 @@ def issue_relay_token(
         doc_id=payload.doc_id,
         mode=payload.mode.value,
         expires_minutes=settings.relay_token_ttl_minutes,
-        audience=relay_url,
+        audience=settings.effective_relay_audience,
+        issuer=settings.relay_token_issuer,
         share_id=str(share.id),
     )
 

@@ -154,26 +154,40 @@ class TestCWTTokenStructure:
         assert isinstance(inner, cbor2.CBORTag)
         assert inner.tag == COSE_SIGN1_TAG  # 18
 
-    def test_protected_header_only_alg_eddsa(self):
-        """Protected header must be {1: -8} (alg: EdDSA) — NO kid."""
+    def test_protected_header_has_alg_and_kid(self):
+        """Protected header must be {1: -8 (alg: EdDSA), 4: kid (bstr)}.
+
+        #f975dd60: reverses the old "NO kid" assumption, which was correct for
+        upstream y-sweet but wrong for our evc-relay-server fork — see the
+        docstring on create_relay_token_cwt. Without kid, relay-server's
+        find_verifying_key (auth.rs) silently returns KeyMismatch whenever the
+        matching key has a key_id configured, as prod's relay.toml does.
+        """
         private_key, _ = _make_keypair()
         token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
 
         protected_cbor, _, _, _ = _decode_cwt_raw(token)
         protected = cbor2.loads(protected_cbor)
 
-        assert protected == {1: -8}, f"Expected {{1: -8}}, got {protected}"
+        assert protected == {1: -8, 4: b"k1"}, f"Expected alg+kid, got {protected}"
 
-    def test_no_kid_in_protected_header(self):
-        """y-sweet rejects tokens with kid in protected header."""
+    def test_kid_is_bytes_matching_key_id(self):
+        """kid (COSE param 4) must be a bstr equal to key_id.encode('utf-8').
+
+        relay-server's extract_cwt_key_id (auth.rs) requires param 4 to decode
+        as a Bytes value, then UTF-8-decodes it to compare against relay.toml's
+        configured key_id string — a text-type kid would not match.
+        """
         private_key, _ = _make_keypair()
         token = create_relay_token_cwt(private_key, "some_kid", "doc-123", "write", 60)
 
         protected_cbor, _, _, _ = _decode_cwt_raw(token)
         protected = cbor2.loads(protected_cbor)
 
-        assert 4 not in protected, "kid (label 4) must NOT be in protected header"
-        assert len(protected) == 1, f"Only alg expected, got {protected}"
+        assert 4 in protected, "kid (label 4) must be present in protected header"
+        assert isinstance(protected[4], bytes), "kid must be CBOR bstr, not text"
+        assert protected[4] == b"some_kid"
+        assert len(protected) == 2, f"Expected exactly alg+kid, got {protected}"
 
     def test_unprotected_header_is_empty(self):
         private_key, _ = _make_keypair()
@@ -246,13 +260,27 @@ class TestCWTClaims:
             delta = claims[CWT_CLAIM_EXP] - claims[CWT_CLAIM_IAT]
             assert abs(delta - ttl * 60) <= 5, f"TTL {ttl} min gave delta={delta}s"
 
-    def test_no_aud_claim(self):
-        """aud (3) must NOT be present — y-sweet rejects it."""
+    def test_aud_claim_present_when_audience_given(self):
+        """aud (3) must be present and equal to `audience` when provided.
+
+        #f975dd60: reverses the old "y-sweet rejects aud" assumption — our
+        evc-relay-server fork requires aud and rejects tokens missing it
+        (MissingAudience) once verification is invoked with an expected
+        audience, which token_service.py always does in production.
+        """
         private_key, _ = _make_keypair()
-        # Even when audience is passed, it should NOT appear in claims
         token = create_relay_token_cwt(
-            private_key, "k1", "doc-123", "write", 60, audience="wss://relay.test"
+            private_key, "k1", "doc-123", "write", 60, audience="https://tr.entire.vc"
         )
+
+        _, claims, _, _ = _decode_cwt_raw(token)
+        assert CWT_CLAIM_AUD in claims, f"aud claim missing: {claims}"
+        assert claims[CWT_CLAIM_AUD] == "https://tr.entire.vc"
+
+    def test_no_aud_claim_when_audience_omitted(self):
+        """aud must be absent when audience is not passed (backward-compat callers)."""
+        private_key, _ = _make_keypair()
+        token = create_relay_token_cwt(private_key, "k1", "doc-123", "write", 60)
 
         _, claims, _, _ = _decode_cwt_raw(token)
         assert CWT_CLAIM_AUD not in claims, f"aud claim found: {claims}"
