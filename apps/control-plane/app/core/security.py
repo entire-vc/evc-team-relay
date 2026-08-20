@@ -90,6 +90,7 @@ def create_file_token(
     content_type: str,
     content_length: int,
     expires_minutes: int = 10,
+    agent_write: bool | None = None,
 ) -> str:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
@@ -97,6 +98,15 @@ def create_file_token(
     never be usable as a general session credential (see the "scope" check
     in deps._get_user_from_token) — it grants access to exactly one file's
     HEAD/download-url/upload-url for a few minutes, nothing else.
+
+    agent_write: None when minted for a real user session (upload-url then
+    re-checks that user's actual membership role via ensure_write_access,
+    which already denies a viewer correctly — no gap there). When minted for
+    an agent key, the caller MUST pass True/False for whether that key holds
+    literal write scope: the token's subject becomes the share owner (an
+    agent key has no models.User of its own), and the owner always clears
+    ensure_write_access, so without this claim a read-only key's token would
+    silently carry write capability at upload-url. See #d4c851af.
     """
     settings = get_settings()
     expire_delta = timedelta(minutes=expires_minutes)
@@ -108,6 +118,7 @@ def create_file_token(
         "sha256": sha256,
         "content_type": content_type,
         "content_length": content_length,
+        "agent_write": agent_write,
         "exp": utcnow() + expire_delta,
         "iat": utcnow(),
     }

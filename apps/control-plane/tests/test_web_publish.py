@@ -1227,6 +1227,49 @@ class TestFolderFileContentSync:
 
         get_settings.cache_clear()
 
+    def test_sync_folder_file_content_stamps_hash_and_becomes_sync_visible(
+        self, client: TestClient, db_session: Session, folder_share: models.Share, monkeypatch
+    ):
+        """#d4c851af finding 1/2: this is the plugin's actual content-push path
+        (the /shares/{id} PATCH web_folder_items list never carries content).
+        Before the fix the pushed item had content but no sha256/source, so it
+        was invisible to GET /v1/shares/{id}/files-index (source=="sync-artifact"
+        AND non-empty sha256) and unwritable through PUT /sync-write."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        raw_key, _ = self._make_agent_key(db_session, folder_share, scopes="write")
+        content = "# Document 1\n\nThis is the content."
+        response = client.post(
+            f"/v1/web/shares/{folder_share.web_slug}/files?path=doc1.md",
+            json={"content": content},
+            headers={"X-Agent-Key": raw_key},
+        )
+        assert response.status_code == 200, response.text
+
+        db_session.refresh(folder_share)
+        items = folder_share.web_folder_items or []
+        entry = next(i for i in items if i.get("path") == "doc1.md")
+        expected_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        assert entry["sha256"] == expected_sha256
+        assert entry["size"] == len(content.encode("utf-8"))
+        assert entry["source"] == "sync-artifact"
+        assert entry["modified_at"]
+
+        read_key, _ = self._make_agent_key(db_session, folder_share, scopes="read")
+        index_resp = client.get(
+            f"/v1/shares/{folder_share.id}/files-index", headers={"X-Agent-Key": read_key}
+        )
+        assert index_resp.status_code == 200, index_resp.text
+        indexed = {item["path"]: item for item in index_resp.json()}
+        assert "doc1.md" in indexed, "pushed content must be visible through the sync protocol"
+        assert indexed["doc1.md"]["sha256"] == expected_sha256
+        assert indexed["doc1.md"]["updated_at"]
+
+        get_settings.cache_clear()
+
     def test_sync_folder_file_content_fake_bearer_returns_401(
         self, client: TestClient, folder_share: models.Share, monkeypatch
     ):
@@ -1824,6 +1867,9 @@ class TestFolderItemsContentMerge:
                     "content": "# Original",
                     "storage_key": "web-assets/keep-key",
                     "sha256": "abc123",
+                    "size": 10,
+                    "modified_at": "2026-08-19T12:00:00+00:00",
+                    "source": "sync-artifact",
                 },
                 {
                     "path": "remove.md",
@@ -1845,7 +1891,13 @@ class TestFolderItemsContentMerge:
         folder_share: models.Share,
         test_user: models.User,
     ):
-        """AC1: PATCH with web_folder_items does not erase content/storage_key/sha256."""
+        """AC1: PATCH with web_folder_items does not erase content/storage_key/sha256/
+        size/modified_at/source. The last two were dropped by this merge (#d4c851af
+        finding 2) until sync_folder_file_content started stamping them: a routine
+        nav-tree-only PATCH — WebSyncManager fires one on every create/rename/delete —
+        would otherwise silently re-empty files-index's `updated_at` on the very next
+        sync, without touching sha256, so the symptom would reappear a moment after
+        being fixed."""
         token = self._login(client, test_user)
 
         r = client.patch(
@@ -1866,6 +1918,9 @@ class TestFolderItemsContentMerge:
         assert items["keep.md"].get("content") == "# Original"
         assert items["keep.md"].get("storage_key") == "web-assets/keep-key"
         assert items["keep.md"].get("sha256") == "abc123"
+        assert items["keep.md"].get("size") == 10
+        assert items["keep.md"].get("modified_at") == "2026-08-19T12:00:00+00:00"
+        assert items["keep.md"].get("source") == "sync-artifact"
 
     def test_patch_new_path_has_no_content(
         self,

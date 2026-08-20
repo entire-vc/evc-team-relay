@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api import deps
-from app.core import security
+from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
@@ -163,10 +163,16 @@ def _authorize_share_sync(
     current_user: models.User | None,
     *,
     required_scope: str,
-) -> str:
+) -> tuple[str, models.ShareAgentKey | None]:
     """Authorize a sync-protocol request via X-Agent-Key or user JWT.
 
-    Returns "agent_key" or "user". The agent-key branch also checks the key's
+    Returns (method, agent_key): method is "agent_key" or "user"; agent_key is
+    the authenticated row when method == "agent_key", else None. Exposing the
+    row (not just the fact that `required_scope` was satisfied) lets a caller
+    that needs to know MORE than the one scope it required — e.g. file-token
+    minting, which only requires `read` to mint but must remember whether that
+    same key also holds `write` — inspect `agent_key.scopes` without a second
+    authentication round trip. The agent-key branch also checks the key's
     standing (creator still owner/member/admin) and the literal scope, and
     stamps last_used_at — committed here, because the read routes commit
     nothing of their own and an uncommitted stamp would be silently discarded.
@@ -182,7 +188,7 @@ def _authorize_share_sync(
             db.commit()
         except Exception:  # pragma: no cover - telemetry must not 500
             db.rollback()
-        return "agent_key"
+        return "agent_key", agent_key
 
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
@@ -191,7 +197,7 @@ def _authorize_share_sync(
         share_service.ensure_write_access(db, share, current_user)
     else:
         share_service.ensure_read_access(db, share, current_user)
-    return "user"
+    return "user", None
 
 
 @router.get("/{share_id}/files-index", response_model=list[SyncArtifactItem])
@@ -234,7 +240,7 @@ def get_share_files_index(
 
 
 def _sync_read_headers(item: dict[str, Any]) -> dict[str, str]:
-    """ETag/Last-Modified for a sync-protocol read.
+    """ETag/X-Updated-At for a sync-protocol read.
 
     The ETag is the item's stored sha256 — the exact token PUT /sync-write
     expects back in If-Match, so a caller can do read → edit → conditional
@@ -442,7 +448,9 @@ async def sync_write_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="sync-write only supported for folder shares",
         )
-    auth_method = _authorize_share_sync(request, share, db, current_user, required_scope="write")
+    auth_method, _agent_key = _authorize_share_sync(
+        request, share, db, current_user, required_scope="write"
+    )
 
     path = _validate_file_path(path)
 
@@ -557,7 +565,7 @@ async def sync_write_file(
 # ensure_read_access/ensure_write_access, rather than trusting a mode baked
 # into the token. Least-privilege, short expiry (10 min), single path scope.
 
-_ALLOWED_FILE_PATH_RE = re.compile(r"^[a-zA-Z0-9._\-/А-Яа-я ]+$")
+_ALLOWED_FILE_PATH_RE = re.compile(r"^[\w.\-/ ]+$", re.UNICODE)
 FILE_TOKEN_EXPIRE_MINUTES = 10
 
 
@@ -662,29 +670,54 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
 
 @router.post("/{share_id}/file-token", response_model=FileTokenResponse)
 def create_file_token(
+    request: Request,
     share_id: uuid.UUID,
     payload: FileTokenRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(deps.get_current_user),
+    current_user: models.User | None = Depends(deps.get_optional_user),
 ) -> FileTokenResponse:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
     Minimum bar to mint at all is read access — write is re-checked
     independently at upload-url, so a viewer can verify/download but a
     write-url request 403s unless they actually have write access.
+
+    Auth: Authorization: Bearer <user JWT>, or X-Agent-Key with `read` scope
+    — symmetric to files-index/download/sync-write (#ee1745ce). An agent key
+    has no `models.User` of its own, so the minted token's subject is the
+    share owner: HEAD/download-url/upload-url decode the token and re-check
+    `ensure_read_access`/`ensure_write_access` against that subject. For a
+    user-minted token that's the whole story — the owner always clears both,
+    but so does re-deriving the real caller's own membership role, since the
+    subject IS that real user. For an agent-key-minted token the subject is
+    a stand-in (the owner), which would silently launder a read-only key's
+    token into write access at upload-url — so the token also carries the
+    minting key's own `write` scope as an explicit claim (`agent_write`),
+    which upload-url checks BEFORE trusting the owner-subject's access.
     """
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, current_user)
+    auth_method, agent_key = _authorize_share_sync(
+        request, share, db, current_user, required_scope="read"
+    )
     path = _validate_file_path(payload.path)
 
+    if auth_method == "user":
+        subject = str(current_user.id)
+        agent_write: bool | None = None
+    else:
+        subject = str(share.owner_user_id)
+        key_scopes = agent_key_scopes.parse_scopes(agent_key.scopes)
+        agent_write = agent_key_scopes.satisfies(key_scopes, "write")
+
     token = security.create_file_token(
-        subject=str(current_user.id),
+        subject=subject,
         share_id=str(share_id),
         path=path,
         sha256=payload.sha256,
         content_type=payload.content_type,
         content_length=payload.content_length,
         expires_minutes=FILE_TOKEN_EXPIRE_MINUTES,
+        agent_write=agent_write,
     )
     expires_at = (security.utcnow() + timedelta(minutes=FILE_TOKEN_EXPIRE_MINUTES)).isoformat()
     settings = get_settings()
@@ -773,6 +806,17 @@ def get_file_upload_url(
     here the storage write happens client-side a moment later instead).
     """
     token_payload = _decode_file_token(share_id, path, authorization)
+    # An agent-key-minted token's subject is the share owner (a stand-in — the
+    # key has no models.User of its own), who always clears ensure_write_access
+    # below regardless of the key's own scope. `agent_write` is the minting
+    # key's actual scope, explicit and False rather than absent so a read-only
+    # key can never fall through: absent (None) means a real user minted this,
+    # where ensure_write_access already checks their genuine membership role.
+    if token_payload.get("agent_write") is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent key does not have write scope",
+        )
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
     share_service.ensure_write_access(db, share, user)
