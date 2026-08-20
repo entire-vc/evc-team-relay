@@ -120,6 +120,7 @@ it, with the same literal scopes:
 | `GET /v1/shares/{id}/files-index` | `read` | returns `path`, `sha256`, `size`, `updated_at` per document |
 | `GET /v1/shares/{id}/download?path=…` | `read` | body, plus `ETag: "<sha256>"` and `X-Updated-At` |
 | `PUT /v1/shares/{id}/sync-write?path=…` | `write` | conditional write — see below |
+| `POST /v1/shares/{id}/file-token` | `read` | mints an attachment (CAS) token — see below |
 
 `sync-write` **requires** a precondition; there is no unconditional form:
 
@@ -148,8 +149,15 @@ curl -sf -X PUT "https://cp.yourdomain.com/v1/shares/$SHARE_ID/sync-write?path=n
 A document written this way lands as `source=sync-artifact`, exactly like one uploaded through
 `/v1/web/shares/{id}/sync-upload`, so the Obsidian plugin picks it up on its next inbound cycle.
 
-Share management stays user-only: an agent key cannot list shares, delete a share, change members,
-or mint attachment file-tokens.
+`POST /v1/shares/{id}/file-token` (with a `read`-scoped key) mints the same short-lived, path-scoped
+token a browser session would get, so an attachment reachable only through the presigned-URL chain
+(`HEAD .../files/{path}`, `GET .../download-url`, `POST .../upload-url`) is reachable by a key too —
+e.g. resolving `![[image.png]]` when rendering a synced document. The minted token is not itself
+tied to the key: it carries the share owner as its subject, since an agent key has no `User` of its
+own, and the three consuming routes re-check `read`/`write` access against that subject exactly as
+they do for a real session.
+
+Share management stays user-only: an agent key cannot list shares, delete a share, or change members.
 
 ### Changing the scopes of an existing key
 

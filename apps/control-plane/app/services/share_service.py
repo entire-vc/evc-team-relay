@@ -290,7 +290,8 @@ def update_share(
         share.web_content = payload.web_content if payload.web_content else None
         share.web_content_updated_at = datetime.now(timezone.utc) if payload.web_content else None
 
-    # Handle web folder items update — MERGE to preserve content/source/storage_key/sha256
+    # Handle web folder items update — MERGE to preserve content/source/storage_key/
+    # sha256/size/modified_at
     if payload.web_folder_items is not None:
         old_has_items = share.web_folder_items is not None
         new_has_items = len(payload.web_folder_items) > 0
@@ -311,7 +312,11 @@ def update_share(
             for item in payload.web_folder_items:
                 new_item = item.model_dump()
                 existing = existing_by_path.get(new_item["path"], {})
-                for key in ("content", "source", "storage_key", "sha256"):
+                # #d4c851af finding 2: modified_at/size dropped here would silently
+                # re-empty files-index's `updated_at` on the very next nav-tree-only
+                # PATCH (WebSyncManager fires one on every create/rename/delete),
+                # undoing sync_folder_file_content's stamp without touching sha256.
+                for key in ("content", "source", "storage_key", "sha256", "size", "modified_at"):
                     if key in existing:
                         new_item[key] = existing[key]
                 new_items.append(new_item)

@@ -234,7 +234,7 @@ def get_share_files_index(
 
 
 def _sync_read_headers(item: dict[str, Any]) -> dict[str, str]:
-    """ETag/Last-Modified for a sync-protocol read.
+    """ETag/X-Updated-At for a sync-protocol read.
 
     The ETag is the item's stored sha256 — the exact token PUT /sync-write
     expects back in If-Match, so a caller can do read → edit → conditional
@@ -557,7 +557,7 @@ async def sync_write_file(
 # ensure_read_access/ensure_write_access, rather than trusting a mode baked
 # into the token. Least-privilege, short expiry (10 min), single path scope.
 
-_ALLOWED_FILE_PATH_RE = re.compile(r"^[a-zA-Z0-9._\-/А-Яа-я ]+$")
+_ALLOWED_FILE_PATH_RE = re.compile(r"^[\w.\-/ ]+$", re.UNICODE)
 FILE_TOKEN_EXPIRE_MINUTES = 10
 
 
@@ -662,23 +662,33 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
 
 @router.post("/{share_id}/file-token", response_model=FileTokenResponse)
 def create_file_token(
+    request: Request,
     share_id: uuid.UUID,
     payload: FileTokenRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(deps.get_current_user),
+    current_user: models.User | None = Depends(deps.get_optional_user),
 ) -> FileTokenResponse:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
     Minimum bar to mint at all is read access — write is re-checked
     independently at upload-url, so a viewer can verify/download but a
     write-url request 403s unless they actually have write access.
+
+    Auth: Authorization: Bearer <user JWT>, or X-Agent-Key with `read` scope
+    — symmetric to files-index/download/sync-write (#ee1745ce). An agent key
+    has no `models.User` of its own, so the minted token's subject is the
+    share owner: HEAD/download-url/upload-url decode the token and re-check
+    `ensure_read_access`/`ensure_write_access` against that subject, and the
+    owner always passes both — the token's own path/share/expiry scope is
+    what actually limits the agent, not who it is minted "as".
     """
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, current_user)
+    auth_method = _authorize_share_sync(request, share, db, current_user, required_scope="read")
     path = _validate_file_path(payload.path)
 
+    subject = str(current_user.id) if auth_method == "user" else str(share.owner_user_id)
     token = security.create_file_token(
-        subject=str(current_user.id),
+        subject=subject,
         share_id=str(share_id),
         path=path,
         sha256=payload.sha256,

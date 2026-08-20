@@ -445,8 +445,13 @@ def sync_folder_file_content(
     """
     Sync individual file content within a folder share.
 
-    This endpoint is called by the Obsidian plugin to sync content of files
-    within a folder share. The content is stored in the web_folder_items JSONB field.
+    This is the plugin's actual content-push path (the `web_folder_items` PATCH
+    on /shares/{id} only ever carries path/name/type — no content, no hash).
+    Stamps sha256/size/modified_at/source=sync-artifact on the item so it
+    becomes visible and writable through the sync protocol
+    (GET /v1/shares/{id}/files-index, PUT /sync-write) — before this it was
+    content-only, invisible to that protocol regardless of who asked (#ee1745ce
+    finding 1/2).
 
     Access control:
     - This is an authenticated endpoint (requires valid session or user token)
@@ -483,12 +488,20 @@ def sync_folder_file_content(
     _require_private_web_auth(request, share, db, required_scope="write")
 
     # Update folder items with content
+    content_bytes = payload.content.encode("utf-8")
+    sha256 = hashlib.sha256(content_bytes).hexdigest()
+    now_iso = security.utcnow().isoformat()
+
     folder_items = share.web_folder_items or []
     updated = False
 
     for item in folder_items:
         if item.get("path") == path:
             item["content"] = payload.content
+            item["sha256"] = sha256
+            item["size"] = len(content_bytes)
+            item["modified_at"] = now_iso
+            item["source"] = "sync-artifact"
             updated = True
             break
 
@@ -500,6 +513,10 @@ def sync_folder_file_content(
                 "name": path.split("/")[-1],
                 "type": "doc",
                 "content": payload.content,
+                "sha256": sha256,
+                "size": len(content_bytes),
+                "modified_at": now_iso,
+                "source": "sync-artifact",
             }
         )
 
@@ -1107,7 +1124,7 @@ def serve_web_asset(
 
 
 MAX_MESH_UPLOAD_SIZE = 25 * 1024 * 1024  # 25MB
-_ALLOWED_PATH_RE = re.compile(r"^[a-zA-Z0-9._\-/А-Яа-я ]+$")
+_ALLOWED_PATH_RE = re.compile(r"^[\w.\-/ ]+$", re.UNICODE)
 
 
 def _validate_upload_path(path: str) -> None:

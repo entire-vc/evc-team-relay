@@ -7,7 +7,7 @@ user JWTs only, so the agent key a Mesh project is configured with could write
 bytes through /v1/web/.../sync-upload but could not learn a document's hash —
 and therefore could not write safely.
 
-These tests pin three things:
+These tests pin four things:
   1. the SAME agent key now reads hash+mtime and writes through this protocol;
   2. a write whose If-Match does not match the stored sha256 is refused AND
      leaves the stored bytes untouched — asserted on the document body, not on
@@ -15,7 +15,11 @@ These tests pin three things:
      is indistinguishable from an honest one by status alone;
   3. the scope boundary did not widen: read-only cannot write, write-only cannot
      read, a key is still confined to its own share, and it still buys nothing
-     on the user-only share-management routes.
+     on the user-only share-management routes;
+  4. a read-scoped key can also mint an attachment file-token (POST
+     .../file-token — symmetric extension, #d4c851af finding 3) and the whole
+     chain down to a presigned URL works off that token; a key without read
+     scope still cannot.
 """
 
 from __future__ import annotations
@@ -489,6 +493,83 @@ class TestStaleWriteIsRefusedAndChangesNothing:
         minio.put_object.assert_not_called()
 
 
+# ── 3b. ё and other non-ASCII letters are not path-invalid (finding 4) ───────
+
+
+class TestUnicodePaths:
+    """`_ALLOWED_FILE_PATH_RE` used to enumerate a Cyrillic alphabet range
+    (А-Яа-я) that excludes ё/Ё (U+0451/U+0401 sort outside that block) — and
+    would have excluded ANY other script's letters (ї, ә, é, ...) the same
+    way. Fixed to a property-based check (\\w, Unicode-aware) instead of an
+    alphabet enumeration."""
+
+    def test_document_with_yo_can_be_created_and_read(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+        path = "Ёлка.md"
+
+        create = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": path},
+            content="про ёлку".encode("utf-8"),
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert create.status_code == 200, create.text
+        assert read_body(client, share.id, raw_key, path) == "про ёлку"
+
+        index = client.get(f"{BASE}/{share.id}/files-index", headers=key_headers(raw_key)).json()
+        assert any(e["path"] == path for e in index)
+
+    def test_document_with_yo_mid_word_can_be_created(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+        path = "Всё о релизе.md"
+
+        create = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": path},
+            content=b"release notes",
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert create.status_code == 200, create.text
+
+    def test_diacritic_path_can_be_created(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+        path = "café.md"
+
+        create = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": path},
+            content=b"notes",
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert create.status_code == 200, create.text
+
+    def test_traversal_still_rejected_alongside_widened_alphabet(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio
+    ):
+        """The alphabet widening must not loosen the separate `..`/depth/length
+        checks in _validate_file_path — those run before the regex either way."""
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+
+        resp = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": "../../etc/passwd"},
+            content=b"pwned",
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert resp.status_code == 400
+        minio.put_object.assert_not_called()
+
+
 # ── 4. the scope boundary did not widen ──────────────────────────────────────
 
 
@@ -592,12 +673,13 @@ class TestScopeBoundary:
         )
         assert resp.status_code == 401
 
-    def test_key_cannot_mint_a_file_token(
+    def test_write_only_key_cannot_mint_a_file_token(
         self, client: TestClient, test_user: models.User, db_session: Session
     ):
-        """file-token is the CAS/attachment credential — still user-JWT only."""
+        """Minting only ever required read (mirrors the user-JWT floor at
+        create_file_token) — write does not imply read (ADR-0001)."""
         share = make_folder_share(db_session, test_user)
-        raw_key = make_agent_key(db_session, share)
+        raw_key = make_agent_key(db_session, share, scopes="write")
 
         resp = client.post(
             f"{BASE}/{share.id}/file-token",
@@ -609,7 +691,8 @@ class TestScopeBoundary:
             },
             headers=key_headers(raw_key),
         )
-        assert resp.status_code == 401
+        assert resp.status_code == 403
+        assert "read scope" in err_message(resp)
 
     def test_write_rejects_non_folder_share(
         self, client: TestClient, test_user: models.User, db_session: Session, minio
@@ -723,3 +806,100 @@ class TestUserJwtPathUnchanged:
             f"{BASE}/{share.id}/files-index", headers={"Authorization": f"Bearer {token}"}
         )
         assert resp.status_code == 403
+
+
+# ── 6. agent key reaches the attachment file-token chain (finding 3) ─────────
+
+
+class TestAgentKeyFileToken:
+    def test_read_scoped_key_can_mint(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share, scopes="read")
+
+        resp = client.post(
+            f"{BASE}/{share.id}/file-token",
+            json={
+                "path": "attachments/photo.png",
+                "sha256": "a" * 64,
+                "content_type": "image/png",
+                "content_length": 12345,
+            },
+            headers=key_headers(raw_key),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["token"]
+
+    def test_minted_token_reaches_a_presigned_download_url(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        """End to end: an agent key with no models.User of its own can still
+        walk file-token -> download-url, because the token's subject falls
+        back to the share owner and the owner always clears ensure_read_access."""
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share, scopes="read")
+
+        mint_resp = client.post(
+            f"{BASE}/{share.id}/file-token",
+            json={
+                "path": "attachments/photo.png",
+                "sha256": "a" * 64,
+                "content_type": "image/png",
+                "content_length": 12345,
+            },
+            headers=key_headers(raw_key),
+        )
+        assert mint_resp.status_code == 200, mint_resp.text
+        file_token = mint_resp.json()["token"]
+
+        mock_client = MagicMock()
+        mock_client.bucket_exists.return_value = True
+        mock_client.stat_object.return_value = MagicMock()
+        mock_client.presigned_get_object.return_value = "https://minio.test/presigned-get"
+        with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
+            dl_resp = client.get(
+                f"{BASE}/{share.id}/files/attachments/photo.png/download-url",
+                headers={"Authorization": f"Bearer {file_token}"},
+            )
+        assert dl_resp.status_code == 200, dl_resp.text
+        assert dl_resp.json()["downloadUrl"] == "https://minio.test/presigned-get"
+
+    def test_write_only_key_still_cannot_mint(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share, scopes="write")
+
+        resp = client.post(
+            f"{BASE}/{share.id}/file-token",
+            json={
+                "path": "attachments/photo.png",
+                "sha256": "a" * 64,
+                "content_type": "image/png",
+                "content_length": 12345,
+            },
+            headers=key_headers(raw_key),
+        )
+        assert resp.status_code == 403
+        assert "read scope" in err_message(resp)
+
+    def test_key_cannot_mint_for_another_share(
+        self, client: TestClient, test_user: models.User, db_session: Session
+    ):
+        mine = make_folder_share(db_session, test_user)
+        theirs = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, mine, scopes="read")
+
+        resp = client.post(
+            f"{BASE}/{theirs.id}/file-token",
+            json={
+                "path": "attachments/photo.png",
+                "sha256": "a" * 64,
+                "content_type": "image/png",
+                "content_length": 12345,
+            },
+            headers=key_headers(raw_key),
+        )
+        assert resp.status_code == 403
+        assert "not valid for this share" in err_message(resp)
