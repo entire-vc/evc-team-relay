@@ -1058,7 +1058,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.12,<2.0" },
     { name = "authlib", specifier = ">=1.6.12,<2.0" },
-    { name = "bcrypt", specifier = ">=3.2,<6.0" },
+    { name = "bcrypt", specifier = ">=3.2,<4.1" },
     { name = "cbor2", specifier = ">=5.6.0,<7.0" },
     { name = "cryptography", specifier = ">=50.0.0,<51.0" },
     { name = "fastapi", specifier = ">=0.115.0,<1.0" },

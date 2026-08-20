@@ -75,8 +75,80 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  create-release:
+  smoke-test:
+    # Boots the JUST-PUBLISHED images against a clean database and asserts
+    # /health. This is what issue #177 needed: the team's own deploy migrates
+    # a database that already passed whatever revision a release was cut at,
+    # so a broken migration or a fresh-install-only crash (e.g. a bootstrap
+    # bug) is invisible to us and visible only to an external user starting
+    # from nothing. Deliberately does NOT reuse cache-from/cache-to or any
+    # locally-built layer — it pulls from ghcr exactly like an external
+    # installer's `bash scripts/pull-published-images.sh` would.
     needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate relay keypair + env
+        working-directory: infra
+        run: |
+          openssl genpkey -algorithm ed25519 -out relay_private.pem
+          RELAY_PRIVATE_KEY_B64=$(openssl base64 -A -in relay_private.pem)
+          RELAY_PUBLIC_KEY_B64=$(python3 -c "
+          from cryptography.hazmat.primitives import serialization
+          import base64
+          with open('relay_private.pem', 'rb') as f:
+              priv = serialization.load_pem_private_key(f.read(), password=None)
+          pub = priv.public_key().public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+          print(base64.b64encode(pub).decode())
+          ")
+
+          cp env.example .env
+          sed -i "s|^DOMAIN_BASE=.*|DOMAIN_BASE=localhost|" .env
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
+          sed -i "s|^RELAY_PRIVATE_KEY=.*|RELAY_PRIVATE_KEY=${RELAY_PRIVATE_KEY_B64}|" .env
+
+          cp relay/relay.toml.example relay/relay.toml
+          sed -i 's|url = "https://relay.example.com"|url = "ws://localhost:8080"|' relay/relay.toml
+          sed -i 's|key_id = "REPLACE_WITH_KEY_ID"|key_id = "relay_cp_dev"|' relay/relay.toml
+          sed -i "s|public_key = \"REPLACE_WITH_PUBLIC_KEY_BASE64\"|public_key = \"${RELAY_PUBLIC_KEY_B64}\"|" relay/relay.toml
+          sed -i 's|access_key = "MINIO_ROOT_USER"|access_key = "relay"|' relay/relay.toml
+          sed -i 's|secret_key = "MINIO_ROOT_PASSWORD"|secret_key = "change-this-too"|' relay/relay.toml
+
+      - name: Pull published images (this release's tag)
+        run: bash scripts/pull-published-images.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Boot clean stack
+        working-directory: infra
+        run: |
+          docker compose up -d postgres minio minio-init control-plane-migrate control-plane relay-server web-publish
+          timeout 90 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" infra-control-plane-1 2>/dev/null)" = "healthy" ]; do sleep 3; done'
+
+      - name: Check /health on a clean database
+        working-directory: infra
+        run: |
+          RESULT=$(docker compose exec -T control-plane python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())")
+          echo "control-plane /health: $RESULT"
+          echo "$RESULT" | grep -q '"ok": *true' || (echo "::error::control-plane /health did not report ok:true" && exit 1)
+
+      - name: Dump logs on failure
+        if: failure()
+        working-directory: infra
+        run: docker compose logs
+
+  create-release:
+    needs: [build-and-push, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
