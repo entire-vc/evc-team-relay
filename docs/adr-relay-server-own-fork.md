@@ -4,8 +4,13 @@
 
 ## Decision (read this before touching relay-server)
 
-`relay-server` runs our **own image `ghcr.io/entire-vc/evc-relay-server`** (pinned, currently
-`:0.9.7`), built from a fork of **`no-instructions/y-sweet`** (MIT). See `infra/docker-compose.yml`.
+`relay-server` runs our **own image `ghcr.io/entire-vc/evc-relay-server`**, pinned by tag,
+built from a fork of **`no-instructions/y-sweet`** (MIT).
+
+**The tag lives in `infra/docker-compose.yml` and only there.** This ADR deliberately does not
+repeat it: the number written here said `:0.9.7` while the compose file said `:0.9.9` and the
+production host was running `:0.9.10` — three answers to one question, because a version copied
+into prose has no way of staying true. Read the compose file.
 
 We used to pull the closed `docker.system3.md/relay-server` binary (System3 = a commercial
 y-sweet distributor). PR #99 swapped it for our ghcr image. **The System3 binary and its access
