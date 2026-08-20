@@ -39,3 +39,30 @@ class TestEffectiveRelayAudience:
         """
         settings = Settings()
         assert settings.relay_token_issuer == "relay-server"
+
+
+class TestRelayDocWsUrl:
+    """Tests for Settings.relay_doc_ws_url (#b1e88884).
+
+    relay-server deprecated the flat /doc/ws/:doc_id route in favor of
+    /d/:doc_id/ws/:doc_id2 (doc_id doubled). The client-side YSweetProvider
+    appends "/<doc_id>" to whatever URL we return, so relay_doc_ws_url must
+    return ".../d/<doc_id>/ws" for the final connect URL to land on the
+    doubled-doc_id route with matching segments.
+    """
+
+    def test_builds_per_doc_path_dropping_configured_path(self):
+        """A leftover /doc/ws suffix on RELAY_PUBLIC_URL must be ignored —
+        only scheme+host survive, and the doc-specific /d/{doc_id}/ws path
+        is appended fresh."""
+        settings = Settings(relay_public_url="wss://tr.entire.vc/doc/ws")
+        assert settings.relay_doc_ws_url("abc-123") == "wss://tr.entire.vc/d/abc-123/ws"
+
+    def test_bare_relay_public_url_also_works(self):
+        settings = Settings(relay_public_url="wss://tr.entire.vc")
+        assert settings.relay_doc_ws_url("abc-123") == "wss://tr.entire.vc/d/abc-123/ws"
+
+    def test_different_doc_ids_get_different_urls(self):
+        settings = Settings(relay_public_url="wss://relay.test")
+        assert settings.relay_doc_ws_url("doc-a") == "wss://relay.test/d/doc-a/ws"
+        assert settings.relay_doc_ws_url("doc-b") == "wss://relay.test/d/doc-b/ws"

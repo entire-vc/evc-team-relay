@@ -130,6 +130,10 @@ class TestRelayTokenHappyPath:
         data = resp.json()
 
         assert data["relay_url"].startswith("wss://")
+        # #b1e88884: must land on relay-server's non-deprecated per-doc route
+        # (/d/:doc_id/ws/:doc_id2), not the flat /doc/ws/:doc_id it deprecated.
+        assert data["relay_url"].endswith(f"/d/{share_id}/ws")
+        assert "/doc/ws" not in data["relay_url"]
         assert data["token"]
         assert data["expires_at"]
 
