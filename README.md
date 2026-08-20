@@ -73,9 +73,9 @@ bash ../scripts/pull-published-images.sh
 docker compose up -d
 ```
 
-**Services** (once DNS points `cp`/`relay`/`docs` at your server and Caddy has issued certs):
+**Services** (once DNS points your bare `DOMAIN_BASE`, `cp.DOMAIN_BASE`, and `docs.DOMAIN_BASE` at your server and Caddy has issued certs):
+- Relay Server: `wss://yourdomain.com` (your `DOMAIN_BASE` itself — no `relay.` subdomain)
 - Control Plane API: `https://cp.yourdomain.com`
-- Relay Server: `wss://relay.yourdomain.com`
 - Web Publish: `https://docs.yourdomain.com`
 
 Monitoring (Prometheus + Grafana) is on the internal Docker network only by default — see

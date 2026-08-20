@@ -88,29 +88,46 @@ Edit `relay/relay.toml`:
 
 ### 4. Configure DNS
 
+`DOMAIN_BASE` itself is the relay server's domain — there is no separate `relay.` subdomain.
 Point these DNS records to your server IP:
 
 | Record | Type | Value |
 |--------|------|-------|
+| `yourdomain.com` (i.e. your `DOMAIN_BASE`) | A | Your server IP |
 | `cp.yourdomain.com` | A | Your server IP |
-| `relay.yourdomain.com` | A | Your server IP |
 | `docs.yourdomain.com` | A | Your server IP (optional, for web publishing) |
 
 ### 5. Review Caddy Configuration
 
-The default `Caddyfile` handles TLS termination, routing, and **WebSocket token proxying**. The relay server expects authentication via the `Authorization` header, but browser WebSocket API cannot set custom headers. Caddy bridges this gap by extracting `?token=` from the query string and setting it as an `Authorization: Bearer` header:
+The default `Caddyfile` handles TLS termination and routing. For plain HTTP endpoints it also
+does **WebSocket token proxying**: since the browser WebSocket API cannot set custom headers,
+Caddy extracts `?token=` from the query string and sets it as an `Authorization: Bearer` header
+— but the relay server's WebSocket-upgrade handlers only ever read the token from the query
+string, never from a header, so that rewrite must skip the WS paths or it strips the one thing
+the handler checks:
 
 ```caddy
-relay.{$DOMAIN_BASE} {
-  @token_in_query query token=*
-  request_header @token_in_query Authorization "Bearer {query.token}"
-  reverse_proxy relay-server:8080
+{$DOMAIN_BASE} {
+  @token_in_query {
+    query token=*
+    not path /doc/ws/* /d/*/ws/*
+  }
+  handle @token_in_query {
+    route {
+      request_header Authorization "Bearer {query.token}"
+      uri query -token
+      reverse_proxy relay-server:8080
+    }
+  }
+  handle {
+    reverse_proxy relay-server:8080
+  }
 }
 ```
 
-This allows the Obsidian plugin (and other browser-based clients) to authenticate using `wss://relay.yourdomain.com/doc/ws/{docId}?token=CWT_TOKEN`.
+This allows the Obsidian plugin (and other browser-based clients) to authenticate using `wss://yourdomain.com/doc/ws/{docId}?token=CWT_TOKEN` — the WS upgrade carries the token straight through to relay-server's own query-param verifier, unmodified.
 
-> **Important**: Do not remove the `request_header` directive — without it, the Obsidian plugin will receive `401 Unauthorized` when connecting to the relay server.
+> **Important**: Do not add the `Authorization` rewrite back to the `/doc/ws/*` and `/d/*/ws/*` paths — it was there originally and caused every WebSocket connection to fail auth with `missing_token` (see [#137](https://github.com/entire-vc/evc-team-relay/pull/137) for the incident this config now avoids).
 
 ### 6. Pull the Published Images
 
