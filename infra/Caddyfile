@@ -33,6 +33,35 @@ cp.{$DOMAIN_BASE} {
     # Force Connection: close to prevent stale keep-alive sockets
     # (Electron/httpx reuse idle connections that Caddy already closed)
     header_down Connection close
+
+    # TR-infra 5/6 (#5dca467c): `docker compose up -d --force-recreate
+    # control-plane` (scripts/deploy.sh) kills the old container ~5s before
+    # the new one starts accepting connections (measured live 2026-08-20:
+    # kill at T+0, new container `start` event at T+5.2s) — during that gap
+    # this is the only upstream and dialing it fails outright (observed both
+    # as plain connection-refused and, per prod's real logs, Docker's
+    # embedded DNS returning SERVFAIL for the service name while the old
+    # container's registration is torn down: "server misbehaving"). Caddy
+    # returned that as an immediate 502 to whoever was mid-request — a real
+    # user hit this mid-`/shares/<id>` on 2026-08-19 (see task description).
+    #
+    # A dial failure (of either flavor above) happens before any request
+    # bytes reach the upstream, so it is always safe to retry — nothing was
+    # written that could be double-applied. lb_try_duration makes Caddy
+    # re-attempt the same upstream (there's only one) instead of failing the
+    # client request immediately; lb_try_interval keeps retries tight so a
+    # request that can succeed does so within ~1-2 retries of the container
+    # coming back, not near the full budget. 30s comfortably covers the
+    # measured ~5.2s recreate gap with margin, without masking a genuinely
+    # down backend for an unreasonable time. Live-verified end to end: a real
+    # `scripts/deploy.sh control-plane` run against this config produced
+    # ZERO 502s over 97 probe requests (health + a real /shares/<id> call,
+    # every 200ms) spanning the full recreate window — vs. 38 real 502s
+    # logged on this host over the preceding 7 days without this block,
+    # confirming the measurement method itself does detect 502s when they
+    # occur. Full writeup + raw counts: task #5dca467c.
+    lb_try_duration 30s
+    lb_try_interval 250ms
   }
 }
 
