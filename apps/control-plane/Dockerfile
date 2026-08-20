@@ -1,8 +1,14 @@
 FROM python:3.12-slim
 
+# Pin the uv binary itself (not just what it resolves) so the build tool is
+# reproducible too, not only the Python deps it locks in.
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /usr/local/bin/
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -10,11 +16,14 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml /app/pyproject.toml
+COPY uv.lock pyproject.toml /app/
 COPY app /app/app
 COPY alembic.ini /app/alembic.ini
 
-RUN pip install --upgrade pip && pip install --no-cache-dir .
+# --locked fails the build if uv.lock is out of sync with pyproject.toml
+# instead of silently re-resolving; --no-dev excludes the [dependency-groups]
+# dev group (pytest/pytest-asyncio) from the production image.
+RUN uv sync --locked --no-dev
 
 # Non-root runtime user. admin_ui.py writes uploaded favicons/logos to
 # app/static/uploads at runtime, so that path needs to be writable by it.
