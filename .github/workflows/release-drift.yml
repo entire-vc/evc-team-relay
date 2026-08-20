@@ -31,8 +31,14 @@ jobs:
 
       - name: Check for stale unreleased changes to shipped code
         id: drift
+        env:
+          # Passed via env:, not interpolated directly into the script --
+          # github.event.inputs.* is attacker-controllable on
+          # workflow_dispatch, and inlining it as ${{ }} into a run: block is
+          # a shell-injection vector (flagged by this repo's own semgrep CI).
+          MAX_AGE_DAYS_INPUT: ${{ github.event.inputs.max_age_days }}
         run: |
-          MAX_AGE_DAYS="${{ github.event.inputs.max_age_days || '7' }}"
+          MAX_AGE_DAYS="${MAX_AGE_DAYS_INPUT:-7}"
 
           LAST_TAG=$(git describe --tags --abbrev=0)
           echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
