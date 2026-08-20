@@ -15,7 +15,12 @@ We take security seriously. If you discover a security vulnerability, please rep
 
 **Do NOT create a public GitHub issue for security vulnerabilities.**
 
-Instead, please email: **security@entire.vc**
+Use GitHub's private vulnerability reporting:
+**[Report a vulnerability](https://github.com/entire-vc/evc-team-relay/security/advisories/new)**
+
+The report is visible only to the maintainers of this repository until we publish an advisory. If
+you cannot use GitHub, email <support@entire.vc> with `SECURITY` in the subject and we will move the
+conversation somewhere private; do not put vulnerability details in a public issue in the meantime.
 
 Include:
 - Description of the vulnerability
