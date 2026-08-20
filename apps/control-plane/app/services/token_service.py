@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.config import get_settings
+from app.core.metrics import RELAY_TOKENS_ISSUED_TOTAL
 from app.db import models
 from app.schemas import token as token_schema
 from app.services import audit_service, share_service
@@ -136,6 +137,7 @@ def issue_relay_token(
         issuer=settings.relay_token_issuer,
         share_id=str(share.id),
     )
+    RELAY_TOKENS_ISSUED_TOTAL.labels(mode=payload.mode.value).inc()
 
     # Log token issuance with file path for folder shares
     details = {

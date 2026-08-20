@@ -297,7 +297,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sessions_active",
+          "expr": "sessions_active_total",
           "refId": "A"
         }
       ],
@@ -974,7 +974,7 @@
           "refId": "A"
         }
       ],
-      "title": "Top Shares by Size",
+      "title": "Top Web-Published Docs by Size",
       "type": "barchart"
     }
   ],
@@ -993,7 +993,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Business Metrics",
+  "title": "Team Relay — Business Metrics",
   "uid": "relay-business-metrics",
   "version": 1,
   "weekStart": ""

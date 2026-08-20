@@ -174,6 +174,35 @@ class TestRelayTokenHappyPath:
             claims.get("aud") == "https://relay.test"
         ), "aud missing or wrong — relay-server requires it (#f975dd60)"
 
+    def test_issuance_increments_relay_tokens_issued_metric(self, client: TestClient):
+        """relay_tokens_issued_total must actually increment on issuance (#188f683c).
+
+        The metric was declared in metrics.py but never incremented anywhere —
+        the "Relay Tokens Issued (hourly)" Grafana panel could never show data.
+        """
+        import re
+
+        def _read_metric(mode: str) -> float:
+            body = client.get("/metrics").text
+            m = re.search(
+                rf'^relay_tokens_issued_total\{{mode="{mode}"\}} ([\d.]+)$', body, re.MULTILINE
+            )
+            return float(m.group(1)) if m else 0.0
+
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        share_id = create_share(client, admin_token)
+        before = _read_metric("write")
+
+        resp = client.post(
+            "/tokens/relay",
+            json={"share_id": share_id, "doc_id": share_id, "mode": "write"},
+            headers=auth_headers(admin_token),
+        )
+        assert resp.status_code == 200
+
+        after = _read_metric("write")
+        assert after == before + 1, f"expected +1 write token issued, got {before} -> {after}"
+
     def test_read_mode_scope(self, client: TestClient):
         admin_token = login(client, "bootstrap@example.com", "super-secret")
         share_id = create_share(client, admin_token)
