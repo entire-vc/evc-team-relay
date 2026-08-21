@@ -9,14 +9,23 @@
 # Required env vars (or inherit from .env):
 #   BACKUP_DIR      - directory with *.sql.gz dumps (default: /opt/relay/data/backups)
 #   POSTGRES_DB     - database name to restore into (default: relay)
-#   POSTGRES_USER   - postgres superuser (default: postgres)
+#   POSTGRES_USER   - postgres superuser (default: relay — matches prod's actual
+#                     superuser role name; see the OWNER-TO note below)
 #   POSTGRES_PASSWORD - postgres password for the temp container
 
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/opt/relay/data/backups}"
 POSTGRES_DB="${POSTGRES_DB:-relay}"
-POSTGRES_USER="${POSTGRES_USER:-postgres}"
+# Prod's postgres container is itself started with POSTGRES_USER=relay (there is
+# no "postgres" role in prod at all) and pg_dump/pg_dumpall therefore emits
+# `ALTER TABLE/TYPE ... OWNER TO relay` for every object. Defaulting this temp
+# container to the generic "postgres" superuser name made every one of those
+# statements fail with `role "relay" does not exist` — ~27 lines on every
+# single successful run, since the role name never matched. Matching prod's
+# actual superuser name here isn't a workaround, it's fidelity: the restored
+# ownership now matches what a real disaster recovery would produce.
+POSTGRES_USER="${POSTGRES_USER:-relay}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-restore_test_$(date +%s)}"
 CONTAINER_NAME="relay-restore-test-$$"
 PG_IMAGE="postgres:16-alpine"
@@ -64,10 +73,16 @@ for i in $(seq 1 20); do
 done
 pass "Temp postgres ready"
 
-# Restore dump
+# Restore dump. -v ON_ERROR_STOP=1 makes psql abort (and thus this pipeline,
+# via `set -o pipefail`) on the FIRST real SQL error instead of printing it
+# and quietly ploughing on to the next statement — without it, an actual
+# corrupt/truncated dump can print pages of ERROR lines and still exit 0,
+# which is exactly the "ERROR that means nothing" class this script exists
+# to close (see the OWNER-TO-relay note above for the case that used to do
+# just that on every green run).
 log "Restoring ${BACKUP_FILE} into ${CONTAINER_NAME}/${POSTGRES_DB}"
 gunzip -c "${BACKUP_FILE}" | docker exec -i "${CONTAINER_NAME}" \
-    psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q
+    psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q
 pass "Restore complete"
 
 # Verify: table count > 0
