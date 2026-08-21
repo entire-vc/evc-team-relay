@@ -19,19 +19,21 @@ This guide covers installing EVC Team Relay on a Linux server using Docker Compo
 
 ### Architecture
 
-**The published images are `linux/amd64` only** — `control-plane`, `web-publish`
-and `relay-server` alike. There is no `arm64` manifest, so on an arm64 host
-(Apple Silicon, AWS Graviton, Ampere at Hetzner/OVH, Raspberry Pi) the install
-below stops at the pull step unless you run them under emulation:
+**`control-plane` and `web-publish` publish native `linux/amd64` and
+`linux/arm64` images** — no setup needed on Apple Silicon, AWS Graviton,
+Ampere at Hetzner/OVH, or Raspberry Pi; Docker pulls the manifest matching
+your host automatically, and `scripts/pull-published-images.sh` (step 6
+below) picks the right one on its own.
 
-```bash
-export DOCKER_DEFAULT_PLATFORM=linux/amd64
-```
-
-Export it for the whole session rather than prefixing one command: `relay-server`
-is pulled later by `docker compose up`, not by the pull script, and it needs the
-same setting. Emulated amd64 on arm64 is noticeably slower — fine for a local
-trial or demo, not what we'd recommend for a production install.
+**`relay-server` is still `linux/amd64` only.** It's a separately-published
+third-party image (not built by this repo), and there is no `arm64`
+manifest for it yet. `infra/docker-compose.yml` pins it to
+`platform: linux/amd64`, so `docker compose up` pulls and runs it under
+emulation automatically on an arm64 host — nothing to export, and
+`control-plane`/`web-publish` are unaffected since only `relay-server`
+carries the pin. Emulated amd64 on arm64 is noticeably slower for that
+one container — fine for a local trial or demo, not what we'd recommend
+for a production install.
 
 ### Ports
 
@@ -166,10 +168,10 @@ This tags them locally as `infra-control-plane:latest` / `infra-web-publish:late
 `docker compose up` picks up without attempting to build. Pass a version to pin one
 (`bash scripts/pull-published-images.sh 1.10.0`) instead of the default `latest`.
 
-> **arm64 hosts:** these images are linux/amd64 only, and so is `relay-server` in step 7 —
-> `export DOCKER_DEFAULT_PLATFORM=linux/amd64` for the session before running this (see
-> [Architecture](#architecture) above). The script refuses with an explanation rather than
-> pulling something that can't run.
+> **arm64 hosts:** nothing to do here — the script pulls the native `linux/arm64` build
+> of both images automatically. `relay-server` in step 7 is still `linux/amd64` only, but
+> that's handled by a `platform:` pin in `infra/docker-compose.yml`, not by this script;
+> see [Architecture](#architecture) above.
 
 If you do have org access and want to build from source instead (e.g. active development),
 skip this step and run `docker compose up -d --build` in step 7.

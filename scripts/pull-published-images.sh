@@ -10,12 +10,13 @@
 # Both images are published publicly by .github/workflows/release.yml on
 # every version tag; no login is required to pull them.
 #
-# Published images are linux/amd64 only — see the preflight below, which
-# refuses with an explanation rather than letting the Docker daemon's own
-# "no matching manifest for linux/arm64/v8" surface with no cause and no way
-# forward. relay-server (pulled later by `docker compose up`, not by this
-# script) is amd64-only for the same reason, so the workaround below has to
-# be exported for the whole session, not just this command.
+# Both images publish linux/amd64 and linux/arm64 — the preflight below only
+# fires for a platform outside that pair, with an explanation rather than
+# letting the Docker daemon's own "no matching manifest for ..." surface with
+# no cause and no way forward. relay-server (pulled later by `docker compose
+# up`, not by this script) is still amd64-only third-party; it's pinned to
+# `platform: linux/amd64` in infra/docker-compose.yml so it runs under
+# emulation on an arm64 host without affecting these two images.
 #
 # Usage:
 #   bash scripts/pull-published-images.sh [version]   # default: latest
@@ -58,18 +59,16 @@ unsupported_platform_error() {
 ERROR: the published Team Relay images do not include your platform.
 
   your platform:     ${want}
-  images published:  ${have:-linux/amd64 only}
+  images published:  ${have:-linux/amd64, linux/arm64}
 
-The images built by our release pipeline are linux/amd64 only. This affects
-every arm64 host: Apple Silicon, AWS Graviton, Ampere at Hetzner/OVH,
-Raspberry Pi. Two ways forward:
+The images built by our release pipeline currently target linux/amd64 and
+linux/arm64 (Apple Silicon, AWS Graviton, Ampere, Raspberry Pi included) —
+your platform isn't one of those. Two ways forward:
 
-  1. Run the amd64 images under emulation. Slower, but the whole documented
-     install path works unchanged. Export it for the session, because
-     'docker compose up' later pulls relay-server, which is amd64-only too:
+  1. Run the amd64 images under emulation for this pull only. Slower, but
+     the whole documented install path works unchanged:
 
-         export DOCKER_DEFAULT_PLATFORM=linux/amd64
-         bash scripts/pull-published-images.sh ${VERSION}
+         DOCKER_DEFAULT_PLATFORM=linux/amd64 bash scripts/pull-published-images.sh ${VERSION}
 
   2. Build from source for your own architecture instead of pulling:
 
@@ -80,7 +79,7 @@ Raspberry Pi. Two ways forward:
      @entire-vc npm packages (apps/web-publish/.npmrc); if you don't have
      one, option 1 is your path.
 
-Tracking arm64 images: https://github.com/entire-vc/evc-team-relay/issues
+Tracking additional platforms: https://github.com/entire-vc/evc-team-relay/issues
 
 MSG
   exit 1
