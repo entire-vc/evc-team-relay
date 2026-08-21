@@ -86,14 +86,27 @@ MSG
   exit 1
 }
 
+# Echoes the published platform list when it is READABLE and genuinely lacks
+# our platform; returns non-zero in every other case, including "the manifest
+# told us nothing". That distinction is the whole point: an empty list means
+# we could not look, not that the platform is absent. Conflating the two is
+# how an unrelated failure (a typo in the version argument, an expired login)
+# ends up being reported as an architecture problem — the same wrong-diagnosis
+# class this script exists to remove, reintroduced one level down.
+platform_missing_from() {
+  local image="$1" available
+  [ -n "${PLATFORM_ARCH}" ] || return 1
+  available="$(manifest_platforms "$image" | sort -u | paste -sd, -)"
+  [ -n "$available" ] || return 1
+  printf '%s' "$available" | tr ',' '\n' | grep -qx "${PLATFORM_ARCH}" && return 1
+  printf 'linux/%s' "${available//,/, linux\/}"
+}
+
 PLATFORM="$(effective_platform)"
 PLATFORM_ARCH="${PLATFORM##*/}"
 
-if [ -n "${PLATFORM_ARCH}" ]; then
-  AVAILABLE="$(manifest_platforms "${REGISTRY}/control-plane:${VERSION}" | sort -u | paste -sd, -)"
-  if [ -n "${AVAILABLE}" ] && ! printf '%s' "${AVAILABLE}" | tr ',' '\n' | grep -qx "${PLATFORM_ARCH}"; then
-    unsupported_platform_error "${PLATFORM}" "linux/${AVAILABLE//,/, linux\/}"
-  fi
+if AVAILABLE="$(platform_missing_from "${REGISTRY}/control-plane:${VERSION}")"; then
+  unsupported_platform_error "${PLATFORM}" "${AVAILABLE}"
 fi
 
 for component in control-plane web-publish; do
@@ -101,10 +114,11 @@ for component in control-plane web-publish; do
   if ! docker pull "${REGISTRY}/${component}:${VERSION}"; then
     # Belt and braces: the preflight above is skipped whenever the manifest
     # could not be read, so a platform mismatch can still land here. Name the
-    # cause rather than leaving the daemon's raw error as the last word.
-    if [ -n "${PLATFORM_ARCH}" ] \
-       && ! manifest_platforms "${REGISTRY}/${component}:${VERSION}" | grep -qx "${PLATFORM_ARCH}"; then
-      unsupported_platform_error "${PLATFORM}" ""
+    # cause only when the manifest actually proves it — otherwise the daemon's
+    # own error is the honest last word, and a bad version argument stays a
+    # bad version argument instead of being blamed on your CPU.
+    if AVAILABLE="$(platform_missing_from "${REGISTRY}/${component}:${VERSION}")"; then
+      unsupported_platform_error "${PLATFORM}" "${AVAILABLE}"
     fi
     exit 1
   fi
