@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import importlib
 import os
+import pkgutil
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from slowapi import Limiter
 from sqlalchemy.pool import StaticPool
 
 # Ensure the project package is importable when tests run without an editable install.
@@ -13,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import app.api.routers as routers_pkg
+import app.main as main_module
 from app.core.config import get_settings
 from app.core.security import generate_ed25519_keypair
 from app.db import session as session_module
@@ -88,26 +93,51 @@ def db_session(db_connection):
         yield session
 
 
+def _collect_rate_limiters() -> list[Limiter]:
+    """Collect every module-level slowapi Limiter under app.api.routers + app.main.
+
+    Introspected rather than hand-enumerated: a hand-maintained list silently
+    falls behind as routers are added — that is exactly how `web.limiter` and
+    `webhooks.limiter` went unreset for every test (Mesh #c3acaa8d). The
+    `webhooks` one is the dangerous case: its endpoint is windowed at 1 HOUR,
+    so a leaked counter can never recover inside a single (~6 min) test run.
+
+    A new router that declares its own `limiter = Limiter(...)` is picked up
+    here automatically, without anyone having to remember to edit this file.
+    """
+    seen: dict[int, Limiter] = {}
+    prefix = f"{routers_pkg.__name__}."
+    for module_info in pkgutil.iter_modules(routers_pkg.__path__, prefix=prefix):
+        module = importlib.import_module(module_info.name)
+        for value in vars(module).values():
+            if isinstance(value, Limiter):
+                seen[id(value)] = value
+    for value in vars(main_module).values():
+        if isinstance(value, Limiter):
+            seen[id(value)] = value
+    return list(seen.values())
+
+
 @pytest.fixture
 def client(engine, db_connection):
-    # Reset rate limiters before each test to avoid cross-test pollution
-    from app.api.routers import admin_ui, agent_keys, auth, invites, metrics, shares, tokens
+    # Reset rate limiters before each test to avoid cross-test pollution.
     from app.db.session import get_db
-    from app.main import limiter as main_limiter
 
-    # Clear all limiter storages
-    limiters = [
-        main_limiter,
-        auth.limiter,
-        shares.limiter,
-        tokens.limiter,
-        invites.limiter,
-        metrics._limiter,
-        agent_keys.limiter,
-        admin_ui.limiter,
-    ]
-    for lim in limiters:
-        if hasattr(lim, "_storage") and lim._storage:
+    for lim in _collect_rate_limiters():
+        # `_storage` is slowapi's internal handle on the backing store. It is
+        # present on every Limiter today (verified: MemoryStorage, has
+        # .reset()), but it is a private attribute — a slowapi version bump
+        # could rename/remove it. Silently skipping a missing attribute would
+        # turn this into a no-op reset that nobody notices (the exact failure
+        # mode this whole fixture exists to prevent), so fail loudly instead.
+        if not hasattr(lim, "_storage"):
+            raise RuntimeError(
+                f"slowapi Limiter {lim!r} has no `_storage` attribute — slowapi's "
+                "internal API has likely changed and this test-isolation reset is "
+                "silently broken. Update `_collect_rate_limiters`'s reset logic for "
+                "the new slowapi internals before trusting any rate-limit test."
+            )
+        if lim._storage:
             lim._storage.reset()
 
     app = build_app()
