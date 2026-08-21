@@ -71,6 +71,14 @@ def s3_not_found() -> S3Error:
     )
 
 
+def minio_object(content: bytes = b"fake-png-bytes", content_type: str = "image/png") -> MagicMock:
+    """A MinIO get_object() response: .read() + .headers.get(...) + close/release_conn."""
+    resp = MagicMock()
+    resp.read.return_value = content
+    resp.headers = {"Content-Type": content_type}
+    return resp
+
+
 def minio_patch(exists: bool = True):
     """Mocks shares.py's MinIO client — MinIO is a true external boundary."""
     mock_client = MagicMock()
@@ -79,8 +87,10 @@ def minio_patch(exists: bool = True):
         mock_client.stat_object.return_value = MagicMock()
         mock_client.presigned_get_object.return_value = "https://minio.test/presigned-get"
         mock_client.presigned_put_object.return_value = "https://minio.test/presigned-put"
+        mock_client.get_object.return_value = minio_object()
     else:
         mock_client.stat_object.side_effect = s3_not_found()
+        mock_client.get_object.side_effect = s3_not_found()
     return patch("app.api.routers.shares._get_minio_client", return_value=mock_client)
 
 
@@ -257,7 +267,13 @@ class TestHeadFile:
 
 
 class TestDownloadUrl:
-    def test_returns_presigned_url(self, client: TestClient, db_session: Session, owner):
+    def test_returns_control_plane_url_not_minio(
+        self, client: TestClient, db_session: Session, owner
+    ):
+        """Regression for effef307: must NOT be a raw MinIO presigned URL —
+        MinIO has no public endpoint, so a client outside the relay's own
+        compose network can never reach it (DNS: minio, no published port).
+        """
         share = make_folder_share(db_session, owner, slug="dlurl-ok")
         token = login(client, owner.email, "test123456")
         data = mint(client, share.id, token)
@@ -267,7 +283,11 @@ class TestDownloadUrl:
                 headers=bearer(data["token"]),
             )
         assert r.status_code == 200, r.text
-        assert r.json()["downloadUrl"] == "https://minio.test/presigned-get"
+        download_url = r.json()["downloadUrl"]
+        assert "minio" not in download_url.lower()
+        assert download_url.startswith(
+            f"http://localhost:8000/shares/{share.id}/files/attachments/photo.png/content?token="
+        )
 
     def test_missing_object_returns_404(self, client: TestClient, db_session: Session, owner):
         share = make_folder_share(db_session, owner, slug="dlurl-missing")
@@ -291,6 +311,101 @@ class TestDownloadUrl:
                 headers=bearer(data["token"]),
             )
         assert r.status_code == 200, r.text
+
+
+# ── GET /shares/{id}/files/{path}/content (byte-serving, effef307) ───────────
+
+
+def relative_url(download_url: str) -> str:
+    """download_url is absolute (control_plane_public_url); TestClient wants
+    a path+query relative to its own base_url."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(download_url)
+    return f"{parts.path}?{parts.query}" if parts.query else parts.path
+
+
+class TestFileContent:
+    def test_end_to_end_returns_bytes(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-e2e")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token)
+        with minio_patch(exists=True):
+            dl = client.get(
+                f"/shares/{share.id}/files/attachments/photo.png/download-url",
+                headers=bearer(data["token"]),
+            )
+            assert dl.status_code == 200, dl.text
+            # bare GET, no Authorization header — the credential is in the URL.
+            r = client.get(relative_url(dl.json()["downloadUrl"]))
+        assert r.status_code == 200, r.text
+        assert r.content == b"fake-png-bytes"
+        assert r.headers["content-type"] == "image/png"
+
+    def test_viewer_can_fetch_content(self, client: TestClient, db_session: Session, owner, viewer):
+        share = make_folder_share(db_session, owner, slug="content-viewer")
+        add_member(db_session, share, viewer, models.ShareMemberRole.VIEWER)
+        token = login(client, viewer.email, "test123456")
+        data = mint(client, share.id, token)
+        with minio_patch(exists=True):
+            dl = client.get(
+                f"/shares/{share.id}/files/attachments/photo.png/download-url",
+                headers=bearer(data["token"]),
+            )
+            r = client.get(relative_url(dl.json()["downloadUrl"]))
+        assert r.status_code == 200, r.text
+
+    def test_missing_object_returns_404(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-missing")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token)
+        with minio_patch(exists=True):
+            dl = client.get(
+                f"/shares/{share.id}/files/attachments/photo.png/download-url",
+                headers=bearer(data["token"]),
+            )
+            assert dl.status_code == 200, dl.text
+        with minio_patch(exists=False):
+            r = client.get(relative_url(dl.json()["downloadUrl"]))
+        assert r.status_code == 404
+
+    def test_garbage_token_returns_401(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-bad-token")
+        r = client.get(
+            f"/shares/{share.id}/files/attachments/photo.png/content?token=not-a-real-token"
+        )
+        assert r.status_code == 401
+
+    def test_no_token_returns_422(self, client: TestClient, db_session: Session, owner):
+        """token is a required query param — FastAPI 422s before our code runs."""
+        share = make_folder_share(db_session, owner, slug="content-no-token")
+        r = client.get(f"/shares/{share.id}/files/attachments/photo.png/content")
+        assert r.status_code == 422
+
+    def test_wrong_share_id_returns_403(self, client: TestClient, db_session: Session, owner):
+        share_a = make_folder_share(db_session, owner, slug="content-share-a")
+        share_b = make_folder_share(db_session, owner, slug="content-share-b")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share_a.id, token)
+        with minio_patch(exists=True):
+            dl = client.get(
+                f"/shares/{share_a.id}/files/attachments/photo.png/download-url",
+                headers=bearer(data["token"]),
+            )
+            assert dl.status_code == 200, dl.text
+            raw_token = relative_url(dl.json()["downloadUrl"]).split("token=")[-1]
+            r = client.get(
+                f"/shares/{share_b.id}/files/attachments/photo.png/content?token={raw_token}"
+            )
+        assert r.status_code == 403
+
+    def test_session_jwt_rejected_not_a_file_token(
+        self, client: TestClient, db_session: Session, owner
+    ):
+        share = make_folder_share(db_session, owner, slug="content-session-jwt")
+        token = login(client, owner.email, "test123456")
+        r = client.get(f"/shares/{share.id}/files/attachments/photo.png/content?token={token}")
+        assert r.status_code == 401
 
 
 # ── POST /shares/{id}/files/{path}/upload-url (CAS.ts writeFile) ─────────────
