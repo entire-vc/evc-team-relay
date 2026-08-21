@@ -1,0 +1,74 @@
+name: Prove web-publish builds cold
+
+# Throwaway proof workflow — lives only on this branch and is deleted from it
+# before merge. Closes the exact gap the lead named: ci.yml's build-docker is
+# green, but it carries cache-from, so its green is equally consistent with a
+# cache hit. Nothing so far has shown the default GITHUB_TOKEN authenticating
+# npm INSIDE a cold docker build.
+#
+# So: no cache-from, no cache-to, no-cache: true — npm ci must really run.
+# Job permissions mirror release.yml's build-and-push (packages: write), NOT
+# ci.yml's (packages: read), or this would prove the wrong workflow's config.
+# push: false — nothing is published.
+#
+# Read the STEP DURATION, not the exit code: ~11s means a cache replay and the
+# proof failed even if the job is green.
+
+on:
+  push:
+    branches: [fix/release-web-publish-npm-token]
+
+jobs:
+  cold:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amd64-cold-with-token
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - name: arm64-cold-with-token
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build web-publish cold, token passed
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: apps/web-publish
+          platforms: ${{ matrix.platform }}
+          push: false
+          no-cache: true
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+
+      # Negative control on the SAME runner, same commit, same platform, with
+      # exactly one thing removed: the token. It must FAIL. Without this, a
+      # green build above is consistent with "the token was never needed" —
+      # and the whole finding would be unproven in the direction that matters.
+      - name: NEGATIVE CONTROL — same build, token withheld, must fail
+        id: negctl
+        continue-on-error: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: apps/web-publish
+          platforms: ${{ matrix.platform }}
+          push: false
+          no-cache: true
+
+      - name: Assert the negative control actually failed
+        run: |
+          if [ "${{ steps.negctl.outcome }}" = "success" ]; then
+            echo "::error::negative control SUCCEEDED without a token — the token is not what makes this build work, so the fix is unproven"
+            exit 1
+          fi
+          echo "negative control failed as required (outcome=${{ steps.negctl.outcome }})"
