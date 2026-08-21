@@ -19,21 +19,14 @@ This guide covers installing EVC Team Relay on a Linux server using Docker Compo
 
 ### Architecture
 
-**`control-plane` and `web-publish` publish native `linux/amd64` and
-`linux/arm64` images** — no setup needed on Apple Silicon, AWS Graviton,
-Ampere at Hetzner/OVH, or Raspberry Pi; Docker pulls the manifest matching
-your host automatically, and `scripts/pull-published-images.sh` (step 6
-below) picks the right one on its own.
-
-**`relay-server` is still `linux/amd64` only.** It's a separately-published
-third-party image (not built by this repo), and there is no `arm64`
-manifest for it yet. `infra/docker-compose.yml` pins it to
-`platform: linux/amd64`, so `docker compose up` pulls and runs it under
-emulation automatically on an arm64 host — nothing to export, and
-`control-plane`/`web-publish` are unaffected since only `relay-server`
-carries the pin. Emulated amd64 on arm64 is noticeably slower for that
-one container — fine for a local trial or demo, not what we'd recommend
-for a production install.
+**`control-plane`, `web-publish`, and `relay-server` all publish native
+`linux/amd64` and `linux/arm64` images** — no setup needed on Apple
+Silicon, AWS Graviton, Ampere at Hetzner/OVH, or Raspberry Pi; Docker
+pulls the manifest matching your host automatically, and
+`scripts/pull-published-images.sh` (step 6 below) picks the right one on
+its own for the two images it handles. `relay-server` is pulled later, by
+`docker compose up` itself in step 7 — same automatic manifest match,
+no platform pin, nothing to export.
 
 ### Ports
 
@@ -169,9 +162,9 @@ This tags them locally as `infra-control-plane:latest` / `infra-web-publish:late
 (`bash scripts/pull-published-images.sh 1.10.0`) instead of the default `latest`.
 
 > **arm64 hosts:** nothing to do here — the script pulls the native `linux/arm64` build
-> of both images automatically. `relay-server` in step 7 is still `linux/amd64` only, but
-> that's handled by a `platform:` pin in `infra/docker-compose.yml`, not by this script;
-> see [Architecture](#architecture) above.
+> of both images automatically. `relay-server` in step 7 is native `linux/arm64` too,
+> pulled directly by `docker compose up` with no platform pin; see
+> [Architecture](#architecture) above.
 
 If you do have org access and want to build from source instead (e.g. active development),
 skip this step and run `docker compose up -d --build` in step 7.

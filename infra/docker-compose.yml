@@ -240,10 +240,9 @@ services:
 
   relay-server:
     image: ghcr.io/entire-vc/evc-relay-server:0.9.12
-    # Third-party image, linux/amd64 only — no arm64 manifest yet. Pinned here
-    # (rather than via a session-wide DOCKER_DEFAULT_PLATFORM export) so an
-    # arm64 host still pulls control-plane/web-publish natively.
-    platform: linux/amd64
+    # Third-party image; publishes linux/amd64 + linux/arm64 as of 0.9.12 —
+    # no platform pin needed, Docker picks the manifest matching the host
+    # automatically, same as control-plane/web-publish.
     depends_on:
       minio:
         condition: service_healthy

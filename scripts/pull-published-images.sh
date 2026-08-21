@@ -14,9 +14,8 @@
 # fires for a platform outside that pair, with an explanation rather than
 # letting the Docker daemon's own "no matching manifest for ..." surface with
 # no cause and no way forward. relay-server (pulled later by `docker compose
-# up`, not by this script) is still amd64-only third-party; it's pinned to
-# `platform: linux/amd64` in infra/docker-compose.yml so it runs under
-# emulation on an arm64 host without affecting these two images.
+# up`, not by this script) is also linux/amd64 + linux/arm64 as of 0.9.12 —
+# no platform pin needed anywhere in infra/docker-compose.yml.
 #
 # Usage:
 #   bash scripts/pull-published-images.sh [version]   # default: latest
