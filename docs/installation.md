@@ -17,6 +17,22 @@ This guide covers installing EVC Team Relay on a Linux server using Docker Compo
 - Domain name with DNS access
 - (Optional) SSL certificates or use Caddy's automatic HTTPS
 
+### Architecture
+
+**The published images are `linux/amd64` only** — `control-plane`, `web-publish`
+and `relay-server` alike. There is no `arm64` manifest, so on an arm64 host
+(Apple Silicon, AWS Graviton, Ampere at Hetzner/OVH, Raspberry Pi) the install
+below stops at the pull step unless you run them under emulation:
+
+```bash
+export DOCKER_DEFAULT_PLATFORM=linux/amd64
+```
+
+Export it for the whole session rather than prefixing one command: `relay-server`
+is pulled later by `docker compose up`, not by the pull script, and it needs the
+same setting. Emulated amd64 on arm64 is noticeably slower — fine for a local
+trial or demo, not what we'd recommend for a production install.
+
 ### Ports
 
 | Port | Service | Required |
@@ -150,9 +166,10 @@ This tags them locally as `infra-control-plane:latest` / `infra-web-publish:late
 `docker compose up` picks up without attempting to build. Pass a version to pin one
 (`bash scripts/pull-published-images.sh 1.10.0`) instead of the default `latest`.
 
-> linux/amd64 only for now — there is no arm64 manifest yet, so this fails on Apple Silicon
-> or other arm64 hosts without emulation (e.g. `export DOCKER_DEFAULT_PLATFORM=linux/amd64`
-> under Docker Desktop).
+> **arm64 hosts:** these images are linux/amd64 only, and so is `relay-server` in step 7 —
+> `export DOCKER_DEFAULT_PLATFORM=linux/amd64` for the session before running this (see
+> [Architecture](#architecture) above). The script refuses with an explanation rather than
+> pulling something that can't run.
 
 If you do have org access and want to build from source instead (e.g. active development),
 skip this step and run `docker compose up -d --build` in step 7.
