@@ -231,6 +231,26 @@ class WebAssetUploadRequest(BaseModel):
     content_type: str
 
 
+class AgentKeySelfDescribeResponse(BaseModel):
+    """Self-describe response for GET .../agent-key.
+
+    Deliberately its own model, not a reuse of agent_keys.AgentKeyListItem: that
+    model is owner-facing and carries created_by (a user UUID the key holder has
+    no business seeing) and revoked_at (which would always be null here, since a
+    revoked key is rejected before this model is ever built — a field that can
+    never be non-null is worse than no field, someone will write a check against
+    it that can never fire). Keeping this model separate means a field added to
+    the owner-facing model tomorrow does not silently leak onto this route.
+    """
+
+    id: str
+    label: str | None
+    share_id: str
+    scopes: list[str]
+    expires_at: datetime | None
+    last_used_at: datetime | None
+
+
 @router.get("/shares/{slug}", response_model=WebSharePublic)
 def get_share_by_slug(
     slug: str,
@@ -1401,6 +1421,52 @@ def _resolve_share_agent_key(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Agent key has expired"
             )
     return agent_key
+
+
+@router.get("/shares/{share_identifier}/agent-key", response_model=AgentKeySelfDescribeResponse)
+def describe_own_agent_key(
+    request: Request,
+    share_identifier: str,
+    db: Session = Depends(get_db),
+) -> AgentKeySelfDescribeResponse:
+    """
+    Let an agent key holder read its own key's metadata.
+
+    Returns the metadata the identity/standing check (_resolve_share_agent_key)
+    already reads to decide whether the request may proceed at all — scopes,
+    expires_at, last_used_at — so a caller can learn its own lifetime and scope
+    grant without waiting to be denied by some other route first. No scope is
+    required to call this: a write-only key must be able to discover that it
+    is write-only, which is exactly the case a scope requirement would break.
+
+    Never returns key_hash, the raw key, revoked_at, created_by, or any other
+    key on the same share.
+
+    Auth: X-Agent-Key header — must be non-revoked, non-expired, and valid for
+    this share; any scope. Does NOT update last_used_at — self-describing is
+    not "using" the key for its purpose, and last_used_at exists to answer "is
+    this key actually in use", which a polling settings screen would corrupt
+    into a permanent "now" if reading it counted as use.
+    share_identifier: folder UUID (private/sync shares) or web_slug (web-published only).
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    share = _resolve_share_for_agent(share_identifier, db)
+    agent_key = _resolve_share_agent_key(share, request, db)
+
+    return AgentKeySelfDescribeResponse(
+        id=str(agent_key.id),
+        label=agent_key.label,
+        share_id=str(agent_key.share_id),
+        scopes=sorted(agent_key_scopes.parse_scopes(agent_key.scopes)),
+        expires_at=agent_key.expires_at,
+        last_used_at=agent_key.last_used_at,
+    )
 
 
 def _auth_agent_key(
