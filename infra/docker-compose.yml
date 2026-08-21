@@ -240,6 +240,10 @@ services:
 
   relay-server:
     image: ghcr.io/entire-vc/evc-relay-server:0.9.12
+    # Third-party image, linux/amd64 only — no arm64 manifest yet. Pinned here
+    # (rather than via a session-wide DOCKER_DEFAULT_PLATFORM export) so an
+    # arm64 host still pulls control-plane/web-publish natively.
+    platform: linux/amd64
     depends_on:
       minio:
         condition: service_healthy

@@ -10,8 +10,26 @@ env:
   IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  build:
+    # One leg per (image, platform) pair, each on a NATIVE runner for that
+    # platform -- not `platforms: linux/amd64,linux/arm64` on a single amd64
+    # runner, which would build arm64 under QEMU. Measured cost difference
+    # (runs 32436501549, 32436883170): arm64 native on ubuntu-24.04-arm ~18s
+    # vs ~130s under QEMU on ubuntu-latest, for a cold control-plane build.
+    # Native ARM runners are free on public repos, so there's no QEMU tradeoff
+    # to make here. Each leg pushes by digest only (no tag) -- `merge` below
+    # assembles the real tags from these digests via `imagetools create`,
+    # which is what makes the multi-platform manifest, not this job.
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [control-plane, web-publish]
+        platform:
+          - name: linux/amd64
+            runner: ubuntu-latest
+          - name: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.platform.runner }}
     permissions:
       contents: read
       packages: write
@@ -35,11 +53,79 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for control-plane
-        id: meta-cp
+      - name: Platform slug for artifact naming
+        id: slug
+        run: echo "slug=$(echo '${{ matrix.platform.name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image }} (${{ matrix.platform.name }})
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: apps/${{ matrix.image }}
+          platforms: ${{ matrix.platform.name }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ steps.slug.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ steps.slug.outputs.slug }}
+          # web-publish's Dockerfile needs this to `npm ci` against our
+          # private @entire-vc scope. Every leg runs its own real npm ci --
+          # there is no cross-platform GHA cache entry to replay from on a
+          # platform's first-ever build, which is exactly what caught this
+          # secret being missing in the first place (see git blame / #222).
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/${{ matrix.image }}
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${{ matrix.image }}/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digests-${{ matrix.image }}-${{ steps.slug.outputs.slug }}
+          path: /tmp/digests/${{ matrix.image }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    # Assembles the per-platform digests from `build` into the real
+    # multi-platform manifest for each image's semver tags -- no rebuild,
+    # imagetools just writes a manifest list pointing at the already-pushed
+    # digests. Same "merge by digest, don't rebuild" shape this workflow
+    # already used for `latest` in promote-latest below.
+    needs: build
+    strategy:
+      matrix:
+        image: [control-plane, web-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for ${{ matrix.image }}
+        id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/control-plane
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
           # No `latest` here on purpose: this job runs before smoke-test, so
           # tagging `latest` here would move it onto an unvalidated image the
           # moment a build succeeds — a failing smoke-test would then leave
@@ -51,46 +137,21 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push control-plane
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: apps/control-plane
-          push: true
-          tags: ${{ steps.meta-cp.outputs.tags }}
-          labels: ${{ steps.meta-cp.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create multi-platform manifest
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046 # word-splitting is deliberate here:
+          # each $() expands to multiple `-t <tag>` / `<ref>@sha256:...`
+          # arguments for imagetools create, not one string.
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }}@sha256:%s ' *)
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
 
-      - name: Extract metadata for web-publish
-        id: meta-wp
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/web-publish
-          # See the control-plane metadata step above for why `latest` is
-          # deliberately absent here.
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push web-publish
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: apps/web-publish
-          push: true
-          tags: ${{ steps.meta-wp.outputs.tags }}
-          labels: ${{ steps.meta-wp.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # apps/web-publish/Dockerfile mounts this to run `npm ci` against
-          # our private @entire-vc scope. It was missing here (never present,
-          # not lost), so every release since the workflow was written has
-          # been REPLAYING a cached npm-ci layer rather than building one: a
-          # cold build fails with npm E401 on every platform. Green releases
-          # were survivorship, not evidence — the cache is evicted after 7
-          # idle days, and a new platform has no entry at all by construction.
-          # Byte-identical to what ci.yml's build-docker already passes.
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect merged manifest
+        run: |
+          docker buildx imagetools inspect '${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}'
 
   smoke-test:
     # Boots the JUST-PUBLISHED images against a clean database and asserts
@@ -101,7 +162,7 @@ jobs:
     # from nothing. Deliberately does NOT reuse cache-from/cache-to or any
     # locally-built layer — it pulls from ghcr exactly like an external
     # installer's `bash scripts/pull-published-images.sh` would.
-    needs: build-and-push
+    needs: merge
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -171,7 +232,7 @@ jobs:
     # pull them. No rebuild here — `imagetools create` just repoints the
     # `latest` tag at the already-pushed, already-tested manifest by digest,
     # so this cannot silently diverge from what smoke-test actually checked.
-    needs: [build-and-push, smoke-test]
+    needs: [merge, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -197,7 +258,7 @@ jobs:
           done
 
   create-release:
-    needs: [build-and-push, smoke-test]
+    needs: [merge, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
