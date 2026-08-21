@@ -73,6 +73,11 @@ bash ../scripts/pull-published-images.sh
 docker compose up -d
 ```
 
+> **arm64 hosts** (Apple Silicon, Graviton, Ampere, Raspberry Pi): the published images
+> are `linux/amd64` only. Run `export DOCKER_DEFAULT_PLATFORM=linux/amd64` before the
+> two commands above to use them under emulation — see
+> [Installation → Architecture](docs/installation.md#architecture).
+
 **Services** (once DNS points your bare `DOMAIN_BASE`, `cp.DOMAIN_BASE`, and `docs.DOMAIN_BASE` at your server and Caddy has issued certs):
 - Relay Server: `wss://yourdomain.com` (your `DOMAIN_BASE` itself — no `relay.` subdomain)
 - Control Plane API: `https://cp.yourdomain.com`
