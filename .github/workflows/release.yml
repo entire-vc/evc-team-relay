@@ -81,6 +81,16 @@ jobs:
           labels: ${{ steps.meta-wp.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # apps/web-publish/Dockerfile mounts this to run `npm ci` against
+          # our private @entire-vc scope. It was missing here (never present,
+          # not lost), so every release since the workflow was written has
+          # been REPLAYING a cached npm-ci layer rather than building one: a
+          # cold build fails with npm E401 on every platform. Green releases
+          # were survivorship, not evidence — the cache is evicted after 7
+          # idle days, and a new platform has no entry at all by construction.
+          # Byte-identical to what ci.yml's build-docker already passes.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
 
   smoke-test:
     # Boots the JUST-PUBLISHED images against a clean database and asserts
