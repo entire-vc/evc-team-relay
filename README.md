@@ -52,10 +52,9 @@ You want your team in Obsidian, editing together, publishing docs — without gi
 Full walkthrough — DNS, production hardening, systemd, troubleshooting — lives in the
 **[Installation Guide](docs/installation.md)**. The short version:
 
-> **arm64 hosts** (Apple Silicon, Graviton, Ampere, Raspberry Pi): `control-plane` and
-> `web-publish` publish native `linux/arm64` images, no setup needed. `relay-server` is
-> still `linux/amd64` only — Compose pulls it under emulation automatically (pinned in
-> `infra/docker-compose.yml`), nothing to export. See
+> **arm64 hosts** (Apple Silicon, Graviton, Ampere, Raspberry Pi): `control-plane`,
+> `web-publish`, and `relay-server` all publish native `linux/arm64` images — nothing to
+> export, nothing to pin. See
 > [Installation → Architecture](docs/installation.md#architecture) for details.
 
 ```bash
