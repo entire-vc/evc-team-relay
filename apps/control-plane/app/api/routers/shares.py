@@ -619,20 +619,15 @@ def _validate_file_path(path: str) -> str:
     return path
 
 
-def _decode_file_token(share_id: uuid.UUID, path: str, authorization: str | None) -> dict[str, Any]:
-    """Decode+validate the Bearer file-token on HEAD/download-url/upload-url.
+def _decode_file_token_value(token: str, share_id: uuid.UUID, path: str) -> dict[str, Any]:
+    """Shared core: decode+validate a raw file-token string against share_id/path.
 
-    Deliberately NOT deps.get_current_user — that accepts normal session
-    JWTs, and (per its own guard) now explicitly REJECTS scope=file tokens.
-    This is the file-token-only counterpart.
+    Used by both the Authorization-header form below (HEAD/download-url mint,
+    upload-url) and the query-string form consumed by GET .../content — the
+    actual byte-serving route a client hits with a bare GET and so cannot
+    attach a header to (see that route's docstring for why the credential
+    rides in the URL there).
     """
-    if not authorization:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header"
-        )
     try:
         payload = security.decode_access_token(token)
     except InvalidTokenError as exc:
@@ -650,6 +645,23 @@ def _decode_file_token(share_id: uuid.UUID, path: str, authorization: str | None
             status_code=status.HTTP_403_FORBIDDEN, detail="Token not valid for this path"
         )
     return payload
+
+
+def _decode_file_token(share_id: uuid.UUID, path: str, authorization: str | None) -> dict[str, Any]:
+    """Decode+validate the Bearer file-token on HEAD/download-url/upload-url.
+
+    Deliberately NOT deps.get_current_user — that accepts normal session
+    JWTs, and (per its own guard) now explicitly REJECTS scope=file tokens.
+    This is the file-token-only counterpart.
+    """
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing credentials")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header"
+        )
+    return _decode_file_token_value(token, share_id, path)
 
 
 def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
@@ -762,7 +774,22 @@ def get_file_download_url(
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> DownloadUrlResponse:
-    """CAS.ts readFile() step 1: mint a presigned MinIO GET for this attachment."""
+    """CAS.ts readFile() step 1: mint a control-plane URL for this attachment.
+
+    Used to mint a presigned MinIO GET directly (effef307) — unusable outside
+    the relay's own compose network, since MinIO has no public endpoint
+    (internal DNS name `minio`, no published port or vhost) and publishing
+    one would force every self-hoster to expose their object store. Now
+    returns a control-plane URL (GET .../content, below) that streams the
+    bytes itself, matching web.py's serve_web_asset precedent.
+
+    The returned URL carries the SAME file-token as its `token` query
+    credential rather than minting a second one: the token already proves
+    read access to exactly this share_id+path and is already short-lived
+    (10 min), so reusing it is not weaker than a fresh signature — and it's
+    the same shape a MinIO presigned URL already had (credential in the
+    query, no header on the final bare GET), not a new exposure class.
+    """
     token_payload = _decode_file_token(share_id, path, authorization)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
@@ -772,12 +799,9 @@ def get_file_download_url(
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
     try:
-        # Confirm the object exists before minting the URL — a presigned GET
-        # for a missing key 404s opaquely from MinIO, not from this API.
+        # Confirm the object exists before minting the URL — GET .../content
+        # 404ing from OUR api is easier to diagnose than an opaque MinIO 403.
         minio_client.stat_object(settings.minio_bucket, object_name)
-        url = minio_client.presigned_get_object(
-            settings.minio_bucket, object_name, expires=timedelta(minutes=10)
-        )
     except S3Error as e:
         if e.code in ("NoSuchKey", "NoSuchObject"):
             raise HTTPException(
@@ -787,7 +811,65 @@ def get_file_download_url(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve file: {e}",
         ) from e
-    return DownloadUrlResponse(downloadUrl=url)
+
+    # authorization is guaranteed "Bearer <token>" here — _decode_file_token
+    # already rejected anything else above.
+    _, _, raw_token = authorization.partition(" ")
+    base = settings.control_plane_public_url.rstrip("/")
+    download_url = (
+        f"{base}/shares/{share_id}/files/{quote(path, safe='/')}/content"
+        f"?token={quote(raw_token, safe='')}"
+    )
+    return DownloadUrlResponse(downloadUrl=download_url)
+
+
+@router.get("/{share_id}/files/{path:path}/content")
+def get_file_content(
+    share_id: uuid.UUID,
+    path: str,
+    token: str = Query(..., description="File-token from download-url's downloadUrl"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Serve attachment bytes directly (CAS.ts readFile() step 2).
+
+    Mirrors web.py's serve_web_asset: reads the object from MinIO server-side
+    and streams the bytes back, instead of redirecting the client to MinIO
+    directly — MinIO is not publicly reachable (effef307). Auth is a query
+    param, not a header, because this is the URL the client fetches with a
+    bare GET; see get_file_download_url's docstring for why that's not a new
+    exposure class versus the presigned-MinIO-URL shape it replaces.
+    """
+    token_payload = _decode_file_token_value(token, share_id, path)
+    user = _user_from_file_token(db, token_payload)
+    share = share_service.get_share(db, share_id)
+    share_service.ensure_read_access(db, share, user)
+
+    settings = get_settings()
+    object_name = f"web-assets/{share_id}/{path}"
+    minio_client = _get_minio_client()
+    try:
+        minio_resp = minio_client.get_object(settings.minio_bucket, object_name)
+        try:
+            data = minio_resp.read()
+            content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
+        finally:
+            minio_resp.close()
+            minio_resp.release_conn()
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchObject"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve file: {e}",
+        ) from e
+
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/{share_id}/files/{path:path}/upload-url", response_model=UploadUrlResponse)

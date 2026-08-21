@@ -856,14 +856,19 @@ class TestAgentKeyFileToken:
         mock_client = MagicMock()
         mock_client.bucket_exists.return_value = True
         mock_client.stat_object.return_value = MagicMock()
-        mock_client.presigned_get_object.return_value = "https://minio.test/presigned-get"
         with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
             dl_resp = client.get(
                 f"{BASE}/{share.id}/files/attachments/photo.png/download-url",
                 headers={"Authorization": f"Bearer {file_token}"},
             )
         assert dl_resp.status_code == 200, dl_resp.text
-        assert dl_resp.json()["downloadUrl"] == "https://minio.test/presigned-get"
+        # Regression for effef307: must be OUR control-plane URL (streams bytes
+        # itself via GET .../content), not a raw MinIO presigned URL — MinIO
+        # has no public endpoint, so a client outside the relay's own compose
+        # network could never reach a presigned-MinIO downloadUrl.
+        download_url = dl_resp.json()["downloadUrl"]
+        assert "minio" not in download_url.lower()
+        assert f"/shares/{share.id}/files/attachments/photo.png/content?token=" in download_url
 
     def test_write_only_key_still_cannot_mint(
         self, client: TestClient, test_user: models.User, db_session: Session
