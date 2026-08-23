@@ -108,9 +108,17 @@ deploy_control_plane() {
     # renders full SQL base->head with an unreachable DB host, exit 0. Needs
     # a Postgres-dialect DATABASE_URL to render Postgres DDL (JSONB etc.) —
     # a real one, from .env, though nothing in it is ever dialed.
+    #
+    # Runs through `docker compose run` against the control-plane-migrate-dry-run
+    # service (infra/docker-compose.yml), NOT `docker run --env-file`: the latter
+    # cannot parse a multiline value (this env has one — an ED25519 PEM key) and
+    # fails with "invalid env file ... contains whitespaces" before alembic ever
+    # runs, which then read as a broken migration graph — it wasn't (#efcf85d4).
+    # Compose's own env_file parser handles multiline values correctly; the real
+    # (online) migration gate below already goes through compose for the same
+    # reason, so this now matches it instead of diverging by transport.
     log "DRY_RUN=true — offline migration check against $candidate (no DB connection, no writes)"
-    if ! docker run --rm --env-file "$RELAY_DIR/.env" "$candidate" \
-         python -m alembic upgrade head --sql; then
+    if ! docker compose run --rm -T control-plane-migrate-dry-run </dev/null; then
       die "DRY_RUN migration check FAILED — the migration graph itself is broken (or the offline check's own environment is), not a real-deploy-only issue. Investigate before attempting a real deploy. :latest and :prev are untouched."
     fi
     log "DRY_RUN migration check passed (offline SQL render, zero DB connections)"

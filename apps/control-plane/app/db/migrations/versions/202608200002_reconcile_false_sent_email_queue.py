@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import text
 
 revision: str = "202608200002"
@@ -65,7 +65,12 @@ def upgrade() -> None:
         ),
         {"note": RECONCILIATION_NOTE, "cutoff": CUTOFF},
     )
-    print(f"reconciled {result.rowcount} falsely-sent email_queue row(s)")
+    # Offline mode (`alembic upgrade head --sql`, used by deploy.sh's DRY_RUN
+    # rehearsal) renders this UPDATE as SQL text without executing it — the
+    # bound "connection" there returns None from execute(), so .rowcount is
+    # not available. Only report the count on a real (online) run.
+    if not context.is_offline_mode():
+        print(f"reconciled {result.rowcount} falsely-sent email_queue row(s)")
 
 
 def downgrade() -> None:
