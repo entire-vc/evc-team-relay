@@ -70,16 +70,33 @@ docker compose up -d control-plane webhook-worker email-worker listmonk-sync-wor
 A non-zero exit from `alembic upgrade head` ends the script (and fails the workflow step)
 **before** `compose up` is ever reached. Production keeps running the previous image.
 
-**Rehearsing the gate without restarting the app — currently broken, do not rely on it.**
-Setting `DRY_RUN=true` is meant to build the image and run an offline migration check, then stop
-before `compose up`. It cannot run today: the dry-run branch of `scripts/deploy.sh` starts the
-candidate with `docker run --env-file /opt/relay/.env`, and `--env-file` cannot parse the
-multi-line PEM that file contains — it fails with `variable '-----END PRIVATE KEY-----"' contains
-whitespaces` before alembic is ever reached. The real path is unaffected: it goes through
-`docker compose run --rm -T control-plane-migrate`, and compose reads the same file correctly.
-Measured 2026-08-23; the rehearsal appears never to have been executed, since CI never set
-`DRY_RUN=true`. Fix tracked separately — the rehearsal must start the candidate the same way the
-real path does (compose), not via `--env-file`.
+**Rehearsing the gate without restarting the app.**
+Setting `DRY_RUN=true` builds the image into a throwaway `:candidate` tag and runs an offline
+migration check against it (`alembic upgrade head --sql` — renders the SQL a real upgrade would
+execute and validates the revision graph, without opening a database connection), then stops
+before touching `:latest`/`:prev` or restarting anything. Run it the same way as a real deploy,
+just with the flag set — via the `entire-vc/deploy` pipeline's `DRY_RUN` job variable (start a
+pipeline on `main`, set `DRY_RUN=true`, play `deploy:team-relay`), or manually on the host:
+
+```bash
+ssh tr-relay-vm
+RELAY_DIR=/opt/relay DRY_RUN=true bash -s -- control-plane < scripts/deploy.sh
+```
+
+The check runs through `docker compose run --rm -T control-plane-migrate-dry-run`
+(`infra/docker-compose.yml`), not `docker run --env-file` — the latter cannot parse a multi-line
+value (`/opt/relay/.env` carries an ED25519 PEM key) and used to fail with `variable
+'-----END PRIVATE KEY-----"' contains whitespaces` before alembic ever ran, which read as a
+broken migration graph rather than what it actually was. Compose's own `env_file` parser handles
+multi-line values correctly, matching the real (online) gate below, which already went through
+compose for the same reason. Fixed 2026-08-23 (Mesh `#efcf85d4`) — the rehearsal appears never to
+have been executed before that, since CI never set `DRY_RUN=true`; two migrations
+(`202608200002`, `202608200003`) also needed a `context.is_offline_mode()` guard around code that
+assumed a real online connection, surfaced only once the transport bug stopped masking them.
+
+A genuinely broken revision graph still fails fast and names the graph, not the environment —
+e.g. a bad `down_revision` fails with `KeyError: '<revision-id>'` in under a second, no DB
+connection attempted either way.
 
 The **real** deploy keeps its own fail-closed gate regardless: migrations run through compose
 before `up`, and their failure cancels the deploy.
