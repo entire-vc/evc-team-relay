@@ -17,9 +17,9 @@ The `control-plane-migrate` service in `docker-compose.yml` is the **fail-closed
 has no migrations, so its deploy skips straight to build + restart.
 
 Three ways to deploy:
-- **[Automated (GitHub Actions)](#automated-deploy-github-actions)** — control-plane only, and
-  **live since 2026-07-26**. A push to `main` touching `apps/control-plane/**` or
-  `scripts/deploy.sh` runs the gated sequence on `tr-relay-vm` with no manual step.
+- **[Automated (GitLab CI)](#automated-deploy-gitlab-ci)** — control-plane only. Since the
+  2026-08-23 cutover this runs from the `entire-vc/deploy` project on `git.entire.host`, as the
+  **manual** job `deploy:team-relay`. It is deliberately not push-triggered: a human starts it.
 - **[`scripts/deploy.sh` from a local checkout](#scriptsdeploysh-local-driver)** — still the path
   for **web-publish** (which CD does not cover), and the fallback for control-plane when Actions
   is unavailable. Run it from your machine; it rsyncs the source and runs the same
@@ -29,16 +29,22 @@ Three ways to deploy:
 
 ---
 
-## Automated deploy (GitHub Actions)
+## Automated deploy (GitLab CI)
 
-Workflow: [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
-On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh).
+Pipeline: `entire-vc/deploy` → `.gitlab-ci.yml`, job `deploy:team-relay`.
+On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh) — unchanged by the cutover, and still
+the single source of the build/gate/restart sequence.
 
-**Triggers**
-- `push` to `main` touching `apps/control-plane/**` or `scripts/deploy.sh`.
-  Note this deliberately excludes `.github/**`: CI-plumbing edits are not a reason to restart
-  production, and a workflow listing its own path would redeploy prod the instant it merged.
-- `workflow_dispatch` (manual), with a `dry_run` boolean input.
+**Trigger** — manual only. Start a pipeline on `main` in `entire-vc/deploy` and play
+`deploy:team-relay`; `verify:team-relay` follows automatically on success. `DRY_RUN` defaults to
+`false` there. The job clones this repo at `${PRODUCT_REF:-main}` rather than keeping a copy of
+the source in the deploy project.
+
+> The old GitHub Actions workflow (`.github/workflows/deploy.yml`) was push-triggered on
+> `apps/control-plane/**` and `scripts/deploy.sh`. It no longer deploys; GitHub is the public
+> showcase mirror. The exclusion of `.github/**` from that filter carried over to the GitLab job
+> for the same reason it existed: a CI-plumbing edit is not a reason to restart production, and a
+> pipeline listing its own path would redeploy prod the instant it merged.
 
 **What it does** (one job, `environment: production`):
 1. Writes the deploy key + pinned host keys and builds an SSH config that reaches
@@ -64,13 +70,28 @@ docker compose up -d control-plane webhook-worker email-worker listmonk-sync-wor
 A non-zero exit from `alembic upgrade head` ends the script (and fails the workflow step)
 **before** `compose up` is ever reached. Production keeps running the previous image.
 
-**Rehearsing the gate without restarting the app.** Trigger the workflow manually with
-`dry_run: true` (Actions → Deploy → Run workflow). The pipeline builds the image and runs the
-migration gate, then **stops** — it never issues `compose up`. Use this to confirm a migration
-applies cleanly before a real deploy, or to verify the fail-closed behaviour: a deliberately
-broken migration makes the `dry_run` run fail at the gate step with the app untouched.
+**Rehearsing the gate without restarting the app — currently broken, do not rely on it.**
+Setting `DRY_RUN=true` is meant to build the image and run an offline migration check, then stop
+before `compose up`. It cannot run today: the dry-run branch of `scripts/deploy.sh` starts the
+candidate with `docker run --env-file /opt/relay/.env`, and `--env-file` cannot parse the
+multi-line PEM that file contains — it fails with `variable '-----END PRIVATE KEY-----"' contains
+whitespaces` before alembic is ever reached. The real path is unaffected: it goes through
+`docker compose run --rm -T control-plane-migrate`, and compose reads the same file correctly.
+Measured 2026-08-23; the rehearsal appears never to have been executed, since CI never set
+`DRY_RUN=true`. Fix tracked separately — the rehearsal must start the candidate the same way the
+real path does (compose), not via `--env-file`.
 
-### Required repository secrets
+The **real** deploy keeps its own fail-closed gate regardless: migrations run through compose
+before `up`, and their failure cancels the deploy.
+
+### Required repository secrets (historical — the retired GitHub Actions path)
+
+> Kept for the record and because the lessons below still apply to the GitHub workflows this
+> repository *does* still run (`ci.yml`, `trivy.yml`, `semgrep.yml`). These secrets no longer
+> deploy anything. The GitLab job authenticates with `DEPLOY_SSH_KEY`, a **file**-type CI
+> variable, so the variable holds a path and `env`/`printenv` never prints the key; the runner
+> sits inside the Helsinki network and reaches the relay host directly, with no `ghdeploy@hel01`
+> ProxyJump hop at all.
 
 Set these under **Settings → Secrets and variables → Actions** (or scoped to the `production`
 environment, which also lets you add a manual-approval protection rule):
@@ -417,7 +438,8 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
 ## References
 
 - `CLAUDE-workflow.md §1b` — shared deploy-discipline rule (migration before code, always)
-- `.github/workflows/deploy.yml` — automated deploy pipeline (control-plane only, currently gated off)
+- `entire-vc/deploy` → `.gitlab-ci.yml`, jobs `deploy:team-relay` / `verify:team-relay` — the
+  automated deploy pipeline (control-plane only, manual start)
 - `scripts/deploy.sh` — rsync (driver mode) → build → migrate-gate (control-plane only) → restart,
   for both control-plane and web-publish
 - `infra/docker-compose.yml` — dev/local compose template (build-context variant of same gate)
