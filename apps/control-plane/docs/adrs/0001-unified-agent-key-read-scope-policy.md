@@ -1,7 +1,7 @@
 # ADR-0001: one read-scope policy for agent keys — literal, not `write ⊃ read`
 
-**Status:** accepted 2026-08-19. Phase 1 shipped; phase 2 (withdrawing the grace) pending the
-migration below.
+**Status:** accepted 2026-08-19. Phases 1–3 shipped — the migration below is complete;
+`AGENT_KEY_LENIENT_READ_GRACE` is `false` on prod as of phase 3.
 **Context:** Mesh task [#b69d73fb](http://mesh.entire.host/t/b69d73fb-d219-4fe2-b61a-01aeb6a8d6dd),
 found by Daedalus while independently checking the API answer given in
 [#f87681cb](http://mesh.entire.host/t/f87681cb-0a79-4eed-8477-eaa46ad85cad).
@@ -123,8 +123,9 @@ passes *only* because of that grace logs a WARNING naming the key, share and rou
 route changes its verdict in this phase.** The grace is deliberately *not* applied to the strict
 routes — that would be the downward unification rejected above.
 
-**Phase 2 (migrate).** The share owner grants `read` to the keys the WARNING names — today,
-`mesh-spark-sync` and `nhbot`:
+**Phase 2 (migrate) — shipped 2026-08-21.** The share owner grants `read` to the keys the WARNING
+names — `mesh-spark-sync` (superseded by its replacement `mesh-spark-20260820`, same share) and
+`nhbot`:
 
 ```bash
 curl -X PATCH "https://cp.tr.entire.vc/v1/web/shares/<share_id>/agent-keys/<key_id>" \
@@ -136,8 +137,18 @@ curl -X PATCH "https://cp.tr.entire.vc/v1/web/shares/<share_id>/agent-keys/<key_
 changes the raw secret and so forces reconfiguring whatever integration holds it; that cost is high
 enough that owners would rationally skip the migration and meet the breakage later instead.
 
-**Phase 3 (contract).** Set `AGENT_KEY_LENIENT_READ_GRACE=false`. Gate: the WARNING has been silent
-for a full observation window. Reverting is a config change, not a redeploy.
+**Phase 3 (contract) — shipped 2026-08-23** (Mesh
+[#7922e325](http://mesh.entire.host/t/7922e325-9541-43cd-9fe6-14ed301b3f2d)). Gate cleared: zero
+`event=agent_key_read_scope_grace` WARNING lines in the 24h observation window immediately before
+the flip, against live (non-idle) traffic. `AGENT_KEY_LENIENT_READ_GRACE=false` set on prod's
+`/opt/relay/.env` and applied via `docker compose up -d --force-recreate control-plane` (env vars
+are baked in at container creation; a plain `restart` would not have picked up the change).
+Confirmed live post-flip: `get_settings().agent_key_lenient_read_grace` returns `False`,
+`/v1/health` returns `{"ok":true}`, and a `read,write`-scoped key (`gandalf-20260820` on the
+`teamrelay` share) still reads successfully through the lenient routes — the flag change does not
+affect keys that already carry a literal `read` scope, by construction. Reverting is a config
+change (`AGENT_KEY_LENIENT_READ_GRACE=true` back in `.env` + recreate `control-plane`), not a
+redeploy.
 
 ## Consequences
 
