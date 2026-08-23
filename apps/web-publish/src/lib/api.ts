@@ -54,7 +54,6 @@ export interface WebShare {
 	web_content: string | null;
 	web_content_updated_at: string | null;
 	web_folder_items: FolderItem[] | null;
-	web_doc_id: string | null; // Y-sweet document ID for real-time sync
 }
 
 export interface ShareAuthRequest {

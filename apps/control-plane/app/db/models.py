@@ -193,7 +193,12 @@ class Share(Base, TimestampMixin):
     web_folder_items: Mapped[list | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )
-    # Y-sweet document ID for real-time sync (S3RN encoded)
+    # DEAD FIELD (#4b06df47): was meant to hold the y-sweet document ID for a
+    # web-publish live-view feature. The reader was removed in #edfd1dd3 (never
+    # worked — wrong token format, plus 3 further downstream defects) and the
+    # writer (plugin, schemas, API response) was removed in this task. Left
+    # nullable + unpopulated rather than dropped — an expand/contract removal
+    # is its own decision (§1b) and this column carries no data to lose.
     web_doc_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     owner: Mapped["User"] = relationship(back_populates="shares_owned")
