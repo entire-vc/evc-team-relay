@@ -40,7 +40,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import text
 
 revision: str = "202608200003"
@@ -50,6 +50,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # This backfill computes each row's value in Python (hashlib over JSONB
+    # content, per-item branching) rather than a single SQL statement — there
+    # is no meaningful SQL to render in offline mode (`alembic upgrade head
+    # --sql`, used by deploy.sh's DRY_RUN rehearsal). Offline mode exists to
+    # validate the revision graph and schema DDL, both of which this
+    # migration has none of; skip the data pass entirely rather than crash
+    # on a mock connection that returns None from execute().
+    if context.is_offline_mode():
+        return
     conn = op.get_bind()
     rows = conn.execute(
         text(

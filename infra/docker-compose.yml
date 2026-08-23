@@ -95,6 +95,23 @@ services:
     command: ["python", "-m", "alembic", "upgrade", "head"]
     restart: "no"
 
+  # DRY_RUN rehearsal counterpart of control-plane-migrate above. Same env_file
+  # (compose parses it correctly, including multiline PEM values that break
+  # `docker run --env-file` — see scripts/deploy.sh), but targets the
+  # not-yet-promoted :candidate image and runs alembic in --sql (offline) mode:
+  # renders the upgrade SQL and validates the revision graph without opening a
+  # database connection. No depends_on postgres — offline mode never connects,
+  # so the rehearsal doesn't need Postgres healthy to prove the migration graph
+  # is sound.
+  control-plane-migrate-dry-run:
+    image: infra-control-plane:candidate
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    command: ["python", "-m", "alembic", "upgrade", "head", "--sql"]
+    restart: "no"
+
   control-plane:
     build:
       context: ../apps/control-plane
