@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import secrets
 
 import pytest
@@ -1068,155 +1067,6 @@ class TestPrivateShareAuth:
         assert len(data["web_folder_items"]) == 1
 
 
-class TestShareWebDocIdField:
-    """PATCH /v1/shares/{id} persists web_doc_id.
-
-    The live-view /token endpoint that used to read this field was removed
-    (#edfd1dd3) — it never worked (JWT format relay-server can't parse,
-    plus web_doc_id was unset on 100% of real shares, plus two further
-    downstream defects the reviewer found). The column itself is a
-    deliberate non-goal of that removal (expand/contract per §1b, a
-    separate decision) — kept for a possible from-scratch live-sync
-    redesign scoped to folder shares. This test just proves the column
-    is still settable via PATCH.
-    """
-
-    def test_update_share_with_web_doc_id(self, client: TestClient, test_user: models.User):
-        """Test updating share with web_doc_id."""
-        login_response = client.post(
-            "/auth/login", json={"email": test_user.email, "password": "test123456"}
-        )
-        token = login_response.json()["access_token"]
-
-        # Create a share
-        create_response = client.post(
-            "/v1/shares",
-            json={
-                "kind": "doc",
-                "path": "DocId Test.md",
-                # TR-39 guard: this test is about web_doc_id, not visibility.
-                "visibility": "private",
-                "web_published": True,
-            },
-            headers=_auth_headers(token),
-        )
-        assert create_response.status_code == 201
-        share_id = create_response.json()["id"]
-
-        # Update with web_doc_id
-        test_doc_id = "s3rn:relay:relay:abc:folder:def:doc:ghi"
-        update_response = client.patch(
-            f"/v1/shares/{share_id}",
-            json={"web_doc_id": test_doc_id},
-            headers=_auth_headers(token),
-        )
-        assert update_response.status_code == 200
-        assert update_response.json()["web_doc_id"] == test_doc_id
-
-    def test_repeat_publish_toggle_with_same_web_doc_id_does_not_change_it(
-        self, client: TestClient, test_user: models.User
-    ):
-        """#54b07714 AC#1: toggling publish twice in a row (plugin resends the
-        same web_doc_id on every toggle) leaves the stored value unchanged."""
-        login_response = client.post(
-            "/auth/login", json={"email": test_user.email, "password": "test123456"}
-        )
-        token = login_response.json()["access_token"]
-
-        create_response = client.post(
-            "/v1/shares",
-            json={
-                "kind": "doc",
-                "path": "DocId Repeat Toggle Test.md",
-                "visibility": "private",
-                "web_published": True,
-            },
-            headers=_auth_headers(token),
-        )
-        assert create_response.status_code == 201
-        share_id = create_response.json()["id"]
-
-        test_doc_id = "s3rn:relay:relay:repeat:folder:def:doc:ghi"
-
-        # First toggle: no existing value → sets it (AC#2, reverse direction).
-        first = client.patch(
-            f"/v1/shares/{share_id}",
-            json={"web_doc_id": test_doc_id},
-            headers=_auth_headers(token),
-        )
-        assert first.status_code == 200
-        assert first.json()["web_doc_id"] == test_doc_id
-
-        # Second toggle: plugin resends the identical value → must stay the same.
-        second = client.patch(
-            f"/v1/shares/{share_id}",
-            json={"web_doc_id": test_doc_id},
-            headers=_auth_headers(token),
-        )
-        assert second.status_code == 200
-        assert second.json()["web_doc_id"] == test_doc_id
-
-    def test_differing_web_doc_id_on_already_set_share_is_ignored_and_logged(
-        self, client: TestClient, test_user: models.User, caplog: pytest.LogCaptureFixture
-    ):
-        """#54b07714 AC#3: once web_doc_id is set, a DIFFERENT incoming value
-        (e.g. plugin re-encodes the id across a version bump) must not silently
-        repoint the share at another y-sweet document. Behavior is explicit:
-        ignore the new value and log a warning — never overwrite."""
-        login_response = client.post(
-            "/auth/login", json={"email": test_user.email, "password": "test123456"}
-        )
-        token = login_response.json()["access_token"]
-
-        create_response = client.post(
-            "/v1/shares",
-            json={
-                "kind": "doc",
-                "path": "DocId Mismatch Test.md",
-                "visibility": "private",
-                "web_published": True,
-            },
-            headers=_auth_headers(token),
-        )
-        assert create_response.status_code == 201
-        share_id = create_response.json()["id"]
-
-        original_doc_id = "s3rn:relay:relay:original:folder:def:doc:ghi"
-        first = client.patch(
-            f"/v1/shares/{share_id}",
-            json={"web_doc_id": original_doc_id},
-            headers=_auth_headers(token),
-        )
-        assert first.status_code == 200
-        assert first.json()["web_doc_id"] == original_doc_id
-
-        different_doc_id = "s3rn:relay:relay:DIFFERENT:folder:def:doc:ghi"
-        with caplog.at_level(logging.WARNING, logger="app.services.share_service"):
-            second = client.patch(
-                f"/v1/shares/{share_id}",
-                json={"web_doc_id": different_doc_id},
-                headers=_auth_headers(token),
-            )
-        # Request still succeeds (this is a soft ignore, not a client error) —
-        # but the STORED value must be the original, not the differing one.
-        assert second.status_code == 200
-        assert second.json()["web_doc_id"] == original_doc_id
-        assert second.json()["web_doc_id"] != different_doc_id
-
-        rejected_logs = [
-            r for r in caplog.records if getattr(r, "event", "") == "web_doc_id_change_rejected"
-        ]
-        assert len(rejected_logs) == 1
-        assert rejected_logs[0].existing_web_doc_id == original_doc_id
-        assert rejected_logs[0].attempted_web_doc_id == different_doc_id
-
-        # A follow-up GET (fresh read) confirms the DB row itself, not just the
-        # PATCH response, holds the original value.
-        get_response = client.get(f"/v1/shares/{share_id}", headers=_auth_headers(token))
-        assert get_response.status_code == 200
-        assert get_response.json()["web_doc_id"] == original_doc_id
-
-
 class TestWebRelayTokenEndpointRemoved:
     """#edfd1dd3 AC#5: GET /v1/web/shares/{slug}/token no longer exists.
 
@@ -1711,7 +1561,6 @@ class TestPrivateShareWebAuthMetadata:
             owner_user_id=test_user.id,
             web_published=True,
             web_slug="private-relay-doc",
-            web_doc_id="s3rn:relay:relay:test:folder:f1:doc:d1",
             web_content="# Secret content",
         )
         db_session.add(share)
@@ -1731,7 +1580,6 @@ class TestPrivateShareWebAuthMetadata:
         data = response.json()
         assert data["visibility"] == "private"
         assert data["web_content"] is None
-        assert data["web_doc_id"] is None
 
     def test_metadata_private_with_agent_key_returns_full_content(
         self,
@@ -1749,7 +1597,6 @@ class TestPrivateShareWebAuthMetadata:
         assert response.status_code == 200
         data = response.json()
         assert data["web_content"] == "# Secret content"
-        assert data["web_doc_id"] is not None
 
     def test_metadata_private_agent_key_query_param_is_ignored(
         self,

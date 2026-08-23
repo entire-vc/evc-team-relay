@@ -45,7 +45,6 @@ function makeShare(overrides = {}) {
 		updated_at: new Date().toISOString(),
 		web_content: null,
 		web_folder_items: [{ path: 'Notes/Doc.md', name: 'Doc.md', type: 'doc' }],
-		web_doc_id: null,
 		...overrides
 	};
 }

@@ -56,7 +56,6 @@ class ShareUpdate(BaseModel):
     web_sync_mode: str | None = None
     web_content: str | None = None  # Document content for web publishing
     web_folder_items: list[FolderItem] | None = None  # Folder contents for web publishing
-    web_doc_id: str | None = None  # Y-sweet document ID for real-time sync
     web_content_updated_at: datetime | None = None  # set by plugin after initial full-sync
 
     @field_validator("web_sync_mode")
@@ -80,7 +79,6 @@ class ShareRead(BaseModel):
     web_noindex: bool
     web_sync_mode: str
     web_url: str | None = None  # Computed field, set by service
-    web_doc_id: str | None = None  # Y-sweet document ID for real-time sync
     web_content_updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}

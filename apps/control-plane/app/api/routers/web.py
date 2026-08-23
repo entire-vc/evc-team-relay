@@ -195,7 +195,6 @@ class WebSharePublic(BaseModel):
     web_content: str | None = None
     web_content_updated_at: datetime | None = None
     web_folder_items: list[WebFolderItem] | None = None
-    web_doc_id: str | None = None  # Y-sweet doc ID for real-time sync
 
 
 class WebShareAuthRequest(BaseModel):
@@ -327,7 +326,6 @@ def get_share_by_slug(
         web_content=share.web_content if expose_content else None,
         web_content_updated_at=share.web_content_updated_at if expose_content else None,
         web_folder_items=folder_items,
-        web_doc_id=share.web_doc_id if expose_content else None,
     )
 
 

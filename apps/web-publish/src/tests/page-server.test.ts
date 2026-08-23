@@ -51,7 +51,6 @@ function makeShare(overrides = {}) {
 		updated_at: new Date().toISOString(),
 		web_content: '# Hello',
 		web_folder_items: null,
-		web_doc_id: null,
 		...overrides
 	};
 }
