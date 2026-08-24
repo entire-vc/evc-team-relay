@@ -57,7 +57,7 @@ jobs:
       # unknown — but it fails for a reason that has nothing to do with labels,
       # and a required check red for the wrong reason is a wedged repository.
       - name: Check out the gate
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           sparse-checkout: |
             .github/hold-labels.txt
