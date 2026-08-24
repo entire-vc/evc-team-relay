@@ -23,7 +23,7 @@ dependencies = [
     # which does not use uv.lock) resolves bcrypt 5.0.0 today and the
     # container never becomes healthy. Pin below the break until passlib is
     # replaced or fixed upstream.
-    "bcrypt>=3.2,<4.1",
+    "bcrypt>=3.2,<5.1",
     "PyJWT>=2.8.0,<3.0",
     "cryptography>=50.0.0,<51.0",
     "psycopg[binary]>=3.1,<4.0",
