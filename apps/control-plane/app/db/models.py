@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy import Enum as PgEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -200,6 +200,21 @@ class Share(Base, TimestampMixin):
     # nullable + unpopulated rather than dropped — an expand/contract removal
     # is its own decision (§1b) and this column carries no data to lose.
     web_doc_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # Partial index (not a full one — most shares never publish to the web,
+    # so indexing only the non-null slugs keeps it small for the public
+    # web-publish routing lookup, which is a hot path: app/api/routers/web.py
+    # filters on web_slug on every request). A bare `index=True` on the
+    # column above can't express the `WHERE web_slug IS NOT NULL` clause —
+    # uniqueness itself is separately enforced by `unique=True` above, which
+    # already backs the column with its own (non-partial) unique index.
+    __table_args__ = (
+        Index(
+            "idx_shares_web_slug",
+            "web_slug",
+            postgresql_where=text("web_slug IS NOT NULL"),
+        ),
+    )
 
     owner: Mapped["User"] = relationship(back_populates="shares_owned")
     members: Mapped[list["ShareMember"]] = relationship(
@@ -510,6 +525,18 @@ class AdminLoginPendingToken(Base):
 class Webhook(Base, TimestampMixin):
     __tablename__ = "webhooks"
 
+    # Partial index — webhook_service.get_active_webhooks() filters
+    # `active == True` directly; a bare `index=True` on the column below
+    # can't express the `WHERE active = true` clause that keeps this index
+    # limited to the (typically much smaller) set of live webhooks.
+    __table_args__ = (
+        Index(
+            "idx_webhooks_active",
+            "active",
+            postgresql_where=text("active = true"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -536,6 +563,19 @@ class Webhook(Base, TimestampMixin):
 class WebhookDelivery(Base, TimestampMixin):
     __tablename__ = "webhook_deliveries"
 
+    # Partial index — the retry-scan query (webhook_service.py: WHERE
+    # next_retry_at <= now ORDER BY next_retry_at, always alongside a
+    # status='pending' filter) only ever looks at pending rows; a bare
+    # `index=True` on next_retry_at below can't express the `WHERE status =
+    # 'pending'` clause that keeps this index small as the table grows.
+    __table_args__ = (
+        Index(
+            "idx_webhook_deliveries_next_retry",
+            "next_retry_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     webhook_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -556,6 +596,10 @@ class WebhookDelivery(Base, TimestampMixin):
         ),
         nullable=False,
         default=WebhookDeliveryStatus.PENDING,
+        # Filtered on directly by the row-claim worker query (TR-11,
+        # claim_pending_deliveries: WHERE status IN (...) FOR UPDATE SKIP
+        # LOCKED) — a real hot path, not incidental.
+        index=True,
     )
     response_status_code: Mapped[int | None] = mapped_column(nullable=True)
     response_body: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -563,7 +607,6 @@ class WebhookDelivery(Base, TimestampMixin):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-        index=True,
     )
     # TR-11 (#8a509876): set when a worker claims this row (status -> SENDING).
     # A claim older than the lease timeout is treated as abandoned (worker
@@ -579,6 +622,19 @@ class WebhookDelivery(Base, TimestampMixin):
 class EmailQueue(Base):
     __tablename__ = "email_queue"
 
+    # Partial index — the retry-scan query (email_service.py: WHERE
+    # next_retry_at <= now ORDER BY next_retry_at, always alongside a
+    # status='pending' filter) only ever looks at pending rows; a bare
+    # `index=True` on next_retry_at below can't express the `WHERE status =
+    # 'pending'` clause that keeps this index small as the table grows.
+    __table_args__ = (
+        Index(
+            "idx_email_queue_next_retry",
+            "next_retry_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     to_email: Mapped[str] = mapped_column(String(320), nullable=False)
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -593,13 +649,16 @@ class EmailQueue(Base):
         ),
         nullable=False,
         default=EmailStatus.PENDING,
+        # Filtered on directly by the row-claim worker query (TR-11,
+        # claim_pending_emails: WHERE status IN (...) FOR UPDATE SKIP
+        # LOCKED) — a real hot path, not incidental.
+        index=True,
     )
     attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-        index=True,
     )
     # TR-11 (#8a509876): set when a worker claims this row (status -> SENDING).
     # A claim older than the lease timeout is treated as abandoned (worker
@@ -699,6 +758,18 @@ class InstanceSetting(Base):
 
 class ShareAgentKey(Base, TimestampMixin):
     __tablename__ = "share_agent_keys"
+
+    # Partial index — looking up a share's currently-active (non-revoked)
+    # keys is the real query shape (agent_keys.py, user_service.py,
+    # share_service.py all filter share_id + revoked_at IS NULL together);
+    # a bare `index=True` on share_id below can't express that WHERE clause.
+    __table_args__ = (
+        Index(
+            "ix_share_agent_keys_share_id_active",
+            "share_id",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     share_id: Mapped[uuid.UUID] = mapped_column(

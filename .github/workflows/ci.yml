@@ -104,15 +104,15 @@ jobs:
 
       - name: Check migration drift
         working-directory: apps/control-plane
-        # Non-fatal for now: `alembic check` against real Postgres surfaces
-        # substantial PRE-EXISTING model/migration drift (JSON vs JSONB variant
-        # declarations, idx_* vs SQLAlchemy's default ix_* naming convention,
-        # TEXT vs unbounded String) accumulated well before this job existed —
-        # reconciling all of it is its own dedicated schema-hygiene task, not
-        # something to silently auto-migrate here. Until that lands, this step
-        # runs and logs real drift for review but does not fail the job, so it
-        # doesn't turn every future PR permanently red on unrelated debt.
-        continue-on-error: true
+        # Blocking. Used to carry `continue-on-error: true` while ~50 ops of
+        # PRE-EXISTING model/migration drift accumulated before this job
+        # existed sat unreconciled — reconciled in
+        # 202608260001_reconcile_model_schema_drift.py (Mesh task af34b19f;
+        # see that migration's docstring for what was and wasn't safe to
+        # apply). This repo's canon is now GitLab (git.entire.host, §0z) —
+        # this workflow runs on the read-only showcase mirror — but the same
+        # false-green class applies here too, so the flag comes off in both
+        # places in one change.
         env:
           # Real Postgres, not SQLite — migration history contains Postgres-only
           # DDL (DO $$ ... END$$ conditional CREATE TYPE) that SQLite's dialect
