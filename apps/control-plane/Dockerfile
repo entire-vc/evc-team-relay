@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 
 # Pin the uv binary itself (not just what it resolves) so the build tool is
-# reproducible too, not only the Python deps it locks in.
-COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /usr/local/bin/
+# reproducible too, not only the Python deps it locks in. Installed from PyPI
+# (not ghcr.io/astral-sh/uv) so the build has no dependency on GitHub's
+# availability — see task c3fa1c20 (live GitHub egress block broke this).
+RUN pip install --no-cache-dir --root-user-action=ignore uv==0.12.5
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
