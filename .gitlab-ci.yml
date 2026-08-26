@@ -1,0 +1,209 @@
+# CI for the GitLab canon (git.entire.host/entire-vc/evc-team-relay).
+#
+# ## Why this file exists
+#
+# Development moved from GitHub to GitLab on 2026-08-23 (§0z). The checks that
+# guarded merges here live in `.github/workflows/` and are executed by GitHub
+# Actions. They still run, on a repository nobody merges into any more. Until
+# this file existed every merge request on the canon landed on `main` having
+# been checked by nothing: no pipeline, no required check. Not a bypassed gate
+# — an absent one.
+#
+# Modelled on `entire-vc/evc-mesh:.gitlab-ci.yml`, the first canon repo to get
+# a pipeline.
+#
+# ## Honest scope — this is NOT a port of all of `.github/workflows/`
+#
+# It carries the control-plane half: Ruff lint + format, pytest, and the two
+# alembic guards — plus the hold gate. Deliberately absent, named rather than
+# implied, because a stub that looks like full CI is more dangerous than a gap
+# you can see:
+#
+#   * **typecheck-svelte / test-svelte** (`apps/web-publish`). Blocked, and not
+#     by effort. That app depends on `@entire-vc/tokens` and
+#     `@entire-vc/ui-svelte`, and `apps/web-publish/package-lock.json` pins
+#     their `resolved` URLs to `https://npm.pkg.github.com/download/...`.
+#     `npm ci` installs from `resolved`, so pointing `@entire-vc:registry` at
+#     the GitLab Package Registry (the fix that worked for evc-site) does NOT
+#     redirect these — the lockfile would have to be regenerated against the
+#     GitLab registry first, which is a change to the product, not to its CI.
+#     The alternative, a `GITHUB_TOKEN` CI variable, needs Maintainer to set;
+#     every agent account on this group is Developer(30), and
+#     `GET /projects/10/variables` answers 403 under this token — so this file
+#     cannot even establish whether such a variable already exists. Worth its
+#     own card either way.
+#
+#   * **build-docker** — the two `push:false` image builds. Needs a
+#     docker-in-docker service on the one shared fleet runner, and web-publish's
+#     build hits the same npm blocker above. Not attempted here.
+#
+#   * **semgrep, trivy, release-drift, release, deploy** — untouched. Release
+#     and deploy in particular are not merely unported: releases still live on
+#     GitHub by fleet rule (§0z p.5) and production deploys are the manual SSH
+#     recipe in `docs/DEPLOY.md`, not a pipeline.
+#
+# ## The half that is not in this file
+#
+# A pipeline is a display until `only_allow_merge_if_pipeline_succeeds` is true
+# on the project — until then GitLab merges over a red run via the web button
+# or a bare `glab mr merge`. That setting needs Maintainer; the sole holder of
+# 40+ on this group is `pavel`. Tracked separately (`#11421131`).
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages: [gate, lint, test]
+
+variables:
+  # Services are reachable by their image alias on the docker executor, NOT on
+  # localhost — the single most common wrong translation from a GitHub Actions
+  # `services:` block, where port-mapping to localhost is how it works. Every
+  # DATABASE_URL below therefore says `postgres`, not `localhost`, and that is
+  # the one line to check first if a DB job ever starts failing to connect.
+  POSTGRES_USER: control_plane
+  POSTGRES_PASSWORD: control_plane
+  POSTGRES_DB: control_plane
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+
+default:
+  tags: [docker]
+  interruptible: true
+
+# ── gate ────────────────────────────────────────────────────────────────────
+# Makes the `hold` label a gate here too. On GitHub this is a required status
+# check (.github/workflows/hold-gate.yml); `~/bin/glab-merge` reads the same
+# label list, but a wrapper is a request, not a wall — the web button and a
+# bare `glab mr merge` never ask it.
+#
+# The label list is READ FROM `.github/hold-labels.txt`, the file already in
+# this repository, rather than copied into this one. A second copy is a second
+# thing to drift, and the fleet already paid for that once: the CI copy on
+# evc-mesh drifted from the wrapper list within a day of being written.
+hold-gate:
+  stage: gate
+  image: alpine:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - |
+      set -eu
+      LABELS_FILE=.github/hold-labels.txt
+      # Fail closed on every unknown. "I could not check" must never read the
+      # same as "I checked and it is clean" — that equivalence is the defect
+      # this whole gate family exists to kill.
+      test -f "$LABELS_FILE" || { echo "REFUSING: $LABELS_FILE missing — cannot know what 'held' means"; exit 1; }
+      HOLD=$(grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -c . || true)
+      test "$HOLD" -gt 0 || { echo "REFUSING: $LABELS_FILE parsed to zero labels — a gate that knows no hold label passes everything"; exit 1; }
+      echo "hold labels known: $HOLD"
+      echo "labels on this merge request: '${CI_MERGE_REQUEST_LABELS:-}'"
+      FOUND=""
+      OLDIFS=$IFS; IFS=','
+      for L in ${CI_MERGE_REQUEST_LABELS:-}; do
+        L=$(printf '%s' "$L" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -n "$L" ] || continue
+        if grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$L"; then
+          FOUND="$FOUND $L"
+        fi
+      done
+      IFS=$OLDIFS
+      if [ -n "$FOUND" ]; then
+        echo "REFUSING to let this merge request through: it carries a hold label —$FOUND"
+        echo "Remove the label when the work is ready; this job re-runs on the next pipeline."
+        exit 1
+      fi
+      echo "no hold label present ✓"
+
+# ── control-plane ───────────────────────────────────────────────────────────
+.uv_job: &uv_job
+  # Debian, not alpine, on purpose: `psycopg[binary]` and `pillow` ship
+  # manylinux wheels only. On a musl base pip falls back to building from
+  # source and the job dies in a C compiler, which reads like a broken
+  # dependency rather than a wrong base image.
+  image: python:3.12-slim
+  cache:
+    key: uv-$CI_COMMIT_REF_SLUG
+    paths: [.uv-cache/]
+  before_script:
+    - pip install --quiet --root-user-action=ignore uv
+    - cd apps/control-plane
+    - uv sync --extra dev --extra test
+
+lint-python:
+  <<: *uv_job
+  stage: lint
+  timeout: 15m
+  script:
+    - uv run ruff check app/ tests/
+    - uv run ruff format --check app/ tests/
+
+test-python:
+  <<: *uv_job
+  stage: test
+  timeout: 30m
+  script:
+    - uv run pytest -v --tb=short
+
+# Fresh-DB migration smoke — nothing else here exercises the alembic graph
+# against a real database. Without it a broken revision chain (a down_revision
+# pointing at a script that does not exist) only ever surfaces on a
+# self-hoster's first `alembic upgrade head` against an empty database; prod
+# never notices, because prod's alembic_version is already past the break.
+# That is exactly what shipped in v1.9.0 for two months.
+alembic-migration-smoke:
+  <<: *uv_job
+  stage: test
+  timeout: 20m
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    DATABASE_URL: "postgresql+psycopg://control_plane:control_plane@postgres:5432/control_plane"
+  script:
+    - |
+      set -eu
+      heads=$(uv run alembic heads)
+      echo "$heads"
+      # `grep -c` under `set -e` exits 1 on zero matches, which would abort
+      # before the count could be reported — hence `|| true`, and the real
+      # verdict is the explicit -ne 1 test below.
+      count=$(printf '%s\n' "$heads" | grep -c '(head)' || true)
+      if [ "$count" -ne 1 ]; then
+        echo "REFUSING: expected exactly 1 alembic head, found $count — resolve the split before merging"
+        exit 1
+      fi
+      echo "alembic graph has exactly one head ✓"
+    - uv run alembic upgrade head
+
+# `alembic check` against real Postgres surfaces substantial PRE-EXISTING
+# model/migration drift (JSON vs JSONB, idx_* vs SQLAlchemy's default ix_*
+# naming, TEXT vs unbounded String) accumulated well before any of this
+# existed. Reconciling it is its own schema-hygiene task.
+#
+# ⚠️ `allow_failure: true` is deliberate here and is the ONLY such job in this
+# file — every other job is blocking. It reproduces the `continue-on-error:
+# true` this same job carries on GitHub Actions. It is written as a separate
+# job precisely so that its warning is visible on its own line rather than
+# hidden inside a passing one: a red `alembic check` must not be readable as
+# "the migrations are clean". Delete the flag, do not delete the job, once the
+# drift is reconciled.
+check-migration-drift:
+  <<: *uv_job
+  stage: test
+  timeout: 20m
+  allow_failure: true
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    DATABASE_URL: "postgresql+psycopg://control_plane:control_plane@postgres:5432/control_plane"
+    JWT_SECRET: ci-test-secret-not-used-in-prod
+    MINIO_ENDPOINT: ""
+    MINIO_ACCESS_KEY: ci-key
+    MINIO_SECRET_KEY: ci-secret
+  script:
+    - uv run alembic upgrade head
+    - uv run alembic check
