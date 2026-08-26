@@ -178,23 +178,19 @@ alembic-migration-smoke:
       echo "alembic graph has exactly one head ✓"
     - uv run alembic upgrade head
 
-# `alembic check` against real Postgres surfaces substantial PRE-EXISTING
-# model/migration drift (JSON vs JSONB, idx_* vs SQLAlchemy's default ix_*
-# naming, TEXT vs unbounded String) accumulated well before any of this
-# existed. Reconciling it is its own schema-hygiene task.
-#
-# ⚠️ `allow_failure: true` is deliberate here and is the ONLY such job in this
-# file — every other job is blocking. It reproduces the `continue-on-error:
-# true` this same job carries on GitHub Actions. It is written as a separate
-# job precisely so that its warning is visible on its own line rather than
-# hidden inside a passing one: a red `alembic check` must not be readable as
-# "the migrations are clean". Delete the flag, do not delete the job, once the
-# drift is reconciled.
+# `alembic check` against real Postgres — blocking. It used to carry
+# `allow_failure: true` while ~50 ops of PRE-EXISTING model/migration drift
+# (unique-constraint duplication, idx_* vs SQLAlchemy's default ix_* naming,
+# TEXT vs unbounded String, missing NOT NULL) accumulated well before this job
+# existed sat unreconciled — reconciled in 202608260001_reconcile_model_schema_drift.py
+# (Mesh task af34b19f). The flag is gone now that the job is actually green;
+# see that migration's docstring for exactly what was and wasn't safe to
+# apply (six of autogenerate's proposed drops turned out to be live partial
+# indexes on real hot-path queries — fixed in the model, not dropped).
 check-migration-drift:
   <<: *uv_job
   stage: test
   timeout: 20m
-  allow_failure: true
   services:
     - name: postgres:16
       alias: postgres
