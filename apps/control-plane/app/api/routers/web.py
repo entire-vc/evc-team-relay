@@ -268,7 +268,14 @@ def get_share_by_slug(
     - With valid credentials (Bearer JWT, access_token cookie, or X-Agent-Key header):
       returns full metadata + frame-ancestors CSP header.
 
-    For PROTECTED shares, the client must call POST /web/shares/{slug}/auth separately.
+    For PROTECTED shares: the client calls POST /web/shares/{slug}/auth to obtain
+    a web_session cookie (see WebSessionService). Without a valid cookie here:
+    returns metadata only (web_content/web_folder_items stripped, same shape as
+    the unauthenticated PRIVATE case) -- so the frontend can show a password
+    prompt without ever anonymously exposing the folder tree / document names
+    (#92840c94: previously unguarded, live prod leaked the full tree of a
+    protected folder share while every child document path correctly rejected
+    unauthenticated reads).
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -309,7 +316,29 @@ def get_share_by_slug(
                 raise  # invalid credentials → propagate 401
             expose_content = False
 
-    # Parse folder items if present (only for authenticated PRIVATE or non-PRIVATE shares)
+    # For PROTECTED shares: no web_session cookie, or one that doesn't validate
+    # against THIS share → 200 with content stripped, same shape as the
+    # unauthenticated PRIVATE case above. validate_web_session RAISES
+    # HTTPException(401) on a malformed/expired token instead of returning
+    # False (only a well-formed token for a DIFFERENT share returns False) --
+    # caught here so a stale cookie degrades to the same soft "show password
+    # prompt" response as no cookie at all, rather than surfacing as a hard
+    # error on the metadata endpoint the frontend polls on every page load
+    # (contrast get_folder_file_content, which legitimately hard-403s once the
+    # user has already committed to reading a specific document).
+    if share.visibility == models.ShareVisibility.PROTECTED:
+        session_token = request.cookies.get("web_session")
+        session_valid = False
+        if session_token:
+            try:
+                session_valid = WebSessionService.validate_web_session(session_token, share.id)
+            except HTTPException:
+                session_valid = False
+        if not session_valid:
+            expose_content = False
+
+    # Parse folder items if present (only for authenticated PRIVATE/PROTECTED
+    # or non-gated shares)
     folder_items = None
     if expose_content and share.web_folder_items:
         folder_items = [WebFolderItem(**item) for item in share.web_folder_items]
