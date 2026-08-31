@@ -788,10 +788,16 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
     """
     Dynamic robots.txt for web publishing domain.
 
-    Default behavior: Disallow all (Disallow: /)
-    For public shares with web_noindex=false: Add Allow: /{slug}
-
-    This ensures only public shares explicitly marked for indexing are crawlable.
+    Crawl control only -- NOT index control. `Disallow` prevents a crawler
+    from ever fetching a page, which means it never sees that page's
+    `noindex` meta tag either; the two signals are mutually exclusive and
+    `Disallow` always wins. Since `web_noindex` defaults to True
+    (app/db/models.py), the previous "Disallow: / + per-share Allow" shape
+    made `noindex` unreadable on the default path -- decided #a38092aa,
+    executed #ffbe9108. Crawling is now allowed broadly; indexing is
+    controlled entirely by each share's `noindex` tag plus sitemap.xml as
+    the positive signal. Private/protected shares are unaffected -- they
+    answer 401 regardless of robots.txt.
     """
     settings = get_settings()
     if not settings.web_publish_enabled:
@@ -800,23 +806,19 @@ def get_robots_txt(db: Session = Depends(get_db)) -> Response:
             detail="Web publishing is not enabled",
         )
 
-    # Start with default deny all
     lines = [
         "User-agent: *",
-        "Disallow: /",
+        "Allow: /",
+        "Disallow: /api/",
+        "Disallow: /login",
         "",
     ]
 
     indexable_shares = _get_indexable_shares(db)
 
-    # Add Allow rules for indexable shares
-    if indexable_shares:
-        lines.append("# Indexable shares")
-        for share in indexable_shares:
-            lines.append(f"Allow: /{share.web_slug}")
-        lines.append("")
-
-    # Add sitemap reference
+    # Sitemap reference stays a positive-only signal, gated on there being
+    # something to list -- same eligibility _get_indexable_shares always
+    # used, untouched by this change.
     if indexable_shares:
         domain = settings.web_publish_domain
         if not domain.startswith("http"):
