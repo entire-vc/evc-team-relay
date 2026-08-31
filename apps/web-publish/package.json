@@ -24,7 +24,7 @@
     "@types/dompurify": "^3.2.0",
     "@types/katex": "^0.16.8",
     "@types/marked": "^6.0.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.3.0",
     "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.5.4",
     "postcss": "^8.5.26",
@@ -46,10 +46,10 @@
     "highlight.js": "^11.12.0",
     "isomorphic-dompurify": "^3.22.0",
     "katex": "^0.18.4",
-    "marked": "^18.0.10",
+    "marked": "^18.0.11",
     "marked-footnote": "^1.4.0",
     "marked-highlight": "^2.2.4",
-    "mermaid": "^11.17.0",
+    "mermaid": "^11.17.1",
     "tailwind-merge": "^3.6.0"
   },
   "overrides": {
