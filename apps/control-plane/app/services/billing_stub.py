@@ -58,17 +58,44 @@ async def get_stub_entitlements(casdoor_id: str) -> dict[str, Any]:
 
 
 async def get_stub_plans() -> list[dict[str, Any]]:
-    """Return all available plans in stub mode."""
-    return [
-        {
-            "product_id": plan["product_id"],
-            "name": plan["name"],
-            "description": plan["description"],
-            "price": plan["price"],
-            "entitlements": plan["entitlements"],
-        }
-        for plan in STUB_PLANS.values()
-    ]
+    """Return all available plans in stub mode.
+
+    Shape matches the real Billing Service's GET /products response
+    (evc-billing services/billing/app/api/products.py) field-for-field --
+    the Obsidian plugin's AvailablePlan type is written against that
+    contract and has no way to know at runtime it's actually talking to
+    the stub. Previously this returned `product_id` (never `id`) and a
+    singular `price` object instead of a `prices` array, so every plan's
+    `.id` was `undefined` on the client and `plan.id === currentPlanId`
+    (`undefined === undefined`) marked ALL cards "Current" at once
+    (#b4a7e703; not a regression of #0689a244, a distinct client/server
+    schema mismatch).
+    """
+    plans = []
+    for key, plan in STUB_PLANS.items():
+        price = plan["price"]
+        plans.append(
+            {
+                "id": plan["product_id"],
+                "name": plan["name"],
+                "service_id": "relay",
+                "type": "subscription",
+                "status": "active",
+                "prices": [
+                    {
+                        "id": f"price_relay_{key}",
+                        "amount": price["amount"] if price else 0,
+                        "currency": price["currency"] if price else "USD",
+                        "billing_period": price["period"] if price else "month",
+                    }
+                ],
+                "entitlements": {
+                    k: _format_entitlement_value(v) for k, v in plan["entitlements"].items()
+                },
+                "metadata": {},
+            }
+        )
+    return plans
 
 
 async def create_stub_checkout(casdoor_id: str, payload: dict[str, Any]) -> dict[str, Any]:
