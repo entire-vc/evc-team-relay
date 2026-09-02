@@ -81,8 +81,36 @@ class TestBillingStub:
     @pytest.mark.asyncio
     async def test_get_stub_plans_returns_both_plans(self):
         plans = await billing_stub.get_stub_plans()
-        product_ids = {p["product_id"] for p in plans}
-        assert product_ids == {"prod_relay_free", "prod_relay_builder"}
+        ids = {p["id"] for p in plans}
+        assert ids == {"prod_relay_free", "prod_relay_builder"}
+
+    @pytest.mark.asyncio
+    async def test_get_stub_plans_shape_matches_real_products_contract(self):
+        """Regression for #b4a7e703: the plugin's AvailablePlan type is
+        written against the real Billing Service's GET /products shape
+        (evc-billing services/billing/app/api/products.py), and has no
+        way to detect it's actually talking to the stub. Every field the
+        client reads must be present under the SAME name and shape here,
+        or plan.id ends up undefined and every plan card matches
+        currentPlanId (also undefined) at once.
+        """
+        plans = await billing_stub.get_stub_plans()
+        assert len(plans) == 2
+        for p in plans:
+            assert isinstance(p["id"], str) and p["id"]
+            assert p["service_id"] == "relay"
+            assert isinstance(p["prices"], list) and len(p["prices"]) == 1
+            price = p["prices"][0]
+            assert isinstance(price["amount"], int)
+            assert price["billing_period"] == "month"
+            assert isinstance(p["entitlements"]["max_shares"], dict)
+            assert "limit" in p["entitlements"]["max_shares"]
+            assert isinstance(p["metadata"], dict)
+
+        free = next(p for p in plans if p["id"] == "prod_relay_free")
+        assert free["prices"][0]["amount"] == 0
+        builder = next(p for p in plans if p["id"] == "prod_relay_builder")
+        assert builder["prices"][0]["amount"] == 900
 
     @pytest.mark.asyncio
     async def test_create_stub_checkout_not_available(self):
