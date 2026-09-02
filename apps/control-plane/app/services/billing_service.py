@@ -333,6 +333,22 @@ async def get_billing_plan(
                 "percentage": (round(web_published_count / max_web * 100) if max_web else None),
             },
             "storage": {
+                # Matches "shares"/"web_published" above: current/max, not
+                # current_bytes/max_bytes. The asymmetric naming (this was
+                # the only usage entry using a _bytes-suffixed pair) meant
+                # the client's uniform `usage.current`/`usage.max` read for
+                # every row picked up `undefined` for storage specifically
+                # -- rendered as "-- / Unlimited" regardless of the real
+                # numbers (#f696490d; #1b3f600c only fixed the undefined ->
+                # "Unlimited" label, not this root cause).
+                "current": storage_bytes,
+                "max": max_storage,
+                # Deprecated aliases -- remove once installed plugin builds
+                # older than the current/max rename (<=1.1.43) are no longer
+                # in the field. 1.1.43 reads usage.current_bytes directly
+                # with no current/max fallback, so dropping these outright
+                # would blank the Storage row for every already-installed
+                # user (#f696490d, Daedalus review on !252).
                 "current_bytes": storage_bytes,
                 "max_bytes": max_storage,
                 "percentage": (
