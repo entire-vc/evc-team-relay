@@ -1,30 +1,33 @@
 # TR monitoring — additive override (task 3ccf76c6 / epic 1c565cb0, Riker 2026-05-31).
 # Adds a firewall-locked metrics-proxy ONLY. Does not modify any existing service.
-# Rollback: docker compose rm -sf metrics-proxy && rm docker-compose.override.yml
+# Rollback: docker compose rm -sf metrics-proxy postgres-exporter && rm docker-compose.override.yml
 #   + iptables -D DOCKER-USER rules for dport 9300 (+ netfilter-persistent save).
 # postgres-exporter sidecar APPLIED 2026-05-31 (task ca7ca12a) — metrics_exporter pg role created, PG_EXPORTER_PASSWORD in .env.
 # MinIO bearer route APPLIED 2026-05-31 (mc-alias self-serve, ca7ca12a) — token in .env.
 #
-# metrics-proxy / postgres-exporter DISABLED for this instance (teamrelay.ru,
-# W5 #c09befac): both were copied verbatim from tr-relay-vm and are
-# host-specific to that box — metrics-proxy hardcodes tr-relay-vm's own
-# 10.10.10.40 bind address (fails to bind on this host entirely, blocking
-# `up`), and postgres-exporter's DATA_SOURCE_NAME hardcodes the container
-# hostname `relay-postgres-1` from tr-relay-vm's compose project ("relay"),
-# which doesn't exist on this instance's project ("trru" -> trru-postgres-1).
-# Wiring central tw-mon monitoring up for this instance (correct bind
-# address, correct container hostname, firewall rules on this host, tw-mon
-# scrape config) is a deliberate separate follow-up, not done here.
+# teamrelay.ru (this instance) wired up 2026-09-03 (task #ddb06278, decision in
+# W5 #c09befac's thread). alyssa has no edge/DNAT in front of it (unlike
+# tr-relay-vm, which sits behind hel01's DNAT and so only needs a PRIVATE bind)
+# — its only external interface is its own public IP. metrics-proxy therefore
+# binds directly to that public address, source-locked to tw-mon via the same
+# DOCKER-USER iptables pattern as tr-relay-vm; nothing new is exposed relative
+# to that existing prod posture (plaintext metrics over the open internet,
+# protected by source-IP only — TLS/mTLS on metrics is a separate fleet
+# decision, not this one). Address comes from METRICS_BIND_ADDR in .env, never
+# hardcoded — a hardcoded peer address is exactly how this override broke on
+# this instance the first time. postgres-exporter's DATA_SOURCE_NAME now
+# addresses postgres by its compose SERVICE name (works on any instance,
+# regardless of COMPOSE_PROJECT_NAME/container-name), not the tr-relay-vm
+# container name it used to hardcode.
 services:
   metrics-proxy:
     mem_limit: 48m
     image: caddy:2
     container_name: relay-metrics-proxy
-    profiles: ["disabled-pending-monitoring-followup"]
     volumes:
       - ./metrics-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
-      - "10.10.10.40:9300:9300"
+      - "${METRICS_BIND_ADDR}:9300:9300"
     environment:
       - MINIO_PROM_TOKEN=${MINIO_PROM_TOKEN}
     restart: unless-stopped
@@ -32,9 +35,8 @@ services:
   postgres-exporter:
     mem_limit: 48m
     image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
-    profiles: ["disabled-pending-monitoring-followup"]
     environment:
-      - DATA_SOURCE_NAME=postgresql://metrics_exporter:${PG_EXPORTER_PASSWORD}@relay-postgres-1:5432/relay?sslmode=disable
+      - DATA_SOURCE_NAME=postgresql://metrics_exporter:${PG_EXPORTER_PASSWORD}@postgres:5432/relay?sslmode=disable
     networks: [default]
     restart: unless-stopped
     depends_on: [postgres]
