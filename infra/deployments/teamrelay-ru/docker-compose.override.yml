@@ -1,0 +1,32 @@
+# TR monitoring — additive override (task 3ccf76c6 / epic 1c565cb0, Riker 2026-05-31).
+# Adds a firewall-locked metrics-proxy ONLY. Does not modify any existing service.
+# Rollback: docker compose rm -sf metrics-proxy && rm docker-compose.override.yml
+#   + iptables -D DOCKER-USER rules for dport 9300 (+ netfilter-persistent save).
+# postgres-exporter sidecar APPLIED 2026-05-31 (task ca7ca12a) — metrics_exporter pg role created, PG_EXPORTER_PASSWORD in .env.
+# MinIO bearer route APPLIED 2026-05-31 (mc-alias self-serve, ca7ca12a) — token in .env.
+services:
+  metrics-proxy:
+    mem_limit: 48m
+    image: caddy:2
+    container_name: relay-metrics-proxy
+    volumes:
+      - ./metrics-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "10.10.10.40:9300:9300"
+    environment:
+      - MINIO_PROM_TOKEN=${MINIO_PROM_TOKEN}
+    restart: unless-stopped
+
+  postgres-exporter:
+    mem_limit: 48m
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+    environment:
+      - DATA_SOURCE_NAME=postgresql://metrics_exporter:${PG_EXPORTER_PASSWORD}@relay-postgres-1:5432/relay?sslmode=disable
+    networks: [default]
+    restart: unless-stopped
+    depends_on: [postgres]
+
+  # H8 WAL archiving: bind-mount for WAL archive directory (2026-07-06)
+  postgres:
+    volumes:
+      - ./data/wal_archive:/var/lib/postgresql/wal_archive

@@ -1,0 +1,308 @@
+services:
+  postgres:
+    mem_limit: 512m
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  minio:
+    mem_limit: 384m
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    env_file:
+      - ./.env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  minio-init:
+    mem_limit: 64m
+    image: minio/mc:latest
+    env_file:
+      - ./.env
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/relay &&
+      mc anonymous set none local/relay
+      "
+    restart: "no"
+
+  postgres-backup:
+    mem_limit: 96m
+    image: infra-postgres-backup:latest
+    env_file:
+      - ./.env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-7}
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}
+      BACKUP_S3_ENABLED: ${BACKUP_S3_ENABLED:-false}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      RUN_ON_STARTUP: ${BACKUP_RUN_ON_STARTUP:-true}
+      OFFSITE_S3_ENABLED: ${OFFSITE_S3_ENABLED:-false}
+      OFFSITE_S3_ENDPOINT: ${OFFSITE_S3_ENDPOINT:-}
+      OFFSITE_S3_ACCESS: ${OFFSITE_S3_ACCESS:-}
+      OFFSITE_S3_SECRET: ${OFFSITE_S3_SECRET:-}
+      OFFSITE_S3_BUCKET: ${OFFSITE_S3_BUCKET:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-relay}
+    volumes:
+      - ./data/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  control-plane-migrate:
+    mem_limit: 128m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+
+  # DRY_RUN rehearsal counterpart of control-plane-migrate above. Same env_file
+  # (compose parses it correctly, including multiline PEM values that break
+  # `docker run --env-file` -- see scripts/deploy.sh), but targets the
+  # not-yet-promoted :candidate image and runs alembic in --sql (offline) mode:
+  # renders the upgrade SQL and validates the revision graph without opening a
+  # database connection. No depends_on postgres -- offline mode never connects,
+  # so the rehearsal does not need Postgres healthy to prove the migration graph
+  # is sound. Added 2026-08-23, Mesh #efcf85d4.
+  control-plane-migrate-dry-run:
+    mem_limit: 128m
+    image: infra-control-plane:candidate
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    command: ["python", "-m", "alembic", "upgrade", "head", "--sql"]
+    restart: "no"
+
+  control-plane:
+    mem_limit: 640m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: relay
+    volumes:
+      - uploads-data:/app/app/static/uploads
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-plane-migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys,urllib.request;sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health/ready').status == 200 else sys.exit(1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  webhook-worker:
+    mem_limit: 160m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      WORKER_INTERVAL: ${WEBHOOK_WORKER_INTERVAL:-30}
+      WORKER_BATCH_SIZE: ${WEBHOOK_WORKER_BATCH_SIZE:-50}
+    command: ["python", "-m", "app.workers.webhook_worker"]
+    restart: unless-stopped
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  email-worker:
+    mem_limit: 160m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
+      WORKER_INTERVAL: ${EMAIL_WORKER_INTERVAL:-60}
+      WORKER_BATCH_SIZE: ${EMAIL_WORKER_BATCH_SIZE:-100}
+    command: ["python", "-m", "app.workers.email_worker"]
+    restart: unless-stopped
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  listmonk-sync-worker:
+    mem_limit: 160m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LISTMONK_URL: ${LISTMONK_URL:-}
+      LISTMONK_API_USER: ${LISTMONK_API_USER:-api}
+      LISTMONK_API_PASSWORD: ${LISTMONK_API_PASSWORD:-}
+      LISTMONK_LIST_ID: ${LISTMONK_LIST_ID:-8}
+      LISTMONK_SYNC_INTERVAL: ${LISTMONK_SYNC_INTERVAL:-300}
+    command: ["python", "-m", "app.workers.listmonk_sync_worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+  lifecycle-worker:
+    mem_limit: 160m
+    image: infra-control-plane:latest
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LIFECYCLE_ENABLED: ${LIFECYCLE_ENABLED:-false}
+      LIFECYCLE_LAUNCH_DATE: ${LIFECYCLE_LAUNCH_DATE:-}
+      LIFECYCLE_WORKER_INTERVAL: ${LIFECYCLE_WORKER_INTERVAL:-3600}
+      LIFECYCLE_FROM_NAME: ${LIFECYCLE_FROM_NAME:-}
+      LIFECYCLE_FROM_EMAIL: ${LIFECYCLE_FROM_EMAIL:-}
+      LIFECYCLE_UNSUBSCRIBE_SECRET: ${LIFECYCLE_UNSUBSCRIBE_SECRET:-change-me}
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL}
+      SERVER_NAME: ${SERVER_NAME:-Team Relay}
+      ARGUS_ENABLED: ${ARGUS_ENABLED:-false}
+      ARGUS_API_URL: ${ARGUS_API_URL:-}
+      ARGUS_SERVICE_KEY: ${ARGUS_SERVICE_KEY:-}
+    command: ["python", "-m", "app.workers.lifecycle_worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+  relay-server:
+    mem_limit: 64m
+    image: ghcr.io/entire-vc/evc-relay-server:0.9.12
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./relay/relay.toml:/app/relay.toml:ro
+      - relay-data:/app/data
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    expose:
+      - "8080"
+      - "9090"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web-publish:
+    mem_limit: 224m
+    image: infra-web-publish:latest
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:8000
+      PUBLIC_CONTROL_PLANE_URL: https://cp.${DOMAIN_BASE}
+      PUBLIC_WEB_DOMAIN: ${WEB_PUBLISH_DOMAIN:-}
+      ORIGIN: https://${WEB_PUBLISH_DOMAIN:-localhost}
+      WEB_FRAME_ANCESTORS: ${WEB_FRAME_ANCESTORS:-}
+      EMBED_TOKEN_SECRET: ${EMBED_TOKEN_SECRET:-}
+      WEB_PUBLISH_AGENT_KEY: ${WEB_PUBLISH_AGENT_KEY:-}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    mem_limit: 96m
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - ./.env
+    environment:
+      DOMAIN_BASE: ${DOMAIN_BASE}
+      ACME_EMAIL: ${ACME_EMAIL}
+      WEB_PUBLISH_DOMAIN: ${WEB_PUBLISH_DOMAIN:-web-publish.disabled}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy_config:/config
+    depends_on:
+      - control-plane
+      - relay-server
+      - web-publish
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  minio-data:
+  uploads-data:
+  relay-data:

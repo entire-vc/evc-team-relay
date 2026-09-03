@@ -1,0 +1,3 @@
+creation_rules:
+  - path_regex: infra/deployments/teamrelay-ru/\.env\.sops$
+    age: age12uktytl0h2lkewasqadqtngnlsz7y0tq359csx5r9xuuvvgexv6qs9x469
