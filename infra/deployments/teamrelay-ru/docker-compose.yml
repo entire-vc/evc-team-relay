@@ -295,6 +295,14 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/caddy:/data
       - ./data/caddy_config:/config
+      # Static marketing site served by the {$SITE_DOMAIN} block in the
+      # Caddyfile (`root * /srv/site`). The Caddyfile has documented this
+      # bind-mount since the block was added, but the mount itself was never
+      # here — so setting SITE_DOMAIN alone would have bound the domain to an
+      # empty root and served 404 for every page. Mounted read-only and
+      # unconditionally: with SITE_DOMAIN unset the block is inert, and a
+      # missing ./site-dist is created empty by Docker rather than failing.
+      - ./site-dist:/srv/site:ro
     depends_on:
       - control-plane
       - relay-server
