@@ -321,4 +321,4 @@ docker compose exec relay-server curl -s http://localhost:9090/metrics | head -5
 
 - [Configure authentication](configuration.md#authentication)
 - [Set up backups](backup-restore.md)
-- [Install the Obsidian plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin)
+- [Install the Obsidian plugin](https://github.com/entire-vc/evc-team-relay-plugin)
