@@ -1,143 +1,110 @@
 #!/usr/bin/env python3
-"""check-drift.py — liveness guard for tr-relay-vm's /opt/relay, mirroring
-bob/monitoring/tw-mon/scripts/check-twmon-config-drift.py's C1 (byte-drift)
-check. Mesh #206eb904 subtask 4/6.
+"""check-drift.py — liveness guard for teamrelay.ru's /opt/relay on alyssa.
 
-A tracked copy nobody compares against prod is documentation, not control.
-This is the half of the story that makes tracking mean something.
+Unlike tr-relay-vm (a separate host from wherever the repo is checked out,
+requiring an SSH byte-comparison — see that host's own check-drift.py),
+this instance's git checkout lives ON THE SAME HOST at /opt/relay/repo/,
+and the runtime config files (Caddyfile, docker-compose.yml,
+docker-compose.override.yml) are symlinks into that checkout, not copies.
+So the drift class this guards against is different and narrower:
 
-Deploy mode is COPY (tr-relay-vm is a separate host from wherever this repo
-is checked out), so a straight byte comparison of tracked-vs-prod is the
-right check — same reasoning as the tw-mon script's own header.
+  1. A tracked file got replaced by a real file again (the exact landmine
+     found live 2026-09-03, W5 #c09befac: pre-git-ification copies of
+     docker-compose.yml/.override.yml were left sitting at /opt/relay/,
+     and Docker Compose auto-discovers those two filenames with no -f
+     flags — a bare `docker compose up` from /opt/relay would silently
+     use the stale file instead of the symlink).
+  2. The checkout has uncommitted local changes or isn't on origin/main's
+     tip (config edited in place again, defeating the whole point of
+     moving it into git).
 
-Template files (relay/relay.toml.example) are rendered against .env before
-comparing, since the tracked copy is a template with {{VAR}} placeholders,
-not a literal mirror — diffing the raw template would always show drift.
-
-For bind_mount entries this also checks the container's OWN view of the
-file (`docker exec <container> sha256sum <container_path>`), not just the
-host path. A single-file bind mount can detach from its host path
-independently of anything this script or deploy.sh does — host-vs-git
-clean does not imply the running container sees that content. Measured
-live (#206eb904, 2026-08-20): a real detach on this exact Caddyfile sat
-unnoticed for weeks because nothing had ever compared the container's side
-against anything — host-vs-git was clean throughout, because the host file
-itself was never the broken half.
-
-Exit: 0 clean · 1 drift found · 2 could not run (ssh/manifest/env failure).
+Run from anywhere; defaults assume the standard alyssa layout.
+Exit: 0 clean · 1 drift found · 2 could not run.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
+TRACKED_LINKS = {
+    "Caddyfile": "repo/infra/Caddyfile",
+    "docker-compose.yml": "repo/infra/deployments/teamrelay-ru/docker-compose.yml",
+    "docker-compose.override.yml": "repo/infra/deployments/teamrelay-ru/docker-compose.override.yml",
+}
 
-def ssh(host: str, cmd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["ssh", "-n", "-o", "BatchMode=yes", host, cmd],
-        capture_output=True, text=True,
-    )
 
-
-def render_relay_toml(template_text: str, env_path: Path) -> str | None:
-    if not env_path.exists():
-        return None
-    user = pw = None
-    for line in env_path.read_text().splitlines():
-        if line.startswith("MINIO_ROOT_USER="):
-            user = line.split("=", 1)[1]
-        elif line.startswith("MINIO_ROOT_PASSWORD="):
-            pw = line.split("=", 1)[1]
-    if user is None or pw is None:
-        return None
-    return template_text.replace("{{MINIO_ROOT_USER}}", user).replace(
-        "{{MINIO_ROOT_PASSWORD}}", pw
-    )
+def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo-root", default=str(Path(__file__).resolve().parent))
-    ap.add_argument("--env-file", default=None, help="real .env for rendering template files")
+    ap.add_argument("--relay-root", default="/opt/relay")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    repo_root = Path(args.repo_root)
-    manifest_path = repo_root / "manifest.json"
-    if not manifest_path.exists():
-        print(f"[ERROR] manifest not found: {manifest_path}", file=sys.stderr)
-        return 2
-    manifest = json.loads(manifest_path.read_text())
-    host = manifest["host"]
-    prod_root = manifest["prod_root"]
-    env_path = Path(args.env_file) if args.env_file else repo_root / ".env"
+    relay_root = Path(args.relay_root)
+    repo_root = relay_root / "repo"
+    drift: list[str] = []
 
-    drift, ok, skipped = [], 0, []
-
-    for entry in manifest["files"]:
-        if not entry.get("deployable"):
-            skipped.append(entry["tracked"])
+    # 1. Each tracked runtime file must be a symlink, and must resolve to
+    #    the expected git-tracked path -- not a real file that could
+    #    silently diverge from what's in git.
+    for name, target in TRACKED_LINKS.items():
+        p = relay_root / name
+        if not p.exists():
+            drift.append(f"{name}: MISSING (expected a symlink -> {target})")
             continue
-        tracked_path = repo_root / entry["tracked"]
-        prod_path = f"{prod_root}/{entry['prod']}"
-        if not tracked_path.exists():
-            drift.append((entry["tracked"], "MISSING FROM REPO"))
+        if not p.is_symlink():
+            drift.append(
+                f"{name}: is a REAL FILE, not a symlink -- this is exactly the "
+                f"landmine class this guard exists to catch (a bare "
+                f"`docker compose up` auto-discovers this filename and would "
+                f"silently use it instead of the git-tracked config)"
+            )
             continue
-
-        if entry.get("template"):
-            rendered = render_relay_toml(tracked_path.read_text(), env_path)
-            if rendered is None:
-                skipped.append(f"{entry['tracked']} (no env file to render against — pass --env-file)")
-                continue
-            local_bytes = rendered.encode()
-        else:
-            local_bytes = tracked_path.read_bytes()
-        local_sha = hashlib.sha256(local_bytes).hexdigest()
-
-        r = ssh(host, f"sha256sum '{prod_path}' 2>/dev/null")
-        if r.returncode != 0 or not r.stdout.strip():
-            drift.append((entry["tracked"], "MISSING FROM PROD (or unreadable)"))
-            continue
-        prod_sha = r.stdout.split()[0]
-
-        if prod_sha != local_sha:
-            drift.append((entry["tracked"], f"DRIFT (git {local_sha[:12]} != prod {prod_sha[:12]})"))
-            continue
-
-        if entry.get("bind_mount"):
-            container = entry.get("container")
-            container_path = entry.get("container_path")
-            if not container or not container_path:
-                drift.append((entry["tracked"], "bind_mount=true but manifest has no container/container_path — cannot verify the mount is actually attached"))
-                continue
-            r = ssh(host, f"docker exec {container} sha256sum '{container_path}' 2>/dev/null")
-            if r.returncode != 0 or not r.stdout.strip():
-                drift.append((entry["tracked"], f"could not read {container}:{container_path} — container down or path wrong"))
-                continue
-            container_sha = r.stdout.split()[0]
-            if container_sha != local_sha:
-                drift.append((entry["tracked"], f"MOUNT DETACHED — host file matches git ({local_sha[:12]}) but container {container} sees {container_sha[:12]} at {container_path}. The host-side file is fine; the bind mount itself is stale. Fix: docker compose restart the affected service."))
-                continue
-
-        ok += 1
+        resolved = str(p.readlink())
+        if resolved != target:
+            drift.append(f"{name}: symlink points to {resolved!r}, expected {target!r}")
         if args.verbose:
-            print(f"    [PASS] {entry['tracked']}: prod matches git" + (f", container {entry.get('container')} confirmed attached" if entry.get("bind_mount") else ""))
+            print(f"  OK  {name} -> {resolved}")
 
-    print(f"\n{ok} file(s) clean, {len(drift)} drifted, {len(skipped)} skipped")
-    for t in skipped:
-        print(f"  [SKIP] {t}")
-    for t, reason in drift:
-        print(f"  [FAIL] {t}: {reason}")
+    # 2. The checkout itself must be clean and on origin/main's tip -- a
+    #    tracked file is only as good as the checkout it lives in.
+    if not repo_root.is_dir():
+        drift.append(f"repo checkout missing entirely: {repo_root}")
+    else:
+        status = run(["git", "status", "--porcelain"], cwd=repo_root)
+        if status.returncode != 0:
+            drift.append(f"git status failed in {repo_root}: {status.stderr.strip()}")
+        elif status.stdout.strip():
+            drift.append(
+                f"repo checkout has uncommitted changes:\n{status.stdout}"
+            )
+
+        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+        if branch.stdout.strip() != "main":
+            drift.append(f"repo checkout is on branch {branch.stdout.strip()!r}, not main")
+
+        run(["git", "fetch", "origin", "main"], cwd=repo_root)
+        local_head = run(["git", "rev-parse", "HEAD"], cwd=repo_root).stdout.strip()
+        remote_head = run(["git", "rev-parse", "origin/main"], cwd=repo_root).stdout.strip()
+        if local_head != remote_head:
+            drift.append(
+                f"repo checkout HEAD ({local_head[:8]}) is behind origin/main "
+                f"({remote_head[:8]}) -- run `git -C {repo_root} pull --ff-only`"
+            )
+        elif args.verbose:
+            print(f"  OK  repo at origin/main tip ({local_head[:8]})")
 
     if drift:
-        print("\nRepair: deploy.sh (git -> prod)")
-        print("        or commit the prod-side change into this repo if prod is right")
+        print("[DRIFT FOUND]", file=sys.stderr)
+        for d in drift:
+            print(f"  - {d}", file=sys.stderr)
         return 1
+    print("[OK] no drift")
     return 0
 
 
