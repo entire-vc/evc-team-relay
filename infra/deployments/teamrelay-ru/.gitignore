@@ -1,0 +1,5 @@
+.env
+# The repo root .gitignore has a blanket `.env.*` rule -- this negation
+# re-includes the encrypted secrets file specifically (it's ciphertext,
+# meant to be tracked; the decrypted `.env` above stays ignored).
+!.env.sops
