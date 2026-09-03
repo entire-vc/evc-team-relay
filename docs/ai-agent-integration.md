@@ -361,4 +361,4 @@ Changes are bidirectional — edits made in Obsidian are immediately visible to 
 - [API Reference](api.md)
 - [MCP Server repo](https://github.com/entire-vc/evc-team-relay-mcp)
 - [OpenClaw Skill repo](https://github.com/entire-vc/evc-team-relay-openclaw-skill)
-- [Obsidian Plugin repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin)
+- [Obsidian Plugin repo](https://github.com/entire-vc/evc-team-relay-plugin)

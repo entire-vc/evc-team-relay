@@ -86,7 +86,7 @@ docker compose up -d
 Monitoring (Prometheus + Grafana) is on the internal Docker network only by default — see
 [Configuration → Monitoring](docs/configuration.md#monitoring) to reach it.
 
-Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) and connect.
+Then install the [Obsidian plugin](https://github.com/entire-vc/evc-team-relay-plugin) and connect.
 
 ---
 
@@ -131,7 +131,7 @@ Technical documentation is available in [`docs/`](./docs/):
 |---------|-------------|------|
 | **Local Sync** | Vault ↔ AI dev tools sync | [repo](https://github.com/entire-vc/evc-local-sync-plugin) |
 | **Team Relay** ← you are here | Self-hosted collaboration server | this repo |
-| **Team Relay Plugin** | Obsidian plugin for Team Relay | [repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin) |
+| **Team Relay Plugin** | Obsidian plugin for Team Relay | [repo](https://github.com/entire-vc/evc-team-relay-plugin) |
 | **Team Relay MCP** | MCP server for AI agent access to vault | [repo](https://github.com/entire-vc/evc-team-relay-mcp) / [PyPI](https://pypi.org/project/evc-team-relay-mcp/) |
 | **OpenClaw Skill** | AI agent skill for OpenClaw | [ClawHub](https://clawhub.ai/venturecrew/evc-team-relay) / [repo](https://github.com/entire-vc/evc-team-relay-openclaw-skill) |
 | **Spark MCP** | MCP server for AI workflow catalog | [repo](https://github.com/entire-vc/evc-spark-mcp) |

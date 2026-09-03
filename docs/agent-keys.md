@@ -36,7 +36,7 @@ Agent key uploads appear in your Obsidian vault on the next sync cycle (typicall
 
 ## Prerequisites
 
-1. **Obsidian plugin installed** — [Team Relay plugin](https://github.com/entire-vc/evc-team-relay-obsidian-plugin)
+1. **Obsidian plugin installed** — [Team Relay plugin](https://github.com/entire-vc/evc-team-relay-plugin)
 2. **Logged in to a Team Relay server** — via the plugin settings
 3. **A folder share** with web publishing enabled — you must be the share owner
 
@@ -338,4 +338,4 @@ The key is invalidated immediately. Any agent using it will receive `403 Forbidd
 - [AI Agent Integration Guide](ai-agent-integration.md)
 - [Agent Keys design doc](design-agent-keys-plugin-ui.md) (internal)
 - [MCP Server repo](https://github.com/entire-vc/evc-team-relay-mcp)
-- [Team Relay plugin repo](https://github.com/entire-vc/evc-team-relay-obsidian-plugin)
+- [Team Relay plugin repo](https://github.com/entire-vc/evc-team-relay-plugin)
