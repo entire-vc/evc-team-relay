@@ -10,7 +10,7 @@
 # THREE changes are required — and the first one is not optional:
 #
 #   1. Prefix every site address below with `http://`
-#      (`http://cp.{$DOMAIN_BASE} {`, `http://{$DOMAIN_BASE} {`, ...).
+#      (`http://cp.{$DOMAIN_BASE} {`, `http://{$RELAY_DOMAIN} {`, ...).
 #      Without the scheme Caddy binds the site to :443 and tries to obtain a
 #      certificate; a proxy that only forwards to :80 then matches no site and
 #      the domain answers with an empty 200. This exact omission took our
@@ -44,7 +44,7 @@
   # A site block with no `log` directive gets zero access-log entries, ever
   # (Caddy's Caddyfile adapter puts undeclared hosts in `logs.skip_hosts`) —
   # not "logs but drops WS upgrades", just no log at all for that host. Bit
-  # us in prod: cp.{$DOMAIN_BASE} and {$DOMAIN_BASE} had no `log` block, so
+  # us in prod: cp.{$DOMAIN_BASE} and {$RELAY_DOMAIN} had no `log` block, so
   # 7 days of real relay-server WS traffic (confirmed via its own metrics)
   # showed as zero requests in Caddy — looked like dead traffic, wasn't.
   # Redact `token`/`agent_key` query params — both are live-session secrets
@@ -122,7 +122,21 @@ cp.{$DOMAIN_BASE} {
   }
 }
 
-{$DOMAIN_BASE} {
+# Relay (WebSocket/CRDT sync). Set RELAY_DOMAIN in .env — required, no
+# default: on a single-domain install this is the same value as DOMAIN_BASE
+# (relay sits on the bare domain); on a multi-tenant install where the bare
+# domain is claimed by a marketing site (BARE_REDIRECT_DOMAIN/SITE_DOMAIN
+# below), point RELAY_DOMAIN at a subdomain instead (e.g. r.example.com).
+# Deliberately has NO Caddyfile-level default (unlike WEB_PUBLISH_DOMAIN's
+# disabled-placeholder pattern) — every real deployment needs relay
+# reachable somewhere, so an unset value should fail loud (empty site
+# address) rather than silently disable the service. Always set it
+# explicitly in every instance's .env, even when it equals DOMAIN_BASE —
+# do not rely on Caddy resolving a nested `{$RELAY_DOMAIN:{$DOMAIN_BASE}}`
+# default; that nesting form is untested against this Caddy version and an
+# unresolved default fails the same way an unset required var does, just
+# less predictably.
+{$RELAY_DOMAIN} {
   import security_headers
   import no_framing
   import access_log_redacted
@@ -177,3 +191,37 @@ cp.{$DOMAIN_BASE} {
   reverse_proxy web-publish:3000
 }
 
+# Static marketing/product site on the bare domain (optional, for
+# multi-tenant installs where the bare domain isn't already claimed by
+# relay above). Set SITE_DOMAIN in .env to enable (e.g. example.com) AND
+# bind-mount the built site into ./site-dist on the host. Default
+# 'site.disabled' is a placeholder that won't match real requests, same
+# idiom as WEB_PUBLISH_DOMAIN above. Mutually exclusive with RELAY_DOMAIN
+# pointing at the same address — Caddy fails config validation loudly on a
+# duplicate site address if both are set to the same domain, rather than
+# silently picking one.
+{$SITE_DOMAIN:site.disabled} {
+  import security_headers
+  import no_framing
+  import access_log_redacted
+  root * /srv/site
+  file_server
+}
+
+# Temporary bare-domain redirect (optional). For an instance whose bare
+# domain has neither relay (RELAY_DOMAIN elsewhere) nor a site ready yet
+# (SITE_DOMAIN unset) — redirects the whole domain to BARE_REDIRECT_URL
+# instead of falling through to Caddy's own empty-200 default handler.
+# Set BARE_REDIRECT_DOMAIN (the address to bind, e.g. example.com — usually
+# equal to DOMAIN_BASE) and BARE_REDIRECT_URL (the destination) together in
+# .env to enable; default 'bare-redirect.disabled' placeholder keeps this
+# block inert on instances that don't need it (relay or a real site already
+# owns the bare domain there). A redirect carries no content of its own, so
+# enabling this never introduces new visible product copy.
+{$BARE_REDIRECT_DOMAIN:bare-redirect.disabled} {
+  import security_headers
+  import no_framing
+  import access_log_redacted
+
+  redir {$BARE_REDIRECT_URL} 302
+}
