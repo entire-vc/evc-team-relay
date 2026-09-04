@@ -593,6 +593,183 @@ class TestBillingWebhook:
 
 
 # ---------------------------------------------------------------------------
+# #1ccd7956 — provider_user_id is only unique paired with provider_id
+# (uq_provider_user is composite); a second OAuth provider can legitimately
+# produce a duplicate provider_user_id string, which used to make
+# find_user_by_billing_identity() raise MultipleResultsFound (webhook 500)
+# instead of resolving deterministically.
+# ---------------------------------------------------------------------------
+
+
+class TestFindUserByBillingIdentityAmbiguousProviderUserId:
+    def _make_provider(self, db_session, name: str):
+        from app.db import models
+
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name=name,
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url=f"https://{name}.example.com",
+            client_id="test_client",
+            client_secret_encrypted="secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+        return provider
+
+    def test_REGRESSION_same_provider_user_id_across_two_providers_resolves_deterministically(
+        self, db_session
+    ):
+        """MUST fail on the pre-fix code: a plain scalar_one_or_none() over
+        both rows raises MultipleResultsFound instead of picking one."""
+        from app.db import models
+
+        configured_provider = self._make_provider(db_session, "casdoor")  # settings default
+        other_provider = self._make_provider(db_session, "google")
+
+        user_a = models.User(
+            id=uuid.uuid4(), email="a@example.com", password_hash="", is_active=True
+        )
+        user_b = models.User(
+            id=uuid.uuid4(), email="b@example.com", password_hash="", is_active=True
+        )
+        db_session.add_all([user_a, user_b])
+        db_session.flush()
+
+        shared_subject = "shared-subject-123"
+        db_session.add(
+            models.UserOAuthAccount(
+                id=uuid.uuid4(),
+                user_id=user_a.id,
+                provider_id=configured_provider.id,
+                provider_user_id=shared_subject,
+                email="a@example.com",
+            )
+        )
+        db_session.add(
+            models.UserOAuthAccount(
+                id=uuid.uuid4(),
+                user_id=user_b.id,
+                provider_id=other_provider.id,
+                provider_user_id=shared_subject,
+                email="b@example.com",
+            )
+        )
+        db_session.commit()
+
+        resolved = billing_service.find_user_by_billing_identity(db_session, shared_subject)
+        assert resolved is not None
+        # Deterministic: the row on the configured OAuth provider wins.
+        assert resolved.id == user_a.id
+
+    def test_ambiguous_match_is_logged(self, db_session, caplog):
+        import logging
+
+        from app.db import models
+
+        configured_provider = self._make_provider(db_session, "casdoor")
+        other_provider = self._make_provider(db_session, "google")
+        user_a = models.User(
+            id=uuid.uuid4(), email="loga@example.com", password_hash="", is_active=True
+        )
+        user_b = models.User(
+            id=uuid.uuid4(), email="logb@example.com", password_hash="", is_active=True
+        )
+        db_session.add_all([user_a, user_b])
+        db_session.flush()
+        shared_subject = "shared-subject-for-log-test"
+        db_session.add_all(
+            [
+                models.UserOAuthAccount(
+                    id=uuid.uuid4(),
+                    user_id=user_a.id,
+                    provider_id=configured_provider.id,
+                    provider_user_id=shared_subject,
+                    email="loga@example.com",
+                ),
+                models.UserOAuthAccount(
+                    id=uuid.uuid4(),
+                    user_id=user_b.id,
+                    provider_id=other_provider.id,
+                    provider_user_id=shared_subject,
+                    email="logb@example.com",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        with caplog.at_level(logging.WARNING, logger="app.services.billing_service"):
+            billing_service.find_user_by_billing_identity(db_session, shared_subject)
+
+        assert any(
+            shared_subject in record.getMessage()
+            or shared_subject in str(record.__dict__.get("provider_user_id", ""))
+            for record in caplog.records
+        )
+
+    def test_unambiguous_single_match_still_works(self, db_session):
+        """Positive control: the common case (one provider, one match) is
+        untouched by the new resolution logic."""
+        from app.db import models
+
+        provider = self._make_provider(db_session, "casdoor")
+        user = models.User(
+            id=uuid.uuid4(), email="solo@example.com", password_hash="", is_active=True
+        )
+        db_session.add(user)
+        db_session.flush()
+        db_session.add(
+            models.UserOAuthAccount(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                provider_id=provider.id,
+                provider_user_id="solo-subject",
+                email="solo@example.com",
+            )
+        )
+        db_session.commit()
+
+        resolved = billing_service.find_user_by_billing_identity(db_session, "solo-subject")
+        assert resolved is not None
+        assert resolved.id == user.id
+
+    def test_users_casdoor_id_is_globally_unique_at_the_db_level(self, db_session):
+        """The task's symmetric concern ('users.casdoor_id тоже не уникален')
+        does not hold: ix_users_casdoor_id is a real unique index (see
+        migration 202607250001), so two users can never share a
+        casdoor_id — this documents that find_user_by_billing_identity()'s
+        casdoor_id branch needs no equivalent fix, with a live DB-level
+        proof rather than just reading the model definition."""
+        from sqlalchemy.exc import IntegrityError
+
+        from app.db import models
+
+        user_a = models.User(
+            id=uuid.uuid4(),
+            email="dup-a@example.com",
+            password_hash="",
+            is_active=True,
+            casdoor_id="duplicate-casdoor-id",
+        )
+        db_session.add(user_a)
+        db_session.commit()
+
+        user_b = models.User(
+            id=uuid.uuid4(),
+            email="dup-b@example.com",
+            password_hash="",
+            is_active=True,
+            casdoor_id="duplicate-casdoor-id",
+        )
+        db_session.add(user_b)
+        with pytest.raises(IntegrityError):
+            db_session.commit()
+        db_session.rollback()
+
+
+# ---------------------------------------------------------------------------
 # server/info — billing_enabled feature flag + enterprise edition
 # ---------------------------------------------------------------------------
 
