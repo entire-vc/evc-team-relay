@@ -314,6 +314,121 @@ class TestOAuthService:
         assert exc_info.value.status_code == 409
         assert "already linked to another user" in exc_info.value.detail
 
+    def test_REGRESSION_second_identity_does_not_overwrite_first(self, db_session: Session):
+        """Security fix (#ad2de48d): link_oauth_account() used to look up the
+        row to update by (user_id, provider_id) alone — a second sign-in at
+        the SAME provider with a DIFFERENT subject (e.g. reached via the
+        callback's find-by-email fallback for an existing user) would
+        silently overwrite provider_user_id on the user's one row instead of
+        creating a second one. The original subject would then no longer
+        resolve to anyone — a real account-takeover shape when a new
+        external identity shares an email with an existing user.
+
+        MUST fail on the pre-fix code: sub1 would no longer be found."""
+        user = models.User(
+            id=uuid.uuid4(),
+            email="two-identities@example.com",
+            password_hash="hash",
+            is_admin=False,
+            is_active=True,
+        )
+        db_session.add(user)
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client",
+            client_secret_encrypted="secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+
+        oauth_service.link_oauth_account(
+            db_session,
+            user_id=user.id,
+            provider_id=provider.id,
+            provider_user_id="sub1",
+            email="two-identities@example.com",
+        )
+
+        # A second identity at the SAME provider, same user (the callback's
+        # find_user_by_email() path resolves to this same user_id).
+        oauth_service.link_oauth_account(
+            db_session,
+            user_id=user.id,
+            provider_id=provider.id,
+            provider_user_id="sub2",
+            email="two-identities@example.com",
+        )
+
+        # Both identities must still resolve to this user — sub1 must NOT
+        # have been overwritten/lost.
+        found_via_sub1 = oauth_service.find_user_by_oauth(db_session, provider.id, "sub1")
+        found_via_sub2 = oauth_service.find_user_by_oauth(db_session, provider.id, "sub2")
+        assert found_via_sub1 is not None
+        assert found_via_sub1.id == user.id
+        assert found_via_sub2 is not None
+        assert found_via_sub2.id == user.id
+
+        rows = (
+            db_session.query(models.UserOAuthAccount)
+            .filter_by(user_id=user.id, provider_id=provider.id)
+            .all()
+        )
+        assert {r.provider_user_id for r in rows} == {"sub1", "sub2"}
+
+    def test_repeat_login_same_identity_updates_in_place_not_duplicated(self, db_session: Session):
+        """Positive control: logging in again with the SAME subject must
+        update that one row's profile fields, not create a second row."""
+        user = models.User(
+            id=uuid.uuid4(),
+            email="repeat-login@example.com",
+            password_hash="hash",
+            is_admin=False,
+            is_active=True,
+        )
+        db_session.add(user)
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client",
+            client_secret_encrypted="secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+
+        oauth_service.link_oauth_account(
+            db_session,
+            user_id=user.id,
+            provider_id=provider.id,
+            provider_user_id="stable-sub",
+            email="repeat-login@example.com",
+            name="Old Name",
+        )
+        oauth_service.link_oauth_account(
+            db_session,
+            user_id=user.id,
+            provider_id=provider.id,
+            provider_user_id="stable-sub",
+            email="repeat-login@example.com",
+            name="New Name",
+        )
+
+        rows = (
+            db_session.query(models.UserOAuthAccount)
+            .filter_by(user_id=user.id, provider_id=provider.id)
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].name == "New Name"
+
 
 class TestOAuthEndpoints:
     """Tests for OAuth API endpoints."""
