@@ -29,6 +29,7 @@ from app.services import (
     totp_service,
     user_service,
 )
+from app.utils.url import build_admin_oauth_urls, get_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,14 @@ def login_page(request: Request, error: str | None = None):
     if token:
         return RedirectResponse("/admin-ui/dashboard", status_code=302)
 
-    return render_template(request, "admin/login.html", {"error": error})
+    settings = get_settings()
+    context: dict = {"error": error, "oauth_enabled": settings.oauth_enabled}
+    if settings.oauth_enabled:
+        base_url = get_base_url(request)
+        oauth_urls = build_admin_oauth_urls(base_url, settings.oauth_provider_name)
+        context["oauth_authorize_url"] = oauth_urls["oauth_authorize_url"]
+
+    return render_template(request, "admin/login.html", context)
 
 
 def _issue_admin_session(request: Request, db: Session, user: models.User) -> RedirectResponse:
@@ -179,6 +187,53 @@ def login_submit(
             "admin/login.html",
             {"error": "Login failed. Please try again.", "email": email},
         )
+
+
+@router.get("/login/oauth/complete", response_class=HTMLResponse)
+def login_oauth_complete(request: Request, db: Session = Depends(get_db)):
+    """Bridge a completed OAuth login into an admin session.
+
+    Reached as the return_url of /v1/auth/oauth/{provider}/authorize: the
+    API's own callback (app/api/routers/oauth.py) already exchanged the code
+    and found-or-created the user, then set the short-lived invite_token
+    cookie and redirected here. Resolving that cookie mirrors invites.py's
+    get_user_from_cookie(). From there this follows the exact same gate as
+    the password path in login_submit: is_admin is required, and a
+    totp_enabled account still goes through /admin-ui/login/2fa — OAuth does
+    NOT bypass 2FA (see TR-06 note on _issue_admin_session).
+    """
+    token = request.cookies.get("invite_token")
+    user = None
+    if token:
+        try:
+            user = deps.get_optional_user(db, authorization=f"Bearer {token}")
+        except Exception:
+            user = None
+
+    if not user or not user.is_admin:
+        response = RedirectResponse(
+            "/admin-ui/login?error=Invalid credentials or insufficient privileges",
+            status_code=302,
+        )
+        response.delete_cookie("invite_token")
+        return response
+
+    if user.totp_enabled:
+        pending_token = auth_service.create_admin_2fa_pending_token(db, user.id)
+        response = RedirectResponse("/admin-ui/login/2fa", status_code=302)
+        response.set_cookie(
+            key="admin_2fa_pending",
+            value=pending_token,
+            httponly=True,
+            max_age=auth_service.ADMIN_2FA_PENDING_TOKEN_EXPIRE_MINUTES * 60,
+            samesite="lax",
+        )
+        response.delete_cookie("invite_token")
+        return response
+
+    response = _issue_admin_session(request, db, user)
+    response.delete_cookie("invite_token")
+    return response
 
 
 @router.get("/login/2fa", response_class=HTMLResponse)
