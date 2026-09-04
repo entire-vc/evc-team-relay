@@ -29,6 +29,27 @@
             font-weight: 600;
             color: var(--text);
         }
+        .btn-full {
+            width: 100%;
+            text-align: center;
+        }
+        .login-divider {
+            display: flex;
+            align-items: center;
+            text-align: center;
+            color: var(--text-muted, #888);
+            margin: 1rem 0;
+        }
+        .login-divider::before,
+        .login-divider::after {
+            content: "";
+            flex: 1;
+            border-bottom: 1px solid var(--border, #ddd);
+        }
+        .login-divider span {
+            padding: 0 0.75rem;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -45,6 +66,21 @@
             {% if error %}
             <div class="alert alert-danger">
                 {{ error }}
+            </div>
+            {% endif %}
+
+            {% if oauth_enabled %}
+            <!-- oauth_authorize_url: base_url comes from get_base_url() (trusted,
+                 never client headers) and redirect_uri/return_url are quote()d
+                 by build_admin_oauth_urls() before being embedded — see that
+                 function's docstring. Same pattern as invite.html. -->
+            <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
+            <a href="{{ oauth_authorize_url }}" class="btn btn-primary btn-full">
+                Sign in with Casdoor
+            </a>
+
+            <div class="login-divider">
+                <span>or</span>
             </div>
             {% endif %}
 

@@ -64,3 +64,24 @@ def build_invite_oauth_urls(base_url: str, token: str, oauth_provider_name: str)
         "oauth_callback_url": oauth_callback_url,
         "oauth_authorize_url": oauth_authorize_url,
     }
+
+
+def build_admin_oauth_urls(base_url: str, oauth_provider_name: str) -> dict[str, str]:
+    """Build the OAuth authorize/callback/return URLs for the admin-ui login page.
+
+    Same shape as build_invite_oauth_urls(): the API's existing
+    /v1/auth/oauth/{provider}/callback does the token exchange and sets the
+    invite_token cookie, then redirects to return_url. Here return_url points
+    at /admin-ui/login/oauth/complete, which turns that cookie into an admin
+    session (or bounces to the 2FA step) — see admin_ui.py.
+
+    Returns: {"oauth_authorize_url"}.
+    """
+    oauth_callback_url = f"{base_url}/v1/auth/oauth/{oauth_provider_name}/callback"
+    admin_return_url = f"{base_url}/admin-ui/login/oauth/complete"
+    oauth_authorize_url = (
+        f"{base_url}/v1/auth/oauth/{oauth_provider_name}/authorize"
+        f"?redirect_uri={quote(oauth_callback_url, safe='')}"
+        f"&return_url={quote(admin_return_url, safe='')}"
+    )
+    return {"oauth_authorize_url": oauth_authorize_url}
