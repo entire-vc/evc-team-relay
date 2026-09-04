@@ -56,13 +56,19 @@ die() { printf '\n\033[1;31m!! %s\033[0m\n' "$*" >&2; exit 1; }
 # docker — precisely so it can be tested in isolation (extracted with sed and
 # sourced, see scripts/test_deploy_smoke_url.sh) without sourcing the rest of
 # this script, which would trigger a real deploy via the dispatch at the
-# bottom. SMOKE_URL always wins when set. Otherwise reads CORS_ALLOWED_ORIGINS
-# from $1/.env — the control-plane's own public origin, already required to
-# be correct per host for CORS to work at all — and takes the first origin if
-# it's a comma-separated list. Prints the resolved /server/info URL and
-# returns 0, or prints nothing and returns 1 if no valid http(s) origin could
-# be determined (the caller must fail closed on that, not fall back to a
-# guessed domain).
+# bottom. SMOKE_URL always wins when set. Otherwise reads
+# CONTROL_PLANE_PUBLIC_URL from $1/.env — app.core.config.Settings'
+# own field for "externally-reachable base URL of this control-plane API",
+# present on every host by construction (the app needs it to build absolute
+# links). Falls back to CORS_ALLOWED_ORIGINS (first origin, if comma-separated)
+# only when CONTROL_PLANE_PUBLIC_URL is unset or not a URL — kept as a fallback,
+# not the primary source, because it is NOT guaranteed to be set on every host
+# (#08e44245 defect 1, live-measured: tr-relay-vm's .env carries no
+# CORS/ORIGIN key at all, so requiring it would fail-close a host that was
+# never broken). Prints the resolved /server/info URL and returns 0, or
+# prints nothing and returns 1 if neither source yields a valid http(s)
+# origin (the caller must fail closed on that, not fall back to a guessed
+# domain).
 resolve_smoke_url() {
   local relay_dir="$1"
   if [ -n "${SMOKE_URL:-}" ]; then
@@ -70,12 +76,39 @@ resolve_smoke_url() {
     return 0
   fi
   local _origin
-  _origin="$(grep -m1 '^CORS_ALLOWED_ORIGINS=' "$relay_dir/.env" 2>/dev/null | cut -d= -f2- | cut -d, -f1)"
+  _origin="$(grep -m1 '^CONTROL_PLANE_PUBLIC_URL=' "$relay_dir/.env" 2>/dev/null | cut -d= -f2-)"
   case "$_origin" in
     http://*|https://*) ;;
-    *) return 1 ;;
+    *)
+      _origin="$(grep -m1 '^CORS_ALLOWED_ORIGINS=' "$relay_dir/.env" 2>/dev/null | cut -d= -f2- | cut -d, -f1)"
+      case "$_origin" in
+        http://*|https://*) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
   printf '%s/server/info\n' "${_origin%/}"
+}
+
+# Resolve THIS HOST's expected billing_enabled flag for the edition smoke gate
+# (#08e44245 defect 2, live-measured: tr-ru-vm runs BILLING_ENABLED=false
+# deliberately — billing is genuinely off there, not broken). billing_enabled
+# is per-host CONFIG, not a fixed property of the enterprise build, so the
+# gate must compare the live /server/info response against what THIS host's
+# own .env says it should be — the same value app.core.config.Settings would
+# read — not a hardcoded True. Same pure-function shape as resolve_smoke_url()
+# above: file read only, no network/docker, testable in isolation. An absent
+# key resolves to False, mirroring Settings.billing_enabled's own default, so
+# a host that never set the key gets the same expectation the running app
+# actually computed.
+resolve_expected_billing() {
+  local relay_dir="$1"
+  local _raw
+  _raw="$(grep -m1 '^BILLING_ENABLED=' "$relay_dir/.env" 2>/dev/null | cut -d= -f2-)"
+  case "$(printf '%s' "$_raw" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes) printf 'True\n' ;;
+    *) printf 'False\n' ;;
+  esac
 }
 
 case "$COMPONENT" in
@@ -203,14 +236,22 @@ deploy_control_plane() {
 
   # 6. Edition smoke gate — FAIL-CLOSED.
   #    Hits /server/info after a successful health-check to verify the running image
-  #    is the enterprise build (edition=enterprise + billing_enabled=true).
+  #    is the enterprise build (edition=enterprise) with billing configured the way
+  #    THIS host's own .env says it should be.
   #    If not, rolls back to the :prev image automatically.
   #    smoke_url is per-host, never hardcoded — see resolve_smoke_url() above
-  #    (#08e44245: a hardcoded default meant a deploy on the newer tr-ru-vm
-  #    host silently smoke-tested tr-relay-vm's prod instance instead).
+  #    (#08e44245 defect 1: a hardcoded default meant a deploy on the newer
+  #    tr-ru-vm host silently smoke-tested tr-relay-vm's prod instance instead).
+  #    expected_billing is per-host too — see resolve_expected_billing() above
+  #    (#08e44245 defect 2: billing_enabled is deliberate per-host CONFIG, not
+  #    a fixed enterprise-build property — tr-ru-vm runs with it off on
+  #    purpose, and a hardcoded expectation of true would auto-rollback that
+  #    healthy, correctly-configured instance on every deploy).
   local smoke_url
-  smoke_url="$(resolve_smoke_url "$RELAY_DIR")" || die "Cannot determine this host's public origin for the smoke gate — CORS_ALLOWED_ORIGINS not found (or not a URL) in $RELAY_DIR/.env. Refusing to smoke-test a guessed domain; set SMOKE_URL explicitly or fix .env."
-  log "checking edition smoke gate ($smoke_url)"
+  smoke_url="$(resolve_smoke_url "$RELAY_DIR")" || die "Cannot determine this host's public origin for the smoke gate — neither CONTROL_PLANE_PUBLIC_URL nor CORS_ALLOWED_ORIGINS is a valid URL in $RELAY_DIR/.env. Refusing to smoke-test a guessed domain; set SMOKE_URL explicitly or fix .env."
+  local expected_billing
+  expected_billing="$(resolve_expected_billing "$RELAY_DIR")"
+  log "checking edition smoke gate ($smoke_url, expecting billing_enabled=$expected_billing)"
   local _edition="" _billing="False" _resp
   for _i in $(seq 1 5); do
     _resp=$(curl -sf --max-time 10 "$smoke_url" 2>/dev/null || true)
@@ -221,14 +262,14 @@ deploy_control_plane() {
     fi
     sleep 3
   done
-  if [ "$_edition" != "enterprise" ] || [ "$_billing" != "True" ]; then
-    printf '\n\033[1;31m!! EDITION SMOKE GATE FAILED: edition=%s billing_enabled=%s\033[0m\n' "$_edition" "$_billing" >&2
+  if [ "$_edition" != "enterprise" ] || [ "$_billing" != "$expected_billing" ]; then
+    printf '\n\033[1;31m!! EDITION SMOKE GATE FAILED: edition=%s billing_enabled=%s (expected enterprise / %s)\033[0m\n' "$_edition" "$_billing" "$expected_billing" >&2
     printf '\033[1;31m!! Rolling back to infra-control-plane:prev\033[0m\n' >&2
     docker tag infra-control-plane:prev "$image" 2>/dev/null || true
     docker compose up -d --force-recreate control-plane webhook-worker email-worker listmonk-sync-worker lifecycle-worker 2>/dev/null || true
-    die "Edition smoke gate failed — rolled back to prev image. Prod /server/info must return edition=enterprise + billing_enabled=true. This repo's main IS the enterprise source (settled in TR·edition/billing #f75f04bb, byte-diffed against /opt/relay/control-plane-src), so a community reading here means the built image or its runtime env drifted — check the build args and $RELAY_DIR/.env, not which repo the source came from."
+    die "Edition smoke gate failed — rolled back to prev image. Prod /server/info must return edition=enterprise + billing_enabled=$expected_billing (this host's own BILLING_ENABLED in $RELAY_DIR/.env). This repo's main IS the enterprise source (settled in TR·edition/billing #f75f04bb, byte-diffed against /opt/relay/control-plane-src), so a community reading here means the built image or its runtime env drifted — check the build args and $RELAY_DIR/.env, not which repo the source came from."
   fi
-  log "smoke gate PASSED: edition=enterprise billing_enabled=true"
+  log "smoke gate PASSED: edition=enterprise billing_enabled=$expected_billing"
 
   log "control-plane deploy complete — image $image live, prev image retained as infra-control-plane:prev"
 }
