@@ -56,6 +56,16 @@ def find_user_by_billing_identity(db: Session, identity: str) -> models.User | N
     three forms get_billing_identity() can produce, in the same order —
     without this, a lookup keyed on casdoor_id alone misses the ~87% of
     users whose identity was actually sent as their OAuth provider_user_id.
+
+    users.casdoor_id IS globally unique at the DB level (a real unique
+    index, ix_users_casdoor_id — see models.py) so that branch can never
+    match more than one row. provider_user_id is different: the schema's
+    uq_provider_user constraint is composite, (provider_id,
+    provider_user_id) — the same subject string legitimately CAN exist
+    under two different providers once a second one is configured. See
+    _resolve_oauth_account_by_provider_user_id() for how that's resolved
+    deterministically instead of letting scalar_one_or_none() raise
+    MultipleResultsFound (#1ccd7956).
     """
     user = db.execute(
         select(models.User).where(models.User.casdoor_id == identity)
@@ -63,9 +73,7 @@ def find_user_by_billing_identity(db: Session, identity: str) -> models.User | N
     if user:
         return user
 
-    oauth = db.execute(
-        select(models.UserOAuthAccount).where(models.UserOAuthAccount.provider_user_id == identity)
-    ).scalar_one_or_none()
+    oauth = _resolve_oauth_account_by_provider_user_id(db, identity)
     if oauth:
         return db.execute(
             select(models.User).where(models.User.id == oauth.user_id)
@@ -76,6 +84,50 @@ def find_user_by_billing_identity(db: Session, identity: str) -> models.User | N
     except ValueError:
         return None
     return db.execute(select(models.User).where(models.User.id == user_uuid)).scalar_one_or_none()
+
+
+def _resolve_oauth_account_by_provider_user_id(
+    db: Session, provider_user_id: str
+) -> models.UserOAuthAccount | None:
+    """Resolve a UserOAuthAccount by provider_user_id alone, deterministically.
+
+    provider_user_id is only unique paired with provider_id (uq_provider_user
+    in models.py) — with more than one OAuth provider configured, the same
+    subject string can legitimately match rows under different providers,
+    and a plain scalar_one_or_none() would raise MultipleResultsFound (a
+    real prod incident shape: a webhook that used to silently lose data
+    would start hard-failing with a 500 instead, the moment a second
+    provider is added).
+
+    Prefers the provider actually configured for OAuth
+    (settings.oauth_provider_name — the same one get_billing_identity()
+    read from when this identity was originally sent), falling back to
+    created_at for a stable order among any remaining ties. Logs when more
+    than one candidate existed, since silently picking one is still a
+    judgment call worth being able to find in the logs later.
+    """
+    settings = get_settings()
+    stmt = (
+        select(models.UserOAuthAccount)
+        .join(models.OAuthProvider)
+        .where(models.UserOAuthAccount.provider_user_id == provider_user_id)
+        .order_by(
+            models.OAuthProvider.name != settings.oauth_provider_name,
+            models.UserOAuthAccount.created_at,
+        )
+    )
+    matches = list(db.execute(stmt).scalars().all())
+    if len(matches) > 1:
+        logger.warning(
+            "provider_user_id matched multiple OAuth accounts across providers; "
+            "using the one on the configured OAuth provider (or the oldest)",
+            extra={
+                "provider_user_id": provider_user_id,
+                "match_count": len(matches),
+                "resolved_provider_id": str(matches[0].provider_id),
+            },
+        )
+    return matches[0] if matches else None
 
 
 def _get_limit(entitlements: dict[str, Any], key: str) -> int | None:
