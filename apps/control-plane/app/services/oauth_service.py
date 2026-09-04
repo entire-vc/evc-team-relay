@@ -512,24 +512,37 @@ def link_oauth_account(
     Raises:
         HTTPException: If OAuth account already linked to different user
     """
-    # Check if this OAuth account is already linked
-    existing = find_user_by_oauth(db, provider_id, provider_user_id)
-    if existing and existing.id != user_id:
+    # Check if this exact external identity is already linked to someone.
+    existing_user = find_user_by_oauth(db, provider_id, provider_user_id)
+    if existing_user and existing_user.id != user_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This OAuth account is already linked to another user",
         )
 
-    # Create or update OAuth account link
+    # Resolve (or create) the row for THIS EXACT identity, keyed on
+    # (provider_id, provider_user_id) — the same pair uq_provider_user
+    # enforces uniqueness on. Looking this up by (user_id, provider_id)
+    # instead (the old behavior) meant a user with more than one identity
+    # at the same provider had them collapsed onto a single row: a second
+    # sign-in with a DIFFERENT subject at the same provider silently
+    # overwrote provider_user_id on the user's existing row rather than
+    # creating a second one — the account-takeover path this function is
+    # the fix for (a login callback that resolves an existing user by email
+    # would then re-point that user's row at the new subject, and the
+    # original subject would no longer resolve to anyone).
     stmt = select(models.UserOAuthAccount).where(
-        models.UserOAuthAccount.user_id == user_id,
         models.UserOAuthAccount.provider_id == provider_id,
+        models.UserOAuthAccount.provider_user_id == provider_user_id,
     )
     oauth_account = db.execute(stmt).scalar_one_or_none()
 
     if oauth_account:
-        # Update existing link
-        oauth_account.provider_user_id = provider_user_id
+        # The 409 check above guarantees this row's user_id already equals
+        # user_id (find_user_by_oauth() and this query select the same row
+        # by construction) — this is a profile refresh of an
+        # already-linked identity, never a new link, so provider_user_id
+        # is never reassigned here.
         oauth_account.email = email
         oauth_account.name = name
         oauth_account.picture_url = picture_url
