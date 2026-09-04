@@ -51,6 +51,33 @@ COMPONENT="${1:-${COMPONENT:-control-plane}}"
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31m!! %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Resolve THIS HOST's public origin for the edition smoke gate (#08e44245).
+# Kept as its own small, pure function — reads a file, touches no network or
+# docker — precisely so it can be tested in isolation (extracted with sed and
+# sourced, see scripts/test_deploy_smoke_url.sh) without sourcing the rest of
+# this script, which would trigger a real deploy via the dispatch at the
+# bottom. SMOKE_URL always wins when set. Otherwise reads CORS_ALLOWED_ORIGINS
+# from $1/.env — the control-plane's own public origin, already required to
+# be correct per host for CORS to work at all — and takes the first origin if
+# it's a comma-separated list. Prints the resolved /server/info URL and
+# returns 0, or prints nothing and returns 1 if no valid http(s) origin could
+# be determined (the caller must fail closed on that, not fall back to a
+# guessed domain).
+resolve_smoke_url() {
+  local relay_dir="$1"
+  if [ -n "${SMOKE_URL:-}" ]; then
+    printf '%s\n' "$SMOKE_URL"
+    return 0
+  fi
+  local _origin
+  _origin="$(grep -m1 '^CORS_ALLOWED_ORIGINS=' "$relay_dir/.env" 2>/dev/null | cut -d= -f2- | cut -d, -f1)"
+  case "$_origin" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s/server/info\n' "${_origin%/}"
+}
+
 case "$COMPONENT" in
   control-plane|web-publish|all) ;;
   *) die "unknown component '$COMPONENT' (expected control-plane|web-publish|all)" ;;
@@ -178,8 +205,11 @@ deploy_control_plane() {
   #    Hits /server/info after a successful health-check to verify the running image
   #    is the enterprise build (edition=enterprise + billing_enabled=true).
   #    If not, rolls back to the :prev image automatically.
-  #    Override SMOKE_URL if the server info endpoint is at a different URL.
-  local smoke_url="${SMOKE_URL:-https://cp.tr.entire.vc/server/info}"
+  #    smoke_url is per-host, never hardcoded — see resolve_smoke_url() above
+  #    (#08e44245: a hardcoded default meant a deploy on the newer tr-ru-vm
+  #    host silently smoke-tested tr-relay-vm's prod instance instead).
+  local smoke_url
+  smoke_url="$(resolve_smoke_url "$RELAY_DIR")" || die "Cannot determine this host's public origin for the smoke gate — CORS_ALLOWED_ORIGINS not found (or not a URL) in $RELAY_DIR/.env. Refusing to smoke-test a guessed domain; set SMOKE_URL explicitly or fix .env."
   log "checking edition smoke gate ($smoke_url)"
   local _edition="" _billing="False" _resp
   for _i in $(seq 1 5); do
