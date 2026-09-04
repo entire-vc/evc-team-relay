@@ -473,6 +473,104 @@ class TestBillingWebhook:
         db_session.refresh(user)
         assert user.billing_subscription_id == "sub_xyz"
 
+    def test_webhook_finds_user_via_oauth_provider_user_id_when_casdoor_id_is_null(
+        self, client: TestClient, db_session
+    ):
+        """The bug (#c44c6e87): no code path ever writes users.casdoor_id (87%
+        NULL on prod) — billing_service.get_billing_identity() actually sends
+        the OAuth provider_user_id. Before the fix, the webhook looked up
+        strictly by users.casdoor_id and silently dropped this case."""
+        from app.db import models
+
+        token = register_and_login(client, "webhook-oauth-user@example.com")
+        user = db_session.query(models.User).filter_by(email="webhook-oauth-user@example.com").one()
+        assert user.casdoor_id is None
+
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client",
+            client_secret_encrypted="secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.flush()
+        db_session.add(
+            models.UserOAuthAccount(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                provider_id=provider.id,
+                provider_user_id="oauth-subject-not-casdoor-id",
+                email=user.email,
+            )
+        )
+        db_session.commit()
+
+        self._post_webhook(
+            client,
+            {
+                "event": "subscription.created",
+                "data": {
+                    "user_id": "oauth-subject-not-casdoor-id",
+                    "subscription_id": "sub_via_oauth",
+                },
+            },
+        )
+
+        db_session.refresh(user)
+        assert user.billing_subscription_id == "sub_via_oauth"
+
+    def test_webhook_finds_user_via_internal_id_fallback(self, client: TestClient, db_session):
+        """get_billing_identity()'s third fallback (no casdoor_id, no OAuth
+        account) sends str(user.id) — the reverse lookup must resolve that
+        too, not just the two OAuth-shaped forms."""
+        from app.db import models
+
+        token = register_and_login(client, "webhook-internal-id-user@example.com")
+        user = (
+            db_session.query(models.User)
+            .filter_by(email="webhook-internal-id-user@example.com")
+            .one()
+        )
+        assert user.casdoor_id is None
+
+        self._post_webhook(
+            client,
+            {
+                "event": "subscription.created",
+                "data": {"user_id": str(user.id), "subscription_id": "sub_via_internal_id"},
+            },
+        )
+
+        db_session.refresh(user)
+        assert user.billing_subscription_id == "sub_via_internal_id"
+
+    def test_webhook_unresolvable_user_id_logs_warning_instead_of_silent_drop(
+        self, client: TestClient, caplog
+    ):
+        """A miss used to be `if user: ...` with no else — the
+        subscription_id vanished with zero error signal. It must now log
+        with the user_id so the miss is at least visible."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="app.api.routers.billing_webhooks"):
+            resp, _ = self._post_webhook(
+                client,
+                {
+                    "event": "subscription.created",
+                    "data": {"user_id": "no-such-user-anywhere", "subscription_id": "sub_lost"},
+                },
+            )
+        assert resp.status_code == 200
+        assert any(
+            "no-such-user-anywhere" in str(record.__dict__.get("user_id", ""))
+            or "no-such-user-anywhere" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_no_secret_configured_rejects_all(self, client: TestClient):
         os.environ.pop("BILLING_WEBHOOK_SECRET", None)
         get_settings.cache_clear()

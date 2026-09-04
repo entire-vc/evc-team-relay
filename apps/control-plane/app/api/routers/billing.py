@@ -30,14 +30,13 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 def _get_casdoor_id(db: Session, user: models.User) -> str:
-    """Get Casdoor UUID for a user (for billing API calls)."""
-    if user.casdoor_id:
-        return user.casdoor_id
-    # Fallback: look up in oauth_accounts
-    oauth = db.query(models.UserOAuthAccount).filter_by(user_id=user.id).first()
-    if oauth:
-        return oauth.provider_user_id
-    return str(user.id)
+    """Get Casdoor UUID for a user (for billing API calls).
+
+    Delegates to billing_service.get_billing_identity() — the single place
+    this resolution lives, so billing_webhooks.py's reverse lookup
+    (find_user_by_billing_identity) can never drift out of sync with it.
+    """
+    return billing_service.get_billing_identity(db, user)
 
 
 @router.get("/plan")

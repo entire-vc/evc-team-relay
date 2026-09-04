@@ -123,14 +123,26 @@ async def billing_webhook(
     if user_id:
         billing_service.invalidate_cache(user_id)
 
-    # Store subscription_id on user if provided
+    # Store subscription_id on user if provided. user_id here is whatever
+    # billing_service.get_billing_identity() sent when the subscription was
+    # created — casdoor_id, an OAuth provider_user_id, or (rarely) the
+    # internal user.id — so the lookup must try all three forms, the same
+    # way find_user_by_billing_identity() does, not just casdoor_id (which
+    # no code path ever writes — see get_billing_identity()'s docstring).
     if user_id and subscription_id:
-        user = db.execute(
-            select(models.User).where(models.User.casdoor_id == user_id)
-        ).scalar_one_or_none()
+        user = billing_service.find_user_by_billing_identity(db, user_id)
         if user:
             user.billing_subscription_id = subscription_id
             db.commit()
+        else:
+            logger.warning(
+                "Billing webhook: no user found for billing identity, subscription_id not stored",
+                extra={
+                    "event_id": event_id,
+                    "user_id": user_id,
+                    "subscription_id": subscription_id,
+                },
+            )
 
     # Create audit log entry
     audit_action = _EVENT_TO_AUDIT.get(event_type)

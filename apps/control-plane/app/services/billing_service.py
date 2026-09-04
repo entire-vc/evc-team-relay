@@ -6,11 +6,13 @@ import time
 import uuid
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clients.billing_client import BillingClient, BillingServiceError
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.db import models
 from app.services.billing_stub import (
     _format_entitlement_value,
     cancel_stub_subscription,
@@ -28,6 +30,52 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # Singleton billing client (lazy init)
 _billing_client: BillingClient | None = None
+
+
+def get_billing_identity(db: Session, user: models.User) -> str:
+    """Resolve the identity string sent to Billing Service for a user.
+
+    Priority: users.casdoor_id (rarely set — see models.py, a 02/2026
+    billing-pilot rudiment no code path writes) -> the user's linked OAuth
+    provider_user_id -> the internal user.id as a last resort for users with
+    neither. find_user_by_billing_identity() below is the exact reverse of
+    this, tried in the same order, so a webhook can always resolve back to
+    the user whatever form this function used when the identity was sent.
+    """
+    if user.casdoor_id:
+        return user.casdoor_id
+    oauth = db.query(models.UserOAuthAccount).filter_by(user_id=user.id).first()
+    if oauth:
+        return oauth.provider_user_id
+    return str(user.id)
+
+
+def find_user_by_billing_identity(db: Session, identity: str) -> models.User | None:
+    """Reverse of get_billing_identity(): resolve a User from an identity
+    string Billing Service echoes back in a webhook payload. Tries the same
+    three forms get_billing_identity() can produce, in the same order —
+    without this, a lookup keyed on casdoor_id alone misses the ~87% of
+    users whose identity was actually sent as their OAuth provider_user_id.
+    """
+    user = db.execute(
+        select(models.User).where(models.User.casdoor_id == identity)
+    ).scalar_one_or_none()
+    if user:
+        return user
+
+    oauth = db.execute(
+        select(models.UserOAuthAccount).where(models.UserOAuthAccount.provider_user_id == identity)
+    ).scalar_one_or_none()
+    if oauth:
+        return db.execute(
+            select(models.User).where(models.User.id == oauth.user_id)
+        ).scalar_one_or_none()
+
+    try:
+        user_uuid = uuid.UUID(identity)
+    except ValueError:
+        return None
+    return db.execute(select(models.User).where(models.User.id == user_uuid)).scalar_one_or_none()
 
 
 def _get_limit(entitlements: dict[str, Any], key: str) -> int | None:
@@ -95,8 +143,7 @@ class VisibilityNotAllowedError(Exception):
         self.allowed = allowed
         self.plan = plan
         super().__init__(
-            f"Visibility '{visibility}' not allowed on plan {plan}. "
-            f"Allowed: {', '.join(allowed)}"
+            f"Visibility '{visibility}' not allowed on plan {plan}. Allowed: {', '.join(allowed)}"
         )
 
 
