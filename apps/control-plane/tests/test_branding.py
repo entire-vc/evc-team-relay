@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi.testclient import TestClient
+
+from app.core.config import get_settings
+from app.services import instance_settings_service
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -15,24 +20,55 @@ def login(client: TestClient, email: str, password: str) -> str:
     return response.json()["access_token"]
 
 
+def _set_origin(cors_origin: str) -> None:
+    """Set the instance's own origin explicitly for a test, via
+    CORS_ALLOWED_ORIGINS (the fallback source _this_instance_origin() reads
+    once CONTROL_PLANE_PUBLIC_URL is confirmed absent-or-placeholder).
+
+    A test asserting against an origin it named itself is testing behavior;
+    a test asserting against whatever config.py's Field default happens to
+    be is testing that default, not the resolution logic — flagged by
+    Daedalus's review on #5f51a2dd MR !269. Also clears
+    CONTROL_PLANE_PUBLIC_URL so the test genuinely exercises the fallback
+    path rather than incidentally reading a real value some other test (or
+    the host environment) left behind.
+    """
+    os.environ.pop("CONTROL_PLANE_PUBLIC_URL", None)
+    os.environ["CORS_ALLOWED_ORIGINS"] = cors_origin
+    get_settings.cache_clear()
+
+
+def _clear_origin() -> None:
+    os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+    os.environ.pop("CONTROL_PLANE_PUBLIC_URL", None)
+    get_settings.cache_clear()
+
+
 def test_server_info_includes_branding(client):
     """Test that GET /server/info includes branding information."""
-    response = client.get("/server/info")
-    assert response.status_code == 200
+    _set_origin("https://cp.tr.entire.vc")
+    try:
+        response = client.get("/server/info")
+        assert response.status_code == 200
 
-    data = response.json()
-    assert "branding" in data
+        data = response.json()
+        assert "branding" in data
 
-    # Check branding structure
-    branding = data["branding"]
-    assert "name" in branding
-    assert "logo_url" in branding
-    assert "favicon_url" in branding
+        # Check branding structure
+        branding = data["branding"]
+        assert "name" in branding
+        assert "logo_url" in branding
+        assert "favicon_url" in branding
 
-    # Default values should be present
-    assert branding["name"] == "Relay Server"
-    assert branding["logo_url"] == "/static/img/evc-ava.png"
-    assert branding["favicon_url"] == "/static/img/evc-ava.svg"
+        # Default values should be present, and absolutized against this
+        # instance's own origin (#5f51a2dd) — never bare relative paths,
+        # which a client with no page to resolve against (the Obsidian
+        # plugin) can't use at all.
+        assert branding["name"] == "Relay Server"
+        assert branding["logo_url"] == "https://cp.tr.entire.vc/static/img/evc-ava.png"
+        assert branding["favicon_url"] == "https://cp.tr.entire.vc/static/img/evc-ava.svg"
+    finally:
+        _clear_origin()
 
 
 def test_server_info_branding_no_auth_required(client):
@@ -54,14 +90,18 @@ def test_admin_get_branding_requires_admin(client, test_user):
 
 def test_admin_get_branding_success(client):
     """Test that admin can get branding settings."""
-    admin_token = login(client, "bootstrap@example.com", "super-secret")
-    response = client.get("/admin/settings/branding", headers=auth_headers(admin_token))
-    assert response.status_code == 200
+    _set_origin("https://cp.tr.entire.vc")
+    try:
+        admin_token = login(client, "bootstrap@example.com", "super-secret")
+        response = client.get("/admin/settings/branding", headers=auth_headers(admin_token))
+        assert response.status_code == 200
 
-    data = response.json()
-    assert data["name"] == "Relay Server"
-    assert data["logo_url"] == "/static/img/evc-ava.png"
-    assert data["favicon_url"] == "/static/img/evc-ava.svg"
+        data = response.json()
+        assert data["name"] == "Relay Server"
+        assert data["logo_url"] == "https://cp.tr.entire.vc/static/img/evc-ava.png"
+        assert data["favicon_url"] == "https://cp.tr.entire.vc/static/img/evc-ava.svg"
+    finally:
+        _clear_origin()
 
 
 def test_admin_update_branding_requires_admin(client, test_user):
@@ -120,15 +160,22 @@ def test_admin_update_branding_reflected_in_server_info(client):
     )
     assert response.status_code == 200
 
-    # Check server info
+    # set_branding() itself stores exactly what was sent, unmodified — the
+    # PATCH endpoint's own response is the raw stored value, not absolutized.
+    data = response.json()
+    assert data["logo_url"] == "/custom-logo.svg"
+
+    # Check server info — get_branding() DOES absolutize a stored relative
+    # URL (#5f51a2dd), since this is the read path an external client
+    # (the Obsidian plugin, no page of its own) actually consumes.
     response = client.get("/server/info")
     assert response.status_code == 200
 
     data = response.json()
     branding = data["branding"]
     assert branding["name"] == "Custom Instance"
-    assert branding["logo_url"] == "/custom-logo.svg"
-    assert branding["favicon_url"] == "/custom-favicon.ico"
+    assert branding["logo_url"] == "https://cp.tr.entire.vc/custom-logo.svg"
+    assert branding["favicon_url"] == "https://cp.tr.entire.vc/custom-favicon.ico"
 
 
 def test_admin_update_branding_validation_name_required(client):
@@ -279,3 +326,143 @@ def test_branding_defaults_when_no_settings_exist(client):
     assert isinstance(branding["name"], str)
     assert isinstance(branding["logo_url"], str)
     assert isinstance(branding["favicon_url"], str)
+
+
+# ---------------------------------------------------------------------------
+# #5f51a2dd — logo_url/favicon_url must be absolute, and per-host: an
+# instance's branding URLs must point at ITS OWN origin, not whichever
+# origin happened to be the default. This is the actual reported bug: a
+# second instance (teamrelay.ru) that never explicitly set branding URLs
+# served bare relative paths ("/static/img/evc-ava.png"), which the
+# Obsidian plugin's server list — no page of its own to resolve against —
+# could not render.
+# ---------------------------------------------------------------------------
+
+
+class TestBrandingAbsoluteUrls:
+    def _set_cors_origin(self, origin: str):
+        os.environ["CORS_ALLOWED_ORIGINS"] = origin
+        get_settings.cache_clear()
+
+    def teardown_method(self):
+        os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+        get_settings.cache_clear()
+
+    def test_default_relative_logo_is_absolutized_to_this_instances_own_origin(self, client):
+        """The actual bug shape: an instance whose CORS origin is NOT the
+        default cp.tr.entire.vc must get ITS OWN origin on the default
+        (never-explicitly-set) logo/favicon — not the other instance's."""
+        self._set_cors_origin("https://cp.teamrelay.ru")
+
+        response = client.get("/server/info")
+        assert response.status_code == 200
+        branding = response.json()["branding"]
+        assert branding["logo_url"] == "https://cp.teamrelay.ru/static/img/evc-ava.png"
+        assert branding["favicon_url"] == "https://cp.teamrelay.ru/static/img/evc-ava.svg"
+        # Must NOT silently be the other (default) instance's origin.
+        assert "cp.tr.entire.vc" not in branding["logo_url"]
+
+    def test_REGRESSION_relative_url_is_no_longer_served_bare(self, db_session, client):
+        """Must fail on the pre-fix code: get_branding() used to return
+        DEFAULT_BRANDING's relative paths completely unresolved."""
+        self._set_cors_origin("https://cp.teamrelay.ru")
+        branding = instance_settings_service.get_branding(db_session)
+        assert not branding["logo_url"].startswith(
+            "/"
+        ), f"logo_url is still a bare relative path: {branding['logo_url']!r}"
+        assert branding["logo_url"].startswith("https://cp.teamrelay.ru/")
+
+    def test_already_absolute_stored_url_is_never_rewritten(self, db_session, client):
+        """An admin-set absolute URL (any host, even a CDN) passes through
+        untouched — this only fills in a MISSING origin, never overrides one
+        that's already there."""
+        self._set_cors_origin("https://cp.teamrelay.ru")
+        instance_settings_service.set_branding(
+            db_session,
+            name="Custom",
+            logo_url="https://cdn.example.com/logo.png",
+            favicon_url="https://cdn.example.com/favicon.svg",
+        )
+        branding = instance_settings_service.get_branding(db_session)
+        assert branding["logo_url"] == "https://cdn.example.com/logo.png"
+        assert branding["favicon_url"] == "https://cdn.example.com/favicon.svg"
+
+    def test_wildcard_cors_origin_does_not_produce_a_garbage_url(self, db_session, client):
+        """CORS_ALLOWED_ORIGINS='*' (a real documented dev-only value, per
+        infra/env.example) is not a URL — must not get concatenated into
+        something like '*/static/img/...'. Falls back to leaving the path
+        relative rather than fabricating a bogus absolute URL."""
+        self._set_cors_origin("*")
+        branding = instance_settings_service.get_branding(db_session)
+        assert not branding["logo_url"].startswith("*")
+
+    def test_comma_separated_cors_origins_uses_the_first(self, db_session, client):
+        self._set_cors_origin("https://cp.teamrelay.ru,https://staging.teamrelay.ru")
+        branding = instance_settings_service.get_branding(db_session)
+        assert branding["logo_url"].startswith("https://cp.teamrelay.ru/")
+
+
+# ---------------------------------------------------------------------------
+# #5f51a2dd, Daedalus's MR !269 review: CORS_ALLOWED_ORIGINS-only was wrong.
+# It "worked" on tr.entire.vc only because config.py's Field default happens
+# to equal that host's real domain — tr-relay-vm's actual .env has no CORS/
+# ORIGIN key at all (same live measurement as #08e44245). The correct primary
+# source is settings.control_plane_public_url, confirmed live inside both
+# running containers (`docker compose exec control-plane env`) to hold the
+# real per-host value on tr-relay-vm AND tr-ru-vm, contradicting this file's
+# own earlier claim (in the first version of this fix) that the field is
+# "never wired" — it IS, via docker-compose.yml's `env_file: ./.env`, which
+# loads the whole file, not just keys also listed under `environment:`.
+# ---------------------------------------------------------------------------
+
+
+class TestBrandingControlPlanePublicUrlPriority:
+    def _set(self, *, control_plane_public_url: str | None = None, cors_origin: str | None = None):
+        if control_plane_public_url is None:
+            os.environ.pop("CONTROL_PLANE_PUBLIC_URL", None)
+        else:
+            os.environ["CONTROL_PLANE_PUBLIC_URL"] = control_plane_public_url
+        if cors_origin is None:
+            os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["CORS_ALLOWED_ORIGINS"] = cors_origin
+        get_settings.cache_clear()
+
+    def teardown_method(self):
+        os.environ.pop("CONTROL_PLANE_PUBLIC_URL", None)
+        os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+        get_settings.cache_clear()
+
+    def test_control_plane_public_url_wins_when_it_disagrees_with_cors(self, db_session, client):
+        """The actual regression this fix closes: when the two sources
+        disagree, control_plane_public_url must win — it's the field that's
+        semantically "my own public address"; cors_allowed_origins is a
+        fallback that happened to coincide with the right answer on one
+        host only by the accident of a matching code default."""
+        self._set(
+            control_plane_public_url="https://cp.teamrelay.ru",
+            cors_origin="https://some-other-origin.example",
+        )
+        branding = instance_settings_service.get_branding(db_session)
+        assert branding["logo_url"].startswith("https://cp.teamrelay.ru/")
+        assert "some-other-origin" not in branding["logo_url"]
+
+    def test_unset_control_plane_public_url_falls_back_to_cors(self, db_session, client):
+        """control_plane_public_url left unset (its Pydantic default,
+        "http://localhost:8000") must NOT be treated as a real value —
+        fall through to cors_allowed_origins instead of absolutizing to a
+        URL that resolves nowhere real."""
+        self._set(control_plane_public_url=None, cors_origin="https://cp.teamrelay.ru")
+        branding = instance_settings_service.get_branding(db_session)
+        assert branding["logo_url"].startswith("https://cp.teamrelay.ru/")
+        assert "localhost" not in branding["logo_url"]
+
+    def test_neither_source_set_leaves_url_relative(self, db_session, client):
+        """cors_allowed_origins itself defaults to a real-looking URL in
+        config.py, so exercise the true "nothing usable" case directly
+        against _this_instance_origin() rather than through get_branding(),
+        which would otherwise inherit that unrelated default."""
+        from app.services.instance_settings_service import _this_instance_origin
+
+        self._set(control_plane_public_url=None, cors_origin="")
+        assert _this_instance_origin() is None
