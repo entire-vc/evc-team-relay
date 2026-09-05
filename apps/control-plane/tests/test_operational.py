@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -71,6 +72,55 @@ def test_version_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert "version" in data
+    assert "build_sha" in data
+
+
+def test_version_reports_the_deployed_commit(client: TestClient, tmp_path, monkeypatch) -> None:
+    """A real BUILD_SHA is reported verbatim."""
+    from app.api.routers import health
+
+    sha = "a" * 40
+    sha_file = tmp_path / "BUILD_SHA"
+    sha_file.write_text(sha + "\n", encoding="utf-8")
+    monkeypatch.setattr(health, "BUILD_SHA_PATH", sha_file)
+
+    data = client.get("/version").json()
+    assert data["build_sha"] == sha
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        None,  # file absent entirely
+        "",  # present but empty
+        "   \n",  # whitespace only
+        "deadbeef",  # truncated — a short prefix must not pass as a commit
+        "not-a-sha-at-all-not-a-sha-at-all-notyet",
+        "A" * 40,  # uppercase: git writes lowercase, so this is not our file
+    ],
+)
+def test_version_reports_unknown_rather_than_guessing(
+    client: TestClient, tmp_path, monkeypatch, contents
+) -> None:
+    """
+    Anything that is not a full lowercase 40-hex commit reads as "unknown".
+
+    This is the half that matters: a freshness check must be able to tell "I
+    could not read the version" from "the version matches". If a truncated or
+    half-written file were returned verbatim, a comparison against the canon
+    HEAD would simply never match and the checker would look permanently red
+    for the wrong reason; if an absent file returned something falsy that a
+    checker skipped over, it would look permanently green. Both are worse than
+    an explicit "unknown" the checker is told to fail on.
+    """
+    from app.api.routers import health
+
+    sha_file = tmp_path / "BUILD_SHA"
+    if contents is not None:
+        sha_file.write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(health, "BUILD_SHA_PATH", sha_file)
+
+    assert client.get("/version").json()["build_sha"] == "unknown"
 
 
 def test_rate_limit_login(client: TestClient) -> None:

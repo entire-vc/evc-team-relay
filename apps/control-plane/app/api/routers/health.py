@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
@@ -96,7 +98,50 @@ def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus | JSO
     return body
 
 
+# The deploy writes the commit it shipped into app/BUILD_SHA; see
+# `read_build_sha()` for why it lives inside the package directory and what
+# "unknown" means.
+BUILD_SHA_PATH = Path(__file__).resolve().parents[2] / "BUILD_SHA"
+
+
+def read_build_sha() -> str:
+    """
+    The commit this build was made from, or "unknown".
+
+    ## Why a file, and why inside `app/`
+
+    `api_version` is a constant in `config.py` ("0.1.0"). It has never moved and
+    is not meant to: it describes the API contract, not the deployment. So
+    nothing this service exposed could distinguish a build from an hour ago from
+    one from a month ago, and a stale container answers `/health` with
+    `{"ok": true}` exactly like a current one. That is the gap this closes.
+
+    The deploy pipeline writes the cloned commit into `app/BUILD_SHA` before the
+    source is rsynced to the host. It has to be INSIDE `app/` because the
+    Dockerfile copies selectively -- `COPY app /app/app`, not `COPY . .`. A file
+    at the control-plane root would be rsynced to the server, look correct in
+    every listing, and never enter the image; the endpoint would then report
+    "unknown" forever while everything appeared wired up.
+
+    ## "unknown" is a failure, not a default
+
+    Absent file, unreadable file, empty file -- all return "unknown", and any
+    freshness check reading this endpoint MUST treat "unknown" as a failure
+    rather than skipping the comparison. A checker that cannot tell "I could not
+    read the version" from "the version matches" is the exact shape of gate this
+    endpoint exists to make unnecessary.
+    """
+    try:
+        sha = BUILD_SHA_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+    # A truncated or half-written file must not read as a real commit.
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return "unknown"
+    return sha
+
+
 @router.get("/version")
 def version() -> dict[str, str]:
     settings = get_settings()
-    return {"version": settings.api_version}
+    return {"version": settings.api_version, "build_sha": read_build_sha()}
