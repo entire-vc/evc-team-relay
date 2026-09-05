@@ -53,3 +53,14 @@ class OAuthUserInfo(BaseModel):
     name: str | None = Field(None, description="User display name")
     picture: str | None = Field(None, description="User profile picture URL")
     groups: list[str] = Field(default_factory=list, description="User groups from IAM")
+    email_verified: bool = Field(
+        default=False,
+        description=(
+            "Whether the IdP has confirmed ownership of `email`. Sourced from the "
+            "validated id_token, NEVER from the /api/userinfo endpoint — Casdoor's "
+            "userinfo hardcodes this field to `true` whenever the `email` scope is "
+            "granted, regardless of the account's real verification state (#970e22f4). "
+            "Default False is deliberate fail-closed: a missing/unvalidatable claim "
+            "must read as unverified, never as verified."
+        ),
+    )

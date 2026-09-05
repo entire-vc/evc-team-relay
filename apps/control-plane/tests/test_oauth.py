@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt as pyjwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -1194,3 +1197,433 @@ class TestCorsAllowlistConfig:
         s = Settings()
         assert "*" not in s.cors_allowed_origins
         assert "cp.tr.entire.vc" in s.cors_allowed_origins
+
+
+def _make_rsa_keypair():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+
+def _make_id_token(private_key, **claim_overrides):
+    now = datetime.now(timezone.utc)
+    claims = {
+        "iss": "https://casdoor.example.com",
+        "aud": "test_client",
+        "sub": "casdoor-sub-1",
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+    }
+    claims.update(claim_overrides)
+    return pyjwt.encode(claims, private_key, algorithm="RS256")
+
+
+def _make_provider(**overrides):
+    defaults = dict(
+        id=uuid.uuid4(),
+        name="casdoor",
+        provider_type=models.OAuthProviderType.OIDC,
+        issuer_url="https://casdoor.example.com",
+        client_id="test_client",
+        client_secret_encrypted="secret",
+        enabled=True,
+        auto_register=True,
+    )
+    defaults.update(overrides)
+    return models.OAuthProvider(**defaults)
+
+
+_DISCOVERY = {
+    "jwks_uri": "https://casdoor.example.com/.well-known/jwks",
+    "issuer": "https://casdoor.example.com",
+    "id_token_signing_alg_values_supported": ["RS256"],
+}
+
+
+class TestValidateIdToken:
+    """Direct crypto tests for validate_id_token() (#f1e6f0dc).
+
+    Only the network fetch (discovery + JWKS) is mocked; jwt.decode() runs
+    for real, so a wrong key / wrong issuer / wrong audience / expired token
+    is rejected by PyJWT itself, not by an assertion we wrote ourselves.
+    """
+
+    def _mocked_client(self, public_key):
+        client = MagicMock()
+        client.get_signing_key_from_jwt.return_value = SimpleNamespace(key=public_key)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_accepts_correctly_signed_token(self):
+        private_key, public_key = _make_rsa_keypair()
+        token = _make_id_token(private_key, email_verified=True, email="a@example.com")
+        provider = _make_provider()
+
+        with (
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch(
+                "app.services.oauth_service._get_jwks_client",
+                return_value=self._mocked_client(public_key),
+            ),
+        ):
+            claims = await oauth_service.validate_id_token(provider, token)
+
+        assert claims["email_verified"] is True
+        assert claims["sub"] == "casdoor-sub-1"
+
+    @pytest.mark.asyncio
+    async def test_rejects_wrong_signing_key(self):
+        """Token signed with one key, JWKS serves a DIFFERENT one — the
+        exact shape of a forged/unvalidated token being trusted."""
+        private_key, _ = _make_rsa_keypair()
+        _, wrong_public_key = _make_rsa_keypair()
+        token = _make_id_token(private_key, email_verified=True)
+        provider = _make_provider()
+
+        with (
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch(
+                "app.services.oauth_service._get_jwks_client",
+                return_value=self._mocked_client(wrong_public_key),
+            ),
+            pytest.raises(pyjwt.InvalidSignatureError),
+        ):
+            await oauth_service.validate_id_token(provider, token)
+
+    @pytest.mark.asyncio
+    async def test_rejects_wrong_audience(self):
+        """Token issued for a DIFFERENT client_id than ours must be rejected —
+        otherwise a token minted for another application on the same IdP
+        would be accepted here."""
+        private_key, public_key = _make_rsa_keypair()
+        token = _make_id_token(private_key, aud="some-other-client", email_verified=True)
+        provider = _make_provider(client_id="test_client")
+
+        with (
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch(
+                "app.services.oauth_service._get_jwks_client",
+                return_value=self._mocked_client(public_key),
+            ),
+            pytest.raises(pyjwt.InvalidAudienceError),
+        ):
+            await oauth_service.validate_id_token(provider, token)
+
+    @pytest.mark.asyncio
+    async def test_rejects_expired_token(self):
+        private_key, public_key = _make_rsa_keypair()
+        past = datetime.now(timezone.utc) - timedelta(minutes=10)
+        token = _make_id_token(
+            private_key, email_verified=True, iat=past, exp=past + timedelta(minutes=1)
+        )
+        provider = _make_provider()
+
+        with (
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch(
+                "app.services.oauth_service._get_jwks_client",
+                return_value=self._mocked_client(public_key),
+            ),
+            pytest.raises(pyjwt.ExpiredSignatureError),
+        ):
+            await oauth_service.validate_id_token(provider, token)
+
+
+class TestGetUserInfoEmailVerifiedSource:
+    """get_user_info() must source email_verified from the id_token, never
+    from /api/userinfo (#f1e6f0dc / #970e22f4)."""
+
+    def _mock_userinfo_http(self, userinfo_json: dict):
+        """Patch the AsyncOAuth2Client used to hit /api/userinfo."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = userinfo_json
+        mock_client_instance = AsyncMock()
+        mock_client_instance.get = AsyncMock(return_value=mock_response)
+        mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+        mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+        return patch(
+            "app.services.oauth_service.AsyncOAuth2Client", return_value=mock_client_instance
+        )
+
+    @pytest.mark.asyncio
+    async def test_userinfo_claims_verified_but_id_token_says_unverified(self):
+        """THE tamper-control from #f1e6f0dc's acceptance criteria: userinfo
+        (which Casdoor always reports as email_verified=true when the email
+        scope is granted) says verified; id_token says NOT verified. The
+        result must follow the id_token — this is the regression test that
+        would catch the fix being silently reverted to trust userinfo again.
+        """
+        private_key, public_key = _make_rsa_keypair()
+        id_token = _make_id_token(private_key, email_verified=False, email="victim@example.com")
+        provider = _make_provider()
+
+        with (
+            self._mock_userinfo_http(
+                {
+                    "sub": "casdoor-sub-1",
+                    "email": "victim@example.com",
+                    "email_verified": True,  # userinfo LIES — must be ignored
+                }
+            ),
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch("app.services.oauth_service._get_jwks_client") as mock_get_client,
+        ):
+            mock_client = MagicMock()
+            mock_client.get_signing_key_from_jwt.return_value = SimpleNamespace(key=public_key)
+            mock_get_client.return_value = mock_client
+
+            userinfo = await oauth_service.get_user_info(
+                provider, {"access_token": "fake-token", "id_token": id_token}
+            )
+
+        assert userinfo.email_verified is False
+
+    @pytest.mark.asyncio
+    async def test_valid_verified_id_token_is_trusted(self):
+        """Positive control: a genuinely verified id_token DOES produce
+        email_verified=True, proving the gate isn't just permanently closed."""
+        private_key, public_key = _make_rsa_keypair()
+        id_token = _make_id_token(private_key, email_verified=True, email="real@example.com")
+        provider = _make_provider()
+
+        with (
+            self._mock_userinfo_http(
+                {"sub": "casdoor-sub-1", "email": "real@example.com", "email_verified": True}
+            ),
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                return_value=_DISCOVERY,
+            ),
+            patch("app.services.oauth_service._get_jwks_client") as mock_get_client,
+        ):
+            mock_client = MagicMock()
+            mock_client.get_signing_key_from_jwt.return_value = SimpleNamespace(key=public_key)
+            mock_get_client.return_value = mock_client
+
+            userinfo = await oauth_service.get_user_info(
+                provider, {"access_token": "fake-token", "id_token": id_token}
+            )
+
+        assert userinfo.email_verified is True
+
+    @pytest.mark.asyncio
+    async def test_missing_id_token_fails_closed(self):
+        """No id_token in the token response at all (e.g. 'openid' scope not
+        granted) must default to email_verified=False, not raise and not
+        default to True."""
+        provider = _make_provider()
+
+        with self._mock_userinfo_http(
+            {"sub": "casdoor-sub-1", "email": "noidtoken@example.com", "email_verified": True}
+        ):
+            userinfo = await oauth_service.get_user_info(
+                provider,
+                {"access_token": "fake-token"},  # no id_token key at all
+            )
+
+        assert userinfo.email_verified is False
+
+    @pytest.mark.asyncio
+    async def test_unparseable_id_token_fails_closed(self):
+        """A garbage id_token (network hiccup during JWKS fetch, malformed
+        token, whatever) must fail closed to email_verified=False rather
+        than raise out of the whole login flow."""
+        provider = _make_provider()
+
+        with (
+            self._mock_userinfo_http(
+                {"sub": "casdoor-sub-1", "email": "garbage@example.com", "email_verified": True}
+            ),
+            patch(
+                "app.services.oauth_service._discover_oidc_config",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("network unreachable"),
+            ),
+        ):
+            userinfo = await oauth_service.get_user_info(
+                provider, {"access_token": "fake-token", "id_token": "not-a-real-jwt"}
+            )
+
+        assert userinfo.email_verified is False
+
+
+class TestOAuthCallbackEmailVerifiedGate:
+    """Router-level red/green controls for the account-linking gate
+    (#f1e6f0dc). Mirrors TestOAuthCallbackSessionNotification's pattern:
+    mock exchange_code_for_tokens + get_user_info, hit the real callback."""
+
+    def _make_existing_user(self, db_session: Session, email: str) -> models.User:
+        user = models.User(
+            id=uuid.uuid4(),
+            email=email,
+            password_hash="hash",
+            is_admin=False,
+            is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+        return user
+
+    def _make_provider_row(self, db_session: Session) -> models.OAuthProvider:
+        provider = models.OAuthProvider(
+            id=uuid.uuid4(),
+            name="casdoor",
+            provider_type=models.OAuthProviderType.OIDC,
+            issuer_url="https://casdoor.example.com",
+            client_id="test_client_id",
+            client_secret_encrypted="test_secret",
+            enabled=True,
+            auto_register=True,
+        )
+        db_session.add(provider)
+        db_session.commit()
+        return provider
+
+    def _run_callback(
+        self,
+        client: TestClient,
+        provider: models.OAuthProvider,
+        email: str,
+        email_verified: bool,
+        sub: str = "new-casdoor-sub",
+    ):
+        from app.schemas.oauth import OAuthStateData, OAuthUserInfo
+
+        state = oauth_service.encode_state(
+            OAuthStateData(
+                code_verifier="test-verifier-1234567890abcdefghijklmno",
+                redirect_uri="https://cp.example.com/callback",
+            )
+        )
+        userinfo = OAuthUserInfo(
+            sub=sub,
+            email=email,
+            name="Some User",
+            groups=[],
+            email_verified=email_verified,
+        )
+        with (
+            patch(
+                "app.api.routers.oauth.oauth_service.exchange_code_for_tokens",
+                new_callable=AsyncMock,
+                return_value={"access_token": "fake-provider-access-token"},
+            ),
+            patch(
+                "app.api.routers.oauth.oauth_service.get_user_info",
+                new_callable=AsyncMock,
+                return_value=userinfo,
+            ),
+        ):
+            return client.get(
+                f"/v1/auth/oauth/{provider.name}/callback",
+                params={"code": "fake-code", "state": state},
+            )
+
+    def test_RED_unverified_email_match_is_refused(self, client: TestClient, db_session: Session):
+        """Existing user's email, but the id_token says NOT verified — MUST
+        NOT be linked, MUST NOT issue tokens for the existing account."""
+        provider = self._make_provider_row(db_session)
+        existing = self._make_existing_user(db_session, "victim@example.com")
+
+        response = self._run_callback(
+            client, provider, email="victim@example.com", email_verified=False
+        )
+
+        assert response.status_code == 409, response.text
+        assert "already exists" in response.json().get("detail", response.text)
+
+        # No new OAuth account link was created for the existing user.
+        linked = oauth_service.find_user_by_oauth(db_session, provider.id, "new-casdoor-sub")
+        assert linked is None
+
+        # The existing user's account is untouched (no session/token issued).
+        db_session.refresh(existing)
+        accounts = db_session.query(models.UserOAuthAccount).filter_by(user_id=existing.id).all()
+        assert accounts == []
+
+        # An audit record of the DENIAL exists, naming the attempted sub + email.
+        denial = (
+            db_session.query(models.AuditLog)
+            .filter_by(action=models.AuditAction.OAUTH_ACCOUNT_LINK_DENIED)
+            .one_or_none()
+        )
+        assert denial is not None
+        assert denial.target_user_id == existing.id
+        assert denial.details["provider_user_id"] == "new-casdoor-sub"
+        assert denial.details["email"] == "victim@example.com"
+        assert denial.details["reason"] == "email_not_verified"
+
+    def test_GREEN_verified_email_match_links_as_before(
+        self, client: TestClient, db_session: Session
+    ):
+        """Same scenario, but email_verified=True — linking proceeds exactly
+        as it did before this fix."""
+        provider = self._make_provider_row(db_session)
+        existing = self._make_existing_user(db_session, "real-user@example.com")
+
+        response = self._run_callback(
+            client,
+            provider,
+            email="real-user@example.com",
+            email_verified=True,
+            sub="verified-casdoor-sub",
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["user_id"] == str(existing.id)
+
+        linked = oauth_service.find_user_by_oauth(db_session, provider.id, "verified-casdoor-sub")
+        assert linked is not None
+        assert linked.id == existing.id
+
+        # No denial record for the successful case.
+        denial = (
+            db_session.query(models.AuditLog)
+            .filter_by(action=models.AuditAction.OAUTH_ACCOUNT_LINK_DENIED)
+            .one_or_none()
+        )
+        assert denial is None
+
+    def test_unverified_no_existing_user_falls_through_to_auto_register(
+        self, client: TestClient, db_session: Session
+    ):
+        """The gate only applies to the find-by-email fallback path. A brand
+        new email (no existing account) with email_verified=False must still
+        be able to auto-register — this isn't a blanket "unverified email
+        can never log in" rule, only "can't piggyback onto someone else's
+        account by email match."""
+        provider = self._make_provider_row(db_session)
+
+        response = self._run_callback(
+            client,
+            provider,
+            email="brand-new@example.com",
+            email_verified=False,
+            sub="brand-new-sub",
+        )
+
+        assert response.status_code == 200, response.text
+        created = oauth_service.find_user_by_email(db_session, "brand-new@example.com")
+        assert created is not None
