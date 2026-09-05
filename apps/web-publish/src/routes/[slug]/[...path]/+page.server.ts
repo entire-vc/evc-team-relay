@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
-import { slugifyPath } from '$lib/file-tree';
+import { slugifyPath, hyphenatePath } from '$lib/file-tree';
 import { verifyEmbedToken } from '$lib/embed-token';
 import { renderMarkdown } from '$lib/markdown';
 import type { PageServerLoad } from './$types';
@@ -75,9 +75,14 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 			throw error(401, 'Authentication required');
 		}
 
+		// `path` is a SvelteKit [...path] rest param: already percent-decoded
+		// by the time load() sees it (decode_pathname + decode_params run
+		// before routing hands off here). Match against the plain hyphenated
+		// form, not slugifyPath's percent-encoded one — see hyphenatePath's
+		// docstring for why comparing against the encoded form never matches.
 		const folderItems = share.web_folder_items || [];
 		const file = folderItems.find(item => item.path === path)
-			|| folderItems.find(item => slugifyPath(item.path) === path);
+			|| folderItems.find(item => hyphenatePath(item.path) === path);
 
 		if (!file) {
 			throw error(404, 'File not found in this folder');

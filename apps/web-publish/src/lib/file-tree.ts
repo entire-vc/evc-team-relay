@@ -141,13 +141,40 @@ export function loadExpandedState(slug: string): Set<string> {
 }
 
 /**
- * Slugify a file path for clean URLs: replace spaces with hyphens in each segment.
- * Example: "My Folder/My File.md" → "My-Folder/My-File.md"
+ * Replace spaces with hyphens in each path segment, WITHOUT percent-encoding.
+ * This is the transform to compare against an incoming SvelteKit route
+ * param: `[...path]` params arrive already percent-decoded (SvelteKit's
+ * decode_pathname + decode_params run decodeURI then decodeURIComponent
+ * before load() ever sees them), so matching must compare against this
+ * plain, unencoded form — comparing against slugifyPath's encoded output
+ * here would never match.
  */
-export function slugifyPath(path: string): string {
+export function hyphenatePath(path: string): string {
 	return path
 		.split('/')
 		.map((s) => s.replace(/ /g, '-'))
+		.join('/');
+}
+
+/**
+ * Slugify a file path for a clean, WORKING URL: hyphenate (see
+ * hyphenatePath), then percent-encode each segment so characters that are
+ * legal in an Obsidian filename but meaningful in a URL (# would truncate
+ * into a fragment, % would be misread as an escape, ?/&/+ collide with
+ * query syntax) survive as a link instead of breaking one. Path validation
+ * on the server (app.core.path_validation) allows these characters through
+ * deliberately — this is where they get made URL-safe, not there.
+ *
+ * Example: "My Folder/Q&A #1.md" → "My-Folder/Q%26A-%231.md"
+ *
+ * Use this ONLY for building outbound hrefs. For matching an incoming
+ * request path back to an item, use hyphenatePath — SvelteKit has already
+ * undone the percent-encoding by the time a route param reaches load().
+ */
+export function slugifyPath(path: string): string {
+	return hyphenatePath(path)
+		.split('/')
+		.map((s) => encodeURIComponent(s))
 		.join('/');
 }
 

@@ -90,3 +90,85 @@ describe('folder-file load() — server-rendered HTML (contentHtml)', () => {
 		expect(data.contentHtml).toContain('not yet synced');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// [slug]/[...path] load() — matching a punctuation-bearing filename (#546ce7e3)
+// ---------------------------------------------------------------------------
+// A link built by FileTree.svelte for an item goes through slugifyPath,
+// which now percent-encodes each segment (e.g. "50% done.md" -> "50%25-done.md")
+// so the href actually works. By the time SvelteKit's [...path] rest param
+// reaches load(), it has already been percent-DECODED once by the router
+// (decode_pathname + decode_params) — so `params.path` here arrives as
+// "50%-done.md", not the encoded form. Matching must compare against the
+// plain hyphenated form (hyphenatePath), not the encoded one (slugifyPath) —
+// this is exactly the regression the old `slugifyPath(item.path) === path`
+// comparison would reintroduce the moment any encoded character appears.
+// ---------------------------------------------------------------------------
+
+describe('folder-file load() — matches items with URL-meaningful characters', () => {
+	it('matches an item via the exact-path branch when the name has parens (conflict-copy shape)', async () => {
+		const conflictCopyName = 'note (relay conflict 2026-09-05T20-25-23-268Z).md';
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({
+				web_folder_items: [{ path: conflictCopyName, name: conflictCopyName, type: 'doc' }]
+			})
+		);
+		vi.mocked(api.getFolderFileContent).mockResolvedValue({
+			path: conflictCopyName,
+			name: conflictCopyName,
+			type: 'doc',
+			content: 'conflict body'
+		});
+
+		const data = await load({
+			params: { slug: 'test-slug', path: conflictCopyName },
+			cookies: makeCookies(),
+			url: makeUrl()
+		});
+
+		expect(data.file.path).toBe(conflictCopyName);
+		expect(data.contentHtml).toContain('conflict body');
+	});
+
+	it('matches an item whose name has a space via the hyphenated-path branch, with % surviving the round trip', async () => {
+		const originalName = '50% done.md';
+		// What params.path actually looks like once SvelteKit has decoded the
+		// href slugifyPath produced ("50%25-done.md" on the wire).
+		const decodedRoutePath = '50%-done.md';
+
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({
+				web_folder_items: [{ path: originalName, name: originalName, type: 'doc' }]
+			})
+		);
+		vi.mocked(api.getFolderFileContent).mockResolvedValue({
+			path: originalName,
+			name: originalName,
+			type: 'doc',
+			content: 'progress body'
+		});
+
+		const data = await load({
+			params: { slug: 'test-slug', path: decodedRoutePath },
+			cookies: makeCookies(),
+			url: makeUrl()
+		});
+
+		expect(data.file.path).toBe(originalName);
+		expect(data.contentHtml).toContain('progress body');
+	});
+
+	it('404s when no item matches either the exact or hyphenated form', async () => {
+		vi.mocked(api.getShareBySlug).mockResolvedValue(
+			makeShare({ web_folder_items: [{ path: 'Notes/Doc.md', name: 'Doc.md', type: 'doc' }] })
+		);
+
+		await expect(
+			load({
+				params: { slug: 'test-slug', path: 'Notes/Missing.md' },
+				cookies: makeCookies(),
+				url: makeUrl()
+			})
+		).rejects.toMatchObject({ status: 404 });
+	});
+});

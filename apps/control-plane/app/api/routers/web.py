@@ -6,7 +6,6 @@ import base64
 import hashlib
 import io
 import logging
-import re
 from datetime import datetime
 from datetime import timezone as _tz
 from uuid import UUID
@@ -28,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
+from app.core.path_validation import validate_relative_path
 from app.db import models
 from app.db.session import get_db
 from app.services import share_service
@@ -1173,34 +1173,11 @@ def serve_web_asset(
 
 
 MAX_MESH_UPLOAD_SIZE = 25 * 1024 * 1024  # 25MB
-_ALLOWED_PATH_RE = re.compile(r"^[\w.\-/ ]+$", re.UNICODE)
 
 
 def _validate_upload_path(path: str) -> None:
     """Raise 400 if path is invalid for mesh artifact upload."""
-    if not path:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path is required")
-    if path.startswith("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path must be relative (no leading /)"
-        )
-    if len(path) > 512:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path too long (max 512 chars)"
-        )
-    segments = path.split("/")
-    if ".." in segments:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path traversal not allowed"
-        )
-    if path.count("/") > 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path too deep (max 6 levels)"
-        )
-    if not _ALLOWED_PATH_RE.match(path):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters"
-        )
+    validate_relative_path(path)
 
 
 @router.post("/shares/{share_identifier}/upload", status_code=status.HTTP_200_OK)
