@@ -556,7 +556,8 @@ class TestUnicodePaths:
         self, client: TestClient, test_user: models.User, db_session: Session, minio
     ):
         """The alphabet widening must not loosen the separate `..`/depth/length
-        checks in _validate_file_path — those run before the regex either way."""
+        checks in validate_relative_path — those run before the character
+        check either way."""
         share = make_folder_share(db_session, test_user)
         raw_key = make_agent_key(db_session, share)
 
@@ -567,6 +568,89 @@ class TestUnicodePaths:
             headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
         )
         assert resp.status_code == 400
+        minio.put_object.assert_not_called()
+
+
+# ── 3c. allow-list widened to Cyrillic replaced by a deny-list (#546ce7e3) ──
+#
+# The Cyrillic fix above (3b) widened the character allow-list one more time
+# — the same reactive pattern that had already missed ё once. Real vault
+# filenames routinely carry parentheses (Obsidian's own conflict-copy naming
+# convention), commas, apostrophes, &, +, %, em dashes, and emoji, none of
+# which an allow-list can be trusted to anticipate. Replaced with a deny-list
+# (app.core.path_validation.validate_relative_path): reject what's actually
+# dangerous (traversal, absolute paths, control/bidi characters, the literal
+# characters Obsidian itself forbids in filenames), allow everything else.
+
+
+class TestDenyListPathValidation:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "note (relay conflict 2026-09-05T20-25-23-268Z).md",  # the actual bug report
+            "Meeting (2026-09-01).md",
+            "Paper [draft].md",
+            "Q3 план — итоги.md",  # em dash
+            "it's mine.md",
+            "A&B.md",
+            "note+1.md",
+            "50% done.md",
+            "a,b.md",
+            "заметка 🎯.md",
+            "sub folder/деньги 2026.md",
+        ],
+    )
+    def test_realistic_filenames_with_punctuation_are_accepted(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio, path: str
+    ):
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+
+        resp = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": path},
+            content=b"content",
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "../etc/passwd",
+            "a/../../b",
+            "/abs/path",
+            "a\\b",
+            "bad?name.md",
+            "x|y.md",
+            "a<b.md",
+            'quote".md',
+            "star*.md",
+        ],
+    )
+    def test_genuinely_unsafe_paths_still_rejected(
+        self, client: TestClient, test_user: models.User, db_session: Session, minio, path: str
+    ):
+        """Negative control for the widening above — required per §0x (a
+        widening with no red-path proof is indistinguishable from turning the
+        check off). `a\\b` isn't a traversal itself, but backslash is one of
+        the literal characters Obsidian forbids in a filename, so a real
+        vault can never produce it — same reasoning as `*`/`"`/`<`/`>`/`:`/`|`/`?`.
+
+        Control characters (NUL, C0/C1, bidi overrides) are exercised at the
+        unit level in test_path_validation.py instead of here — they can't
+        reliably survive an HTTP client's own URL construction, so a failure
+        there wouldn't necessarily mean the server-side check failed."""
+        share = make_folder_share(db_session, test_user)
+        raw_key = make_agent_key(db_session, share)
+
+        resp = client.put(
+            f"{BASE}/{share.id}/sync-write",
+            params={"path": path},
+            content=b"pwned",
+            headers=key_headers(raw_key, **{"Content-Type": "text/markdown", "If-None-Match": "*"}),
+        )
+        assert resp.status_code == 400, f"expected 400 for {path!r}, got {resp.status_code}"
         minio.put_object.assert_not_called()
 
 

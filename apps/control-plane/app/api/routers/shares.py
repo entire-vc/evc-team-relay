@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-import re
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -23,6 +22,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api import deps
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
+from app.core.path_validation import validate_relative_path
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
@@ -452,7 +452,7 @@ async def sync_write_file(
         request, share, db, current_user, required_scope="write"
     )
 
-    path = _validate_file_path(path)
+    path = validate_relative_path(path)
 
     body = await request.body()
     if len(body) > MAX_SYNC_WRITE_SIZE:
@@ -565,7 +565,6 @@ async def sync_write_file(
 # ensure_read_access/ensure_write_access, rather than trusting a mode baked
 # into the token. Least-privilege, short expiry (10 min), single path scope.
 
-_ALLOWED_FILE_PATH_RE = re.compile(r"^[\w.\-/ ]+$", re.UNICODE)
 FILE_TOKEN_EXPIRE_MINUTES = 10
 
 
@@ -588,35 +587,6 @@ class DownloadUrlResponse(BaseModel):
 
 class UploadUrlResponse(BaseModel):
     uploadUrl: str
-
-
-def _validate_file_path(path: str) -> str:
-    """Same rules as web.py's _validate_upload_path (mesh-artifact path), kept
-    as a local copy since neither router currently shares such helpers."""
-    if not path:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path is required")
-    if path.startswith("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path must be relative (no leading /)"
-        )
-    if len(path) > 512:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path too long (max 512 chars)"
-        )
-    segments = path.split("/")
-    if ".." in segments:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path traversal not allowed"
-        )
-    if path.count("/") > 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path too deep (max 6 levels)"
-        )
-    if not _ALLOWED_FILE_PATH_RE.match(path):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters"
-        )
-    return path
 
 
 def _decode_file_token_value(token: str, share_id: uuid.UUID, path: str) -> dict[str, Any]:
@@ -711,7 +681,7 @@ def create_file_token(
     auth_method, agent_key = _authorize_share_sync(
         request, share, db, current_user, required_scope="read"
     )
-    path = _validate_file_path(payload.path)
+    path = validate_relative_path(payload.path)
 
     if auth_method == "user":
         subject = str(current_user.id)
