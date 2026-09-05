@@ -74,9 +74,15 @@ def validate_relative_path(path: str) -> str:
             )
         category = unicodedata.category(ch)
         # Cc = control (C0/C1, incl. DEL/NUL); Cf = format (bidi overrides,
-        # zero-width joiners, BOM) — neither can be a real vault filename
-        # character, both are classic obfuscation/injection vectors.
-        if category in ("Cc", "Cf"):
+        # zero-width joiners, BOM); Zl/Zp = U+2028/U+2029 (line/paragraph
+        # separator) — the one pair of whitespace characters that behaves
+        # like a control character in practice (splits a line in contexts
+        # that only expect \n to do that) rather than like ordinary
+        # printable space. None of these can be a real vault filename
+        # character; all are classic obfuscation/injection vectors. Ordinary
+        # space (Zs) is deliberately NOT in this set — it's legitimate
+        # filename content.
+        if category in ("Cc", "Cf", "Zl", "Zp"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="path contains invalid characters"
             )

@@ -63,6 +63,8 @@ def test_realistic_filenames_accepted(path: str) -> None:
         "left‮right.md",  # RTL override (bidi spoofing)
         "zero​width.md",  # zero-width space (Cf category)
         "bom﻿.md",  # byte-order mark (Cf category)
+        "line break.md",  # U+2028 LINE SEPARATOR
+        "para graph.md",  # U+2029 PARAGRAPH SEPARATOR
         "a" * 513,
         "/".join(["seg"] * 8),  # 7 slashes > MAX_PATH_DEPTH (6)
     ],
