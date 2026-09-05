@@ -137,8 +137,9 @@ async def callback(
         code_verifier=state_data.code_verifier,
     )
 
-    # Get user info from OAuth provider
-    userinfo = await oauth_service.get_user_info(provider_obj, token_response["access_token"])
+    # Get user info from OAuth provider (email_verified comes from the
+    # validated id_token inside token_response, never from userinfo — #f1e6f0dc)
+    userinfo = await oauth_service.get_user_info(provider_obj, token_response)
 
     # Find or create user
     user = oauth_service.find_user_by_oauth(db, provider_obj.id, userinfo.sub)
@@ -148,6 +149,37 @@ async def callback(
         user = oauth_service.find_user_by_email(db, userinfo.email)
 
         if user:
+            if not userinfo.email_verified:
+                # SECURITY (#f1e6f0dc): do NOT link an unverified external
+                # identity to an existing account just because the email
+                # matches — that's exactly the account-takeover path this
+                # gate exists to close. Refuse explicitly here, BEFORE ever
+                # reaching auto_register below: falling through would hit
+                # users.email's unique constraint and surface as an opaque
+                # 409 from the generic integrity-error handler, which
+                # explains nothing to the person hitting it.
+                OAUTH_LOGINS_TOTAL.labels(provider=provider, status="failure").inc()
+                audit_service.log_action(
+                    db=db,
+                    action=models.AuditAction.OAUTH_ACCOUNT_LINK_DENIED,
+                    actor_user_id=None,
+                    target_user_id=user.id,
+                    details={
+                        "provider": provider,
+                        "provider_user_id": userinfo.sub,
+                        "email": userinfo.email,
+                        "reason": "email_not_verified",
+                    },
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "An account with this email already exists. "
+                        "Please sign in using your original method."
+                    ),
+                )
+
             # Link OAuth account to existing user
             oauth_service.link_oauth_account(
                 db,

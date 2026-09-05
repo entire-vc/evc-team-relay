@@ -52,6 +52,7 @@ class AuditAction(str, Enum):
     OAUTH_LOGIN = "oauth_login"
     OAUTH_ACCOUNT_LINKED = "oauth_account_linked"
     OAUTH_ACCOUNT_UNLINKED = "oauth_account_unlinked"
+    OAUTH_ACCOUNT_LINK_DENIED = "oauth_account_link_denied"
     PASSWORD_RESET_REQUESTED = "password_reset_requested"
     PASSWORD_RESET_COMPLETED = "password_reset_completed"
     EMAIL_VERIFICATION_SENT = "email_verification_sent"

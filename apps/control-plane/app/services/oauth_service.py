@@ -5,19 +5,25 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from typing import Any
 
+import httpx
+import jwt
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.db import models
 from app.schemas import oauth as oauth_schema
 from app.services import argus_service
+
+logger = logging.getLogger(__name__)
 
 
 def generate_code_verifier() -> str:
@@ -263,14 +269,84 @@ async def exchange_code_for_tokens(
     return token_response
 
 
+# Cache of PyJWKClient instances, one per JWKS URI. PyJWKClient itself caches
+# the fetched keys (default lifespan), so this only saves re-instantiating the
+# client — it never lets a genuinely-stale key set persist across a real
+# key-rotation window, that's PyJWKClient's own concern.
+_jwks_clients: dict[str, jwt.PyJWKClient] = {}
+
+
+def _get_jwks_client(jwks_uri: str) -> jwt.PyJWKClient:
+    client = _jwks_clients.get(jwks_uri)
+    if client is None:
+        client = jwt.PyJWKClient(jwks_uri)
+        _jwks_clients[jwks_uri] = client
+    return client
+
+
+async def _discover_oidc_config(issuer_url: str) -> dict[str, Any]:
+    """Fetch the provider's OIDC discovery document.
+
+    No caching here (unlike the JWKS client): this is one small JSON GET per
+    login, and caching it would need its own invalidation story for zero
+    real benefit — jwks_uri essentially never changes for a live provider.
+    """
+    discovery_url = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(discovery_url)
+        response.raise_for_status()
+        return response.json()
+
+
+async def validate_id_token(provider: models.OAuthProvider, id_token: str) -> dict[str, Any]:
+    """Validate an OIDC id_token's signature and standard claims, returning it decoded.
+
+    Security-critical (#f1e6f0dc): this is what turns an id_token from "text
+    that arrived over TLS" into "a claim we can act on". Verifies the
+    signature against the provider's published JWKS, and checks `iss`, `aud`
+    (must equal our own client_id), and `exp` — all via PyJWT's own checks,
+    not hand-rolled comparisons.
+
+    Raises on ANY failure: network error, no matching key, bad signature,
+    wrong issuer/audience, expired token. Callers MUST treat every exception
+    here as "unverified" (fail closed) — never catch-and-proceed as if the
+    token were valid, and never skip calling this at all.
+    """
+    discovery = await _discover_oidc_config(provider.issuer_url)
+    jwks_uri = discovery["jwks_uri"]
+    algorithms = discovery.get("id_token_signing_alg_values_supported") or ["RS256"]
+
+    jwks_client = _get_jwks_client(jwks_uri)
+    # PyJWKClient does its own blocking HTTP fetch (with internal caching) —
+    # push it off the event loop rather than stalling every other request
+    # in this worker for the duration of a cache-miss fetch.
+    signing_key = await run_in_threadpool(jwks_client.get_signing_key_from_jwt, id_token)
+
+    return jwt.decode(
+        id_token,
+        signing_key.key,
+        algorithms=algorithms,
+        audience=provider.client_id,
+        issuer=discovery.get("issuer") or provider.issuer_url,
+    )
+
+
 async def get_user_info(
-    provider: models.OAuthProvider, access_token: str
+    provider: models.OAuthProvider, token_response: dict[str, Any]
 ) -> oauth_schema.OAuthUserInfo:
-    """Fetch user profile from OIDC userinfo endpoint.
+    """Fetch user profile from OIDC userinfo endpoint, with `email_verified`
+    sourced from the validated id_token instead.
+
+    Args:
+        provider: OAuth provider configuration.
+        token_response: The full token-endpoint response (as returned by
+            exchange_code_for_tokens) — needs both `access_token` (for the
+            userinfo call) and `id_token` (for email_verified).
 
     Returns:
         User information from OAuth provider.
     """
+    access_token = token_response["access_token"]
     userinfo_endpoint = f"{provider.issuer_url.rstrip('/')}/api/userinfo"
 
     async with AsyncOAuth2Client(
@@ -292,6 +368,31 @@ async def get_user_info(
                 groups = [g.strip() for g in groups_value.split(",") if g.strip()]
             break
 
+    # email_verified: NEVER trust userinfo's copy of this field (Casdoor
+    # hardcodes it to `true` whenever the `email` scope is granted — see
+    # OAuthUserInfo.email_verified docstring / #970e22f4). The only source
+    # of truth is the signature-validated id_token. Any failure to obtain or
+    # validate it — no id_token in the response, network error, bad
+    # signature, wrong issuer/audience, expired — fails closed to False.
+    email_verified = False
+    id_token = token_response.get("id_token")
+    if id_token:
+        try:
+            id_token_claims = await validate_id_token(provider, id_token)
+            email_verified = bool(id_token_claims.get("email_verified", False))
+        except Exception:
+            logger.warning(
+                "id_token validation failed for provider '%s' — treating email_verified as False",
+                provider.name,
+                exc_info=True,
+            )
+    else:
+        logger.warning(
+            "No id_token in token response for provider '%s' — treating email_verified as "
+            "False (was the 'openid' scope granted?)",
+            provider.name,
+        )
+
     # Map to our schema
     return oauth_schema.OAuthUserInfo(
         sub=userinfo.get("sub") or userinfo.get("id", ""),
@@ -299,6 +400,7 @@ async def get_user_info(
         name=userinfo.get("name"),
         picture=userinfo.get("picture"),
         groups=groups,
+        email_verified=email_verified,
     )
 
 
