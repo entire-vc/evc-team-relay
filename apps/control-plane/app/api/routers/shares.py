@@ -26,7 +26,7 @@ from app.core.path_validation import validate_relative_path
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
-from app.services import share_service
+from app.services import billing_service, share_service, usage_service
 from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/shares", tags=["shares"])
@@ -72,6 +72,19 @@ def list_shares(
     )
 
 
+def _billing_owner(db: Session, share: models.Share, current_user: models.User) -> models.User:
+    """Resolve the user whose plan governs a share's billing limits (its owner).
+
+    Share mutations may be performed by an admin acting on someone else's
+    share (ensure_owner_or_admin allows both) — quotas always apply to the
+    owner, not the acting admin.
+    """
+    if share.owner_user_id == current_user.id:
+        return current_user
+    owner = db.query(models.User).filter_by(id=share.owner_user_id).first()
+    return owner or current_user
+
+
 @router.post("", response_model=share_schema.ShareRead, status_code=status.HTTP_201_CREATED)
 @limiter.limit("20/minute")  # Max 20 share creations per minute per IP
 async def create_share(
@@ -80,6 +93,20 @@ async def create_share(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(deps.get_current_user),
 ):
+    settings = get_settings()
+    if settings.billing_enabled:
+        casdoor_id = billing_service.get_casdoor_id(db, current_user)
+        await billing_service.check_limit(
+            casdoor_id, "max_shares", usage_service.count_user_shares(db, current_user.id)
+        )
+        if payload.web_published:
+            await billing_service.check_limit(
+                casdoor_id,
+                "max_web_published",
+                usage_service.count_web_published(db, current_user.id),
+            )
+            await billing_service.check_visibility(casdoor_id, payload.visibility.value)
+
     share = share_service.create_share(db, current_user, payload)
 
     # Queue notifications (queues to DB, actual delivery is async via workers)
@@ -923,6 +950,25 @@ async def update_share(
     share = share_service.get_share(db, share_id)
     share_service.ensure_owner_or_admin(current_user, share)
 
+    settings = get_settings()
+    if settings.billing_enabled:
+        new_web_published = (
+            payload.web_published if payload.web_published is not None else share.web_published
+        )
+        if new_web_published:
+            owner = _billing_owner(db, share, current_user)
+            casdoor_id = billing_service.get_casdoor_id(db, owner)
+            if not share.web_published:
+                await billing_service.check_limit(
+                    casdoor_id,
+                    "max_web_published",
+                    usage_service.count_web_published(db, owner.id),
+                )
+            new_visibility = (
+                payload.visibility if payload.visibility is not None else share.visibility
+            )
+            await billing_service.check_visibility(casdoor_id, new_visibility.value)
+
     # Capture old values for notification
     old_values = {
         "kind": share.kind.value if share.kind else None,
@@ -1010,6 +1056,17 @@ async def add_member(
 ):
     share = share_service.get_share(db, share_id)
     share_service.ensure_owner_or_admin(current_user, share)
+
+    settings = get_settings()
+    if settings.billing_enabled:
+        owner = _billing_owner(db, share, current_user)
+        casdoor_id = billing_service.get_casdoor_id(db, owner)
+        await billing_service.check_limit(
+            casdoor_id,
+            "max_members_per_share",
+            usage_service.count_share_members(db, share.id),
+        )
+
     # User validation is now done inside add_member service
     result = share_service.add_member(db, share, payload, actor_user_id=current_user.id)
 

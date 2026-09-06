@@ -29,16 +29,6 @@ callback_router = APIRouter(prefix="/billing", tags=["billing"])
 templates = Jinja2Templates(directory="app/templates")
 
 
-def _get_casdoor_id(db: Session, user: models.User) -> str:
-    """Get Casdoor UUID for a user (for billing API calls).
-
-    Delegates to billing_service.get_billing_identity() — the single place
-    this resolution lives, so billing_webhooks.py's reverse lookup
-    (find_user_by_billing_identity) can never drift out of sync with it.
-    """
-    return billing_service.get_billing_identity(db, user)
-
-
 @router.get("/plan")
 async def get_billing_plan(
     db: Session = Depends(get_db),
@@ -55,7 +45,7 @@ async def get_billing_plan(
             detail="Billing is not enabled",
         )
 
-    casdoor_id = _get_casdoor_id(db, current_user)
+    casdoor_id = billing_service.get_casdoor_id(db, current_user)
     return await billing_service.get_billing_plan(casdoor_id, db, current_user.id)
 
 
@@ -98,7 +88,7 @@ async def create_checkout(
             detail="Billing is not enabled",
         )
 
-    casdoor_id = _get_casdoor_id(db, current_user)
+    casdoor_id = billing_service.get_casdoor_id(db, current_user)
     try:
         return await billing_service.create_checkout_session(casdoor_id, payload, db, current_user)
     except BillingServiceError as e:
@@ -146,7 +136,7 @@ async def change_plan(
             detail="price_id is required",
         )
 
-    casdoor_id = _get_casdoor_id(db, current_user)
+    casdoor_id = billing_service.get_casdoor_id(db, current_user)
     try:
         return await billing_service.change_subscription_plan(
             casdoor_id,
@@ -181,7 +171,7 @@ async def cancel_subscription(
             detail="Billing is not enabled",
         )
 
-    casdoor_id = _get_casdoor_id(db, current_user)
+    casdoor_id = billing_service.get_casdoor_id(db, current_user)
     try:
         return await billing_service.cancel_user_subscription(
             casdoor_id, current_user.billing_subscription_id
@@ -218,7 +208,7 @@ async def create_portal_session(
             detail="Billing is not enabled",
         )
 
-    casdoor_id = _get_casdoor_id(db, current_user)
+    casdoor_id = billing_service.get_casdoor_id(db, current_user)
     return_url = payload.get("return_url") or settings.billing_return_url or ""
 
     try:

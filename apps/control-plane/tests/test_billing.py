@@ -7,10 +7,10 @@ convention, the only TRUE external boundary is the Billing Service HTTP API
 non-stub-mode tests that specifically exercise that boundary. Everything else
 (DB, router, webhook signature/dedup, entitlements cache) runs for real.
 
-Deliberately NOT covered here: shares.py limit/visibility enforcement
-(check_limit/check_visibility are ported and unit-tested directly, but no
-caller was wired into shares.py in this change — see the task comment on
-#f75f04bb for why that's a separate, product-level decision).
+shares.py limit/visibility enforcement (check_limit/check_visibility called from
+create_share/update_share/add_member) is covered here via route-level requests,
+not by calling the helpers directly — see TestShareLimitEnforcementViaRoute and
+TestMemberLimitEnforcementViaRoute (#f08f0c25).
 """
 
 from __future__ import annotations
@@ -199,6 +199,119 @@ class TestGracePeriod:
 
 
 # ---------------------------------------------------------------------------
+# check_limit's own grace-period branch (#f08f0c25 review gap) — TestGracePeriod
+# above only covers is_in_grace_period() in isolation; nothing exercised the
+# fallback-to-Free branch check_limit() itself takes once grace has expired,
+# or confirmed it does NOT downgrade while still inside the grace window.
+# ---------------------------------------------------------------------------
+
+
+class TestCheckLimitGracePeriodFallback:
+    """The grace-expired -> Free-plan downgrade inside check_limit is itself
+    gated by `if not settings.billing_stub_mode`. Every other test in this
+    file (including the new shares.py route tests above) runs with
+    BILLING_STUB_MODE=true (the autouse fixture's default), which means that
+    guard is False and the downgrade branch NEVER executes there — a
+    naive grace-period test written under the file's default env would
+    silently pass without ever reaching the fallback it claims to test. Real
+    subscriptions only ever come from the actual Billing Service, i.e.
+    non-stub mode, so these tests flip BILLING_STUB_MODE off to actually
+    exercise the branch (mirrors TestNonStubModeMocksExternalBillingClient's
+    pattern below)."""
+
+    @pytest.fixture(autouse=True)
+    def _non_stub_for_grace_fallback(self):
+        os.environ["BILLING_STUB_MODE"] = "false"
+        get_settings.cache_clear()
+        yield
+        os.environ["BILLING_STUB_MODE"] = "true"
+        get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_check_limit_falls_back_to_free_after_grace_expires(self):
+        import datetime
+
+        casdoor_id = "cid-grace-expired-checklimit"
+        expired_end = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+        ).isoformat()
+        data = {
+            "plan": "Relay Builder",
+            "subscription": {"status": "cancelled", "current_period_end": expired_end},
+            "entitlements": {
+                k: billing_stub._format_entitlement_value(v)
+                for k, v in billing_stub.STUB_PLANS["builder"]["entitlements"].items()
+            },
+        }
+        billing_service._entitlements_cache[casdoor_id] = (data, time.monotonic())
+
+        # Builder allows 10 shares; grace expired -> falls back to Free's 3.
+        with pytest.raises(billing_service.LimitExceededError) as exc_info:
+            await billing_service.check_limit(casdoor_id, "max_shares", current_count=3)
+        assert exc_info.value.max_value == 3
+        assert exc_info.value.plan == "Free (expired)"
+
+    @pytest.mark.asyncio
+    async def test_check_limit_does_not_fall_back_in_stub_mode(self):
+        """Documents the guard directly: same cancelled+expired subscription
+        as above, but with BILLING_STUB_MODE left at the file's normal
+        default (true) -> the downgrade is skipped and Builder's higher
+        limit is (perhaps surprisingly) still honored."""
+        os.environ["BILLING_STUB_MODE"] = "true"
+        get_settings.cache_clear()
+        import datetime
+
+        casdoor_id = "cid-grace-expired-stubmode"
+        expired_end = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+        ).isoformat()
+        data = {
+            "plan": "Relay Builder",
+            "subscription": {"status": "cancelled", "current_period_end": expired_end},
+            "entitlements": {
+                k: billing_stub._format_entitlement_value(v)
+                for k, v in billing_stub.STUB_PLANS["builder"]["entitlements"].items()
+            },
+        }
+        billing_service._entitlements_cache[casdoor_id] = (data, time.monotonic())
+
+        # In stub mode the fallback branch's `if not settings.billing_stub_mode`
+        # guard is False, so entitlements are NOT swapped to Free -> Builder's
+        # max_shares=10 still applies even though grace has expired.
+        await billing_service.check_limit(casdoor_id, "max_shares", current_count=9)
+        with pytest.raises(billing_service.LimitExceededError) as exc_info:
+            await billing_service.check_limit(casdoor_id, "max_shares", current_count=10)
+        assert exc_info.value.max_value == 10
+        assert exc_info.value.plan == "Relay Builder"
+
+    @pytest.mark.asyncio
+    async def test_check_limit_keeps_paid_plan_within_grace_window(self):
+        import datetime
+
+        casdoor_id = "cid-grace-active-checklimit"
+        recent_end = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        ).isoformat()
+        data = {
+            "plan": "Relay Builder",
+            "subscription": {"status": "cancelled", "current_period_end": recent_end},
+            "entitlements": {
+                k: billing_stub._format_entitlement_value(v)
+                for k, v in billing_stub.STUB_PLANS["builder"]["entitlements"].items()
+            },
+        }
+        billing_service._entitlements_cache[casdoor_id] = (data, time.monotonic())
+
+        # Still within the 7-day grace window -> stays on Builder's limit of 10,
+        # not downgraded to Free's 3.
+        await billing_service.check_limit(casdoor_id, "max_shares", current_count=9)
+        with pytest.raises(billing_service.LimitExceededError) as exc_info:
+            await billing_service.check_limit(casdoor_id, "max_shares", current_count=10)
+        assert exc_info.value.max_value == 10
+        assert exc_info.value.plan == "Relay Builder"
+
+
+# ---------------------------------------------------------------------------
 # usage_service — real DB counts
 # ---------------------------------------------------------------------------
 
@@ -227,6 +340,377 @@ class TestUsageCounting:
 
 
 # ---------------------------------------------------------------------------
+# shares.py enforcement — via the route, not the helper (#f08f0c25 AC #2)
+# ---------------------------------------------------------------------------
+
+
+class TestShareLimitEnforcementViaRoute:
+    def test_up_to_max_shares_succeeds(self, client: TestClient):
+        token = register_and_login(client, "route-shares-ok@example.com")
+        for i in range(3):
+            resp = client.post(
+                "/shares",
+                json={"kind": "doc", "path": f"doc-{i}.md"},
+                headers=auth_headers(token),
+            )
+            assert resp.status_code == 201, resp.text
+
+    def test_share_beyond_max_shares_rejected(self, client: TestClient):
+        token = register_and_login(client, "route-shares-over@example.com")
+        for i in range(3):
+            resp = client.post(
+                "/shares",
+                json={"kind": "doc", "path": f"doc-{i}.md"},
+                headers=auth_headers(token),
+            )
+            assert resp.status_code == 201, resp.text
+
+        resp = client.post(
+            "/shares", json={"kind": "doc", "path": "doc-4th.md"}, headers=auth_headers(token)
+        )
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"] == "limit_exceeded"
+        assert body["limit"] == "max_shares"
+
+    def test_two_of_three_shares_both_pass(self, client: TestClient):
+        token = register_and_login(client, "route-shares-two@example.com")
+        resp1 = client.post(
+            "/shares", json={"kind": "doc", "path": "a.md"}, headers=auth_headers(token)
+        )
+        resp2 = client.post(
+            "/shares", json={"kind": "doc", "path": "b.md"}, headers=auth_headers(token)
+        )
+        assert resp1.status_code == 201
+        assert resp2.status_code == 201
+
+    def test_web_published_share_beyond_max_web_published_rejected(self, client: TestClient):
+        # TR-39 forbids creating a share public+published in one POST (no content
+        # yet at creation time) — create private, add content, then publish, same
+        # as the real plugin flow. The second share's publish attempt never gets
+        # that far: the quota check runs before TR-39's content check.
+        token = register_and_login(client, "route-web-over@example.com")
+        first = client.post(
+            "/shares", json={"kind": "doc", "path": "pub1.md"}, headers=auth_headers(token)
+        )
+        assert first.status_code == 201, first.text
+        publish_first = client.patch(
+            f"/shares/{first.json()['id']}",
+            json={"web_content": "hello", "visibility": "public", "web_published": True},
+            headers=auth_headers(token),
+        )
+        assert publish_first.status_code == 200, publish_first.text
+
+        second = client.post(
+            "/shares", json={"kind": "doc", "path": "pub2.md"}, headers=auth_headers(token)
+        )
+        assert second.status_code == 201, second.text
+        resp = client.patch(
+            f"/shares/{second.json()['id']}",
+            json={"web_content": "hello", "visibility": "public", "web_published": True},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["limit"] == "max_web_published"
+
+    def test_private_web_publish_rejected_on_free_plan(self, client: TestClient):
+        token = register_and_login(client, "route-visibility-private@example.com")
+        resp = client.post(
+            "/shares",
+            json={
+                "kind": "doc",
+                "path": "priv.md",
+                "web_published": True,
+                "visibility": "private",
+            },
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "visibility_not_allowed"
+
+    def test_private_non_published_share_not_gated_by_visibility(self, client: TestClient):
+        """visibility=private without web_published must NOT be blocked — the
+        allowed_web_visibility tier only governs the published web page."""
+        token = register_and_login(client, "route-visibility-nopub@example.com")
+        resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "priv2.md", "visibility": "private"},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 201
+
+    def test_update_share_to_web_published_enforces_max_web_published(self, client: TestClient):
+        token = register_and_login(client, "route-update-pub@example.com")
+        first = client.post(
+            "/shares", json={"kind": "doc", "path": "u1.md"}, headers=auth_headers(token)
+        )
+        assert first.status_code == 201, first.text
+        publish_first = client.patch(
+            f"/shares/{first.json()['id']}",
+            json={"web_content": "hello", "visibility": "public", "web_published": True},
+            headers=auth_headers(token),
+        )
+        assert publish_first.status_code == 200, publish_first.text
+
+        second = client.post(
+            "/shares", json={"kind": "doc", "path": "u2.md"}, headers=auth_headers(token)
+        )
+        share_id = second.json()["id"]
+
+        resp = client.patch(
+            f"/shares/{share_id}", json={"web_published": True}, headers=auth_headers(token)
+        )
+        assert resp.status_code == 403
+        assert resp.json()["limit"] == "max_web_published"
+
+    def test_update_share_visibility_to_private_while_published_rejected(self, client: TestClient):
+        token = register_and_login(client, "route-update-visibility@example.com")
+        created = client.post(
+            "/shares", json={"kind": "doc", "path": "u3.md"}, headers=auth_headers(token)
+        )
+        assert created.status_code == 201, created.text
+        share_id = created.json()["id"]
+        publish = client.patch(
+            f"/shares/{share_id}",
+            json={"web_content": "hello", "visibility": "public", "web_published": True},
+            headers=auth_headers(token),
+        )
+        assert publish.status_code == 200, publish.text
+
+        resp = client.patch(
+            f"/shares/{share_id}", json={"visibility": "private"}, headers=auth_headers(token)
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "visibility_not_allowed"
+
+    def test_publish_without_content_still_blocked_by_tr39_when_billing_enabled(
+        self, client: TestClient
+    ):
+        """TR-39's no-content guard lives in share_service.update_share, called
+        AFTER the billing check block in the route. Every other TR-39 test in
+        this file runs with billing disabled (test_public_content_guard.py /
+        test_web_publish.py) — nothing confirmed billing enforcement doesn't
+        short-circuit or shadow TR-39 once check_limit/check_visibility both
+        pass. Here quota (1 allowed, 0 used) and visibility (public, allowed)
+        both pass, so this must reach TR-39's check and get its 400 — not a
+        403, and not a silent 200."""
+        token = register_and_login(client, "route-tr39-billing@example.com")
+        created = client.post(
+            "/shares", json={"kind": "doc", "path": "empty.md"}, headers=auth_headers(token)
+        )
+        assert created.status_code == 201, created.text
+
+        resp = client.patch(
+            f"/shares/{created.json()['id']}",
+            json={"visibility": "public", "web_published": True},
+            headers=auth_headers(token),
+        )
+        assert resp.status_code == 400, resp.text
+
+
+class TestBillingOwnerVsAdminCasdoorResolution:
+    """update_share/add_member allow an admin to act on someone else's share
+    (ensure_owner_or_admin) — quotas must be checked against the SHARE OWNER's
+    plan, not the acting admin's (_billing_owner in shares.py). Nothing in the
+    original test set exercised the admin-not-owner path at all; stub mode
+    also gives every casdoor_id the same Free plan, so a same-plan test
+    couldn't distinguish "checked owner's plan" from "checked admin's plan"
+    even if it existed. Assert directly on which casdoor_id billing_service
+    is called with.
+    """
+
+    def test_update_share_by_admin_checks_owner_casdoor_id_not_admins(
+        self, client: TestClient, db_session
+    ):
+        from app.db import models
+
+        owner_token = register_and_login(client, "owner-billing-update@example.com")
+        admin_token = register_and_login(client, "admin-billing-update@example.com")
+
+        owner = (
+            db_session.query(models.User).filter_by(email="owner-billing-update@example.com").one()
+        )
+        admin = (
+            db_session.query(models.User).filter_by(email="admin-billing-update@example.com").one()
+        )
+        owner.casdoor_id = "owner-cid-update"
+        admin.casdoor_id = "admin-cid-update"
+        admin.is_admin = True
+        db_session.commit()
+
+        created = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "adm-update.md"},
+            headers=auth_headers(owner_token),
+        )
+        assert created.status_code == 201, created.text
+        share_id = created.json()["id"]
+
+        with (
+            patch(
+                "app.api.routers.shares.billing_service.check_limit", new_callable=AsyncMock
+            ) as mock_check_limit,
+            patch(
+                "app.api.routers.shares.billing_service.check_visibility", new_callable=AsyncMock
+            ) as mock_check_visibility,
+        ):
+            resp = client.patch(
+                f"/shares/{share_id}",
+                json={"web_content": "hello", "visibility": "public", "web_published": True},
+                headers=auth_headers(admin_token),
+            )
+        assert resp.status_code == 200, resp.text
+        mock_check_limit.assert_awaited_once_with("owner-cid-update", "max_web_published", 0)
+        mock_check_visibility.assert_awaited_once_with("owner-cid-update", "public")
+
+    def test_add_member_by_admin_checks_owner_casdoor_id_not_admins(
+        self, client: TestClient, db_session
+    ):
+        from app.db import models
+
+        owner_token = register_and_login(client, "owner-billing-members@example.com")
+        admin_token = register_and_login(client, "admin-billing-members@example.com")
+        register_and_login(client, "new-billing-member@example.com")
+
+        owner = (
+            db_session.query(models.User).filter_by(email="owner-billing-members@example.com").one()
+        )
+        admin = (
+            db_session.query(models.User).filter_by(email="admin-billing-members@example.com").one()
+        )
+        new_member = (
+            db_session.query(models.User).filter_by(email="new-billing-member@example.com").one()
+        )
+        owner.casdoor_id = "owner-cid-members"
+        admin.casdoor_id = "admin-cid-members"
+        admin.is_admin = True
+        db_session.commit()
+
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "adm-share.md"},
+            headers=auth_headers(owner_token),
+        )
+        assert share_resp.status_code == 201, share_resp.text
+        share_id = share_resp.json()["id"]
+
+        with patch(
+            "app.api.routers.shares.billing_service.check_limit", new_callable=AsyncMock
+        ) as mock_check_limit:
+            resp = client.post(
+                f"/shares/{share_id}/members",
+                json={"user_id": str(new_member.id), "role": "viewer"},
+                headers=auth_headers(admin_token),
+            )
+        assert resp.status_code == 201, resp.text
+        mock_check_limit.assert_awaited_once_with("owner-cid-members", "max_members_per_share", 0)
+
+
+class TestGracePeriodFallbackViaRoute:
+    @pytest.fixture(autouse=True)
+    def _non_stub_for_grace_fallback(self):
+        # See TestCheckLimitGracePeriodFallback: the downgrade is a no-op in
+        # stub mode (the file's default), so this route-level companion needs
+        # it off too, or it would pass for the wrong reason (Builder's higher
+        # limit, not Free's). Non-stub mode requires a service token at app
+        # startup (M-16 validation in main.py) even though our casdoor_id's
+        # entitlements come entirely from the pre-seeded cache and never hit
+        # the real client.
+        os.environ["BILLING_STUB_MODE"] = "false"
+        os.environ["BILLING_SERVICE_TOKEN"] = "test-service-token"
+        get_settings.cache_clear()
+        yield
+        os.environ["BILLING_STUB_MODE"] = "true"
+        os.environ.pop("BILLING_SERVICE_TOKEN", None)
+        get_settings.cache_clear()
+
+    def test_create_share_grace_expired_falls_back_to_free_limit(
+        self, client: TestClient, db_session
+    ):
+        """Companion to TestCheckLimitGracePeriodFallback (billing_service-level):
+        confirms the grace-expired downgrade actually reaches a shares.py call
+        site, not just the standalone function."""
+        import datetime
+
+        from app.db import models
+
+        token = register_and_login(client, "grace-expired-route@example.com")
+        user = (
+            db_session.query(models.User).filter_by(email="grace-expired-route@example.com").one()
+        )
+        user.casdoor_id = "grace-expired-route-cid"
+        db_session.commit()
+
+        expired_end = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+        ).isoformat()
+        billing_service._entitlements_cache["grace-expired-route-cid"] = (
+            {
+                "plan": "Relay Builder",
+                "subscription": {"status": "cancelled", "current_period_end": expired_end},
+                "entitlements": {
+                    k: billing_stub._format_entitlement_value(v)
+                    for k, v in billing_stub.STUB_PLANS["builder"]["entitlements"].items()
+                },
+            },
+            time.monotonic(),
+        )
+
+        # Builder would allow 10 shares; grace expired -> effectively Free's 3.
+        for i in range(3):
+            resp = client.post(
+                "/shares",
+                json={"kind": "doc", "path": f"grace-{i}.md"},
+                headers=auth_headers(token),
+            )
+            assert resp.status_code == 201, resp.text
+
+        resp = client.post(
+            "/shares", json={"kind": "doc", "path": "grace-4th.md"}, headers=auth_headers(token)
+        )
+        assert resp.status_code == 403, resp.text
+        body = resp.json()
+        assert body["limit"] == "max_shares"
+        assert body["max"] == 3
+        assert body["plan"] == "Free (expired)"
+
+
+class TestMemberLimitEnforcementViaRoute:
+    def test_members_beyond_max_members_per_share_rejected(self, client: TestClient, db_session):
+        from app.db import models
+
+        owner_token = register_and_login(client, "route-members-owner@example.com")
+        share_resp = client.post(
+            "/shares", json={"kind": "doc", "path": "shared.md"}, headers=auth_headers(owner_token)
+        )
+        share_id = share_resp.json()["id"]
+
+        for i in range(3):
+            register_and_login(client, f"route-member-{i}@example.com")
+            member = (
+                db_session.query(models.User).filter_by(email=f"route-member-{i}@example.com").one()
+            )
+            resp = client.post(
+                f"/shares/{share_id}/members",
+                json={"user_id": str(member.id), "role": "viewer"},
+                headers=auth_headers(owner_token),
+            )
+            assert resp.status_code == 201, resp.text
+
+        register_and_login(client, "route-member-extra@example.com")
+        extra = (
+            db_session.query(models.User).filter_by(email="route-member-extra@example.com").one()
+        )
+        resp = client.post(
+            f"/shares/{share_id}/members",
+            json={"user_id": str(extra.id), "role": "viewer"},
+            headers=auth_headers(owner_token),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["limit"] == "max_members_per_share"
+
+
+# ---------------------------------------------------------------------------
 # Billing disabled -> every /billing/* endpoint 404s (feature-flagged off)
 # ---------------------------------------------------------------------------
 
@@ -243,6 +727,62 @@ class TestBillingDisabled:
                 "/v1/billing/checkout", json={}, headers=auth_headers(token)
             )
             assert checkout_resp.status_code == 404
+        finally:
+            os.environ["BILLING_ENABLED"] = "true"
+            get_settings.cache_clear()
+
+    def test_share_and_member_quotas_not_enforced_when_billing_disabled(
+        self, client: TestClient, db_session
+    ):
+        """The only billing_enabled=False coverage before this test was the
+        /v1/billing/* 404 check above — nothing confirmed the three new
+        check_limit/check_visibility call sites wired into shares.py
+        (create_share/update_share/add_member) actually no-op when the flag
+        is off, as opposed to still gating (settings read at call time, not
+        cached at import time — worth confirming directly)."""
+        from app.db import models
+
+        os.environ["BILLING_ENABLED"] = "false"
+        get_settings.cache_clear()
+        try:
+            token = register_and_login(client, "disabled-shares@example.com")
+
+            # Free plan caps max_shares at 3 -- billing off must allow more.
+            share_ids = []
+            for i in range(5):
+                resp = client.post(
+                    "/shares",
+                    json={"kind": "doc", "path": f"noquota-{i}.md"},
+                    headers=auth_headers(token),
+                )
+                assert resp.status_code == 201, resp.text
+                share_ids.append(resp.json()["id"])
+
+            # Free plan disallows 'private' web-published visibility -- billing
+            # off must allow it (would be 403 visibility_not_allowed if enabled,
+            # per test_private_web_publish_rejected_on_free_plan above).
+            publish_resp = client.patch(
+                f"/shares/{share_ids[0]}",
+                json={"web_content": "hi", "visibility": "private", "web_published": True},
+                headers=auth_headers(token),
+            )
+            assert publish_resp.status_code == 200, publish_resp.text
+
+            # Free plan caps max_members_per_share at 3 -- billing off must
+            # allow a 4th.
+            for i in range(4):
+                register_and_login(client, f"disabled-member-{i}@example.com")
+                member = (
+                    db_session.query(models.User)
+                    .filter_by(email=f"disabled-member-{i}@example.com")
+                    .one()
+                )
+                member_resp = client.post(
+                    f"/shares/{share_ids[1]}/members",
+                    json={"user_id": str(member.id), "role": "viewer"},
+                    headers=auth_headers(token),
+                )
+                assert member_resp.status_code == 201, member_resp.text
         finally:
             os.environ["BILLING_ENABLED"] = "true"
             get_settings.cache_clear()
