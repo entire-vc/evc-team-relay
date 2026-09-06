@@ -22,7 +22,12 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: semgrep ci
+      # --exclude forks/: vendored/forked third-party bundles (e.g. the
+      # esbuild-minified forks/relay-plugin/main.js) aren't our SAST surface
+      # and their minified single-line content trips semgrep's per-rule
+      # timeout, which otherwise silently drops that file from ALL rule
+      # coverage for the rest of the scan.
+      - run: semgrep ci --exclude forks/
         env:
           SEMGREP_RULES: >-
             p/security-audit p/secrets p/owasp-top-ten p/python
