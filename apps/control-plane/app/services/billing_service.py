@@ -211,6 +211,21 @@ def _get_billing_client() -> BillingClient:
     return _billing_client
 
 
+def get_casdoor_id(db: Session, user: models.User) -> str:
+    """Resolve a user's Casdoor UUID for billing API calls.
+
+    Prefers user.casdoor_id; falls back to the linked OAuth account's
+    provider_user_id, then to the internal user id as a last resort.
+    Most users have no direct casdoor_id and resolve via the OAuth fallback.
+    """
+    if user.casdoor_id:
+        return user.casdoor_id
+    oauth = db.query(models.UserOAuthAccount).filter_by(user_id=user.id).first()
+    if oauth:
+        return oauth.provider_user_id
+    return str(user.id)
+
+
 async def get_entitlements_cached(casdoor_id: str) -> dict[str, Any]:
     """Get user entitlements with 5-minute TTL cache.
 
