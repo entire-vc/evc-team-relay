@@ -381,12 +381,19 @@ async def get_user_info(
             id_token_claims = await validate_id_token(provider, id_token)
             email_verified = bool(id_token_claims.get("email_verified", False))
         except Exception:
+            # False positive: rule matches on "id_token"/"provider" in the static
+            # message text, but no secret value is logged — only the provider's
+            # configured name (not a credential) and a PyJWT exception traceback,
+            # whose own error messages never include the raw token.
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
             logger.warning(
                 "id_token validation failed for provider '%s' — treating email_verified as False",
                 provider.name,
                 exc_info=True,
             )
     else:
+        # Same false positive as above — logs only the provider name, no token value.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         logger.warning(
             "No id_token in token response for provider '%s' — treating email_verified as "
             "False (was the 'openid' scope granted?)",
