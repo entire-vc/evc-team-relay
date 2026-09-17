@@ -22,7 +22,28 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: semgrep ci
+      # --exclude drops apps/relay-server/archive/ from the scan. That directory
+      # holds inert, byte-faithful copies of the retired evc-relay-server
+      # repository's root files (its workflows, its issue forms, its SECURITY.md
+      # and SUPPORT.md), kept as provenance. GitHub runs workflows and reads
+      # issue templates only from .github/ at the repository root, so nothing
+      # under archive/ is ever executed, and the copies are deliberately left
+      # unedited - their value is being byte-identical to what that repository
+      # shipped. Findings there are findings in dead code.
+      #
+      # This is an --exclude flag and deliberately NOT a .semgrepignore file: a
+      # .semgrepignore in the repository root REPLACES semgrep's built-in default
+      # ignore list instead of extending it. Measured on this tree - a
+      # .semgrepignore containing only the archive path pulled 64 previously
+      # ignored files (apps/control-plane/tests/**) back into the scan and
+      # produced 5 new blocking findings. --exclude leaves the defaults intact:
+      # it removed exactly the 10 files under archive/ and nothing else.
+      #
+      # The pattern is path-anchored, not a basename match. Verified with probe
+      # files carrying the same violations: .github/workflows/, any other
+      # directory named archive/, every sibling of this one, and
+      # apps/relay-server/ itself all stay in scope and are still flagged.
+      - run: semgrep ci --exclude='apps/relay-server/archive'
         env:
           SEMGREP_RULES: >-
             p/security-audit p/secrets p/owasp-top-ten p/python
