@@ -1,0 +1,66 @@
+name: Bug Report
+description: Something in the relay server is not working
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste tokens, keys, or document contents — an issue is public forever, and we
+        do not need them to diagnose a problem. For a security vulnerability, close this and use
+        [private reporting](https://github.com/entire-vc/evc-relay-server/security/advisories/new)
+        instead.
+  - type: input
+    id: version
+    attributes:
+      label: Relay server version
+      description: "`docker inspect` the image tag, or the version the binary prints on startup."
+      placeholder: "e.g. 0.9.9"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How is it running?
+      options:
+        - Self-hosted (docker)
+        - Self-hosted (binary)
+        - Hosted by Entire VC (tr.entire.vc)
+        - Local development
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Document store
+      options:
+        - Local filesystem
+        - S3
+        - Cloudflare R2
+        - MinIO
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs
+      description: "`docker logs <container>`, or the journal output. Redact tokens before pasting."
+      render: text

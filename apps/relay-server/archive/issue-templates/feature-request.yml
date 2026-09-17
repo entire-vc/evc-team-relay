@@ -1,0 +1,28 @@
+name: Feature Request
+description: Suggest a capability for the relay server
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem you hit, before any proposed solution. This is the part we most need.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How are you working around it today?
+  - type: checkboxes
+    id: upstream
+    attributes:
+      label: Scope
+      options:
+        - label: I understand this repository builds only the Rust relay server, and that plugin or control-plane requests belong in their own repositories.

@@ -1,0 +1,234 @@
+name: Build Rust binary and create release
+
+# Note: If you add or remove binaries, you should also update the list in releaser/src/check_binaries.rs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: true
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/release.yml"
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install latest rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: beta
+        target: aarch64-apple-darwin
+        default: true
+        override: true
+
+    - name: Build for MacOS
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --manifest-path=crates/Cargo.toml --target aarch64-apple-darwin --release
+
+    - name: strip binary
+      run: strip ./crates/target/aarch64-apple-darwin/release/relay
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-binary-arm64
+        path: ./crates/target/aarch64-apple-darwin/release/relay
+
+  build-macos-x64:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install latest rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: beta
+        target: x86_64-apple-darwin
+        default: true
+        override: true
+
+    - name: Build for MacOS
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --manifest-path=crates/Cargo.toml --target x86_64-apple-darwin
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-binary-x64
+        path: ./crates/target/x86_64-apple-darwin/release/relay 
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-unknown-linux-musl
+        override: true
+        
+    - name: Install musl-tools 
+      run: sudo apt-get install -y musl-tools
+
+    - name: Build for Linux
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --target x86_64-unknown-linux-musl --manifest-path=crates/Cargo.toml
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-binary
+        path: ./crates/target/x86_64-unknown-linux-musl/release/relay 
+
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: aarch64-unknown-linux-musl
+        override: true
+        
+    - name: Install musl-tools 
+      run: sudo apt-get install -y musl-tools
+
+    - run: sudo apt-get install gcc-aarch64-linux-gnu
+
+    - name: Build for Linux
+      uses: actions-rs/cargo@v1
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        CC: aarch64-linux-gnu-gcc
+      with:
+        command: build
+        args: --release --target aarch64-unknown-linux-musl --manifest-path=crates/Cargo.toml
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-binary-arm64
+        path: ./crates/target/aarch64-unknown-linux-musl/release/relay 
+
+  build-linux-armv7:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: armv7-unknown-linux-musleabihf
+        override: true
+        
+    - name: Install musl-tools 
+      run: sudo apt-get install -y musl-tools
+
+    - run: sudo apt-get install gcc-arm-linux-gnueabihf
+
+    - name: Build for Linux ARMv7
+      uses: actions-rs/cargo@v1
+      env:
+        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        CC: arm-linux-gnueabihf-gcc
+      with:
+        command: build
+        args: --release --target armv7-unknown-linux-musleabihf --manifest-path=crates/Cargo.toml
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-binary-armv7
+        path: ./crates/target/armv7-unknown-linux-musleabihf/release/relay
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2 
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-gnu
+        override: true
+        
+    - name: Install mingw
+      run: sudo apt-get install -y gcc-mingw-w64
+
+    - name: Build for Windows
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --target x86_64-pc-windows-gnu --manifest-path=crates/Cargo.toml
+
+    - name: ls
+      run: ls ./crates/target/x86_64-pc-windows-gnu/release
+      
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-binary
+        path: ./crates/target/x86_64-pc-windows-gnu/release/relay.exe
+
+  release:
+    needs: [build-linux, build-macos-arm64, build-macos-x64, build-windows, build-linux-arm64, build-linux-armv7]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+    - name: Compress binary
+      run: >
+        gzip -9 --keep --force 
+        windows-binary/relay.exe
+        linux-binary/relay
+        macos-binary-x64/relay
+        macos-binary-arm64/relay
+        linux-binary-arm64/relay
+        linux-binary-armv7/relay
+    - name: ls
+      run: ls -la
+    - name: rename and move
+      run: >
+        mv windows-binary/relay.exe.gz relay-win-x64.exe.gz &&
+        mv linux-binary/relay.gz relay-linux-x64.gz &&
+        mv macos-binary-x64/relay.gz relay-macos-x64.gz &&
+        mv macos-binary-arm64/relay.gz relay-macos-arm64.gz &&
+        mv linux-binary-arm64/relay.gz relay-linux-arm64.gz &&
+        mv linux-binary-armv7/relay.gz relay-linux-armv7.gz
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: ${{ github.event.inputs.version }}
+        draft: true
+        files: |
+            relay-win-x64.exe.gz
+            relay-linux-x64.gz
+            relay-macos-x64.gz
+            relay-macos-arm64.gz
+            relay-linux-arm64.gz
+            relay-linux-armv7.gz

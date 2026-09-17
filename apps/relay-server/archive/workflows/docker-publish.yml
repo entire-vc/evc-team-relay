@@ -1,0 +1,162 @@
+name: Build and publish Docker image
+# Two triggers:
+#  - push of a `relay-X.Y.Z` git tag -- auto-publishes on every fork release,
+#    so a merged fix reaches ghcr without anyone remembering to run this by
+#    hand (TR·relay-server audit remnant, task #975bcda1: 0.9.8/0.9.9/0.10.0/
+#    0.12.0 tags existed in this repo but were never built into images
+#    because nobody ran workflow_dispatch for them).
+#  - workflow_dispatch, kept for a manual/ad-hoc rebuild.
+#
+# The `relay-` prefix is deliberate, not decorative: this repo is a fork of
+# No-Instructions/relay-server and carries ALL of upstream's own historical
+# version tags (0.9.0 through 0.12.0) as a byproduct of forking. Those tags
+# point at upstream's commits, NOT this fork's downstream security/robustness
+# patches (verified: `git tag 0.9.8` here is upstream's own unrelated commit
+# 84a3f14, which does NOT contain this fork's PR#2/TR-33 dirty-signal fix
+# 8cd6637 -- `gh api compare` confirms 0.9.8 is neither an ancestor nor a
+# descendant of it). A bare `on: push: tags: ['[0-9]+.[0-9]+.[0-9]+']` trigger
+# would silently republish stale upstream history under a version number
+# that looks like -- but isn't -- this fork's own release. The published
+# ghcr image TAG stays plain semver (matching the existing 0.9.6/0.9.7
+# history already in ghcr) -- only the GIT tag needs the disambiguating
+# prefix, so the trigger step below strips it back off.
+#
+# Multi-platform (Mesh #abd02d11, sibling of evc-team-relay's own arm64 fix
+# #0b835e59): one leg per platform, each on a NATIVE runner -- not
+# `platforms: linux/amd64,linux/arm64` on a single amd64 runner, which would
+# build arm64 under QEMU. This was the third and last amd64-only image in the
+# documented self-host install chain (control-plane and web-publish already
+# fixed in #0b835e59); without it, step 7 of the documented install
+# (`docker compose up -d`) failed on Apple Silicon / Graviton / Ampere even
+# after the first two images were fixed. Native ARM runners are free on this
+# public repo, so there's no QEMU tradeoff to make. Each leg pushes by digest
+# only (no tag); `merge` below assembles the real tag from those digests via
+# `imagetools create`, which is what makes the multi-platform manifest, not
+# the build job.
+on:
+  push:
+    tags: ['relay-[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version tag (semver, e.g. 0.9.8)'
+        required: true
+        default: '0.9.8'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: entire-vc/evc-relay-server
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#relay-}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux/amd64
+            runner: ubuntu-latest
+          - name: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Platform slug for artifact naming
+        id: slug
+        run: echo "slug=$(echo '${{ matrix.platform.name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (${{ matrix.platform.name }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./crates
+          file: ./crates/Dockerfile
+          platforms: ${{ matrix.platform.name }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            RELAY_VERSION=${{ needs.resolve-version.outputs.version }}
+          cache-from: type=gha,scope=relay-server-${{ steps.slug.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=relay-server-${{ steps.slug.outputs.slug }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.slug.outputs.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    # Assembles the per-platform digests from `build` into the real
+    # multi-platform manifest for the version tag -- no rebuild, imagetools
+    # just writes a manifest list pointing at the already-pushed digests.
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v5
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-platform manifest
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046 # word-splitting is deliberate here:
+          # $() expands to multiple `<ref>@sha256:...` arguments for
+          # imagetools create, not one string.
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve-version.outputs.version }} \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)

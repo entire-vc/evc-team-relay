@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/entire-vc/evc-relay-server/security/advisories/new
+    about: Private disclosure. Please do not open a public issue for a security problem.
+  - name: Email us
+    url: https://github.com/entire-vc/evc-relay-server/blob/main/SUPPORT.md
+    about: Account questions, or anything you would rather not describe in public. Addresses and response times are here.

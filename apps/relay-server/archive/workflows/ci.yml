@@ -1,0 +1,53 @@
+name: CI
+
+# Actual PR-gate build/test check, deliberately separate from release.yml
+# (multi-platform binary builds, gated by `paths: .github/workflows/release.yml`
+# only) and docker-publish.yml (tag-triggered image publish). Neither of those
+# runs on a normal PR, so until this file existed every PR here — including
+# every Dependabot bump — merged with zero checks (TR·relay-server audit,
+# task #a704c2c2).
+#
+# Deliberately minimal: cargo check + cargo test only. No fmt/clippy in this
+# first pass — this repo is a fork of No-Instructions/relay-server pinned to
+# upstream, and a style gate would immediately go red on code we didn't
+# write, teaching everyone to ignore it within a week.
+#
+# No login/push steps here on purpose: GitHub does not forward repository
+# secrets to Dependabot-triggered runs, so any step needing one (e.g.
+# docker/login-action) would make every Dependabot PR permanently red
+# regardless of the change (see evc-team-relay #c7a7679d for the same
+# failure mode). Publishing lives in docker-publish.yml, triggered on tag
+# push, not here.
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> target
+      - run: cargo check --locked --release --manifest-path crates/Cargo.toml
+
+  cargo-test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> target
+      - run: cargo test --release --manifest-path crates/Cargo.toml
