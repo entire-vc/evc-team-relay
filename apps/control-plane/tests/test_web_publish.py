@@ -1634,7 +1634,7 @@ class TestPrivateShareWebAuthMetadata:
         monkeypatch.setattr(
             "app.api.routers.web.get_settings",
             lambda: _web_enabled_settings(
-                {"web_frame_ancestors": "https://mesh.entire.host https://dev.mesh.entire.host"}
+                {"web_frame_ancestors": "https://app.example.com https://dev.app.example.com"}
             ),
         )
         raw_key, _ = _make_agent_key(db_session, private_share_with_doc)
@@ -1645,7 +1645,7 @@ class TestPrivateShareWebAuthMetadata:
         assert response.status_code == 200
         csp = response.headers.get("content-security-policy", "")
         assert "frame-ancestors" in csp
-        assert "https://mesh.entire.host" in csp
+        assert "https://app.example.com" in csp
 
     def test_metadata_private_no_frame_ancestors_when_not_configured(
         self,

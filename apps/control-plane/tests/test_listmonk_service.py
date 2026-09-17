@@ -1,6 +1,6 @@
-"""Tests for listmonk_service.py — TR-34 (case-sensitivity) + U1 (SQL injection).
+"""Tests for listmonk_service.py — email case-sensitivity + SQL-injection escaping.
 
-TR-34: Listmonk stores/matches subscriber emails lowercase internally. A
+Listmonk stores/matches subscriber emails lowercase internally. A
 mixed-case registration email POSTs fine the first time, but the 409-conflict
 lookup in _update_existing() compared against the ORIGINAL mixed-case email —
 which never matches Listmonk's lowercased row — so attribs/list membership
@@ -64,7 +64,7 @@ class TestUpsertSubscriberCaseNormalization:
         service = _make_service(client)
 
         await service.upsert_subscriber(
-            email="Jimenezisaac021@GMAIL.com",
+            email="MixedCase.User@EXAMPLE.com",
             name="Isaac",
             casdoor=True,
             registered_at=datetime.now(timezone.utc),
@@ -73,7 +73,7 @@ class TestUpsertSubscriberCaseNormalization:
         )
 
         posted_payload = client.post.call_args.kwargs["json"]
-        assert posted_payload["email"] == "jimenezisaac021@gmail.com"
+        assert posted_payload["email"] == "mixedcase.user@example.com"
 
     @pytest.mark.asyncio
     async def test_409_conflict_lookup_uses_lowercased_email_not_original_case(self):
@@ -97,7 +97,7 @@ class TestUpsertSubscriberCaseNormalization:
         service = _make_service(client)
 
         result = await service.upsert_subscriber(
-            email="Jimenezisaac021@GMAIL.com",
+            email="MixedCase.User@EXAMPLE.com",
             name="Isaac",
             casdoor=True,
             registered_at=datetime.now(timezone.utc),
@@ -107,10 +107,10 @@ class TestUpsertSubscriberCaseNormalization:
 
         assert result is True
         lookup_query = client.get.call_args.kwargs["params"]["query"]
-        assert lookup_query == "subscribers.email = 'jimenezisaac021@gmail.com'"
+        assert lookup_query == "subscribers.email = 'mixedcase.user@example.com'"
         # PUT also carries the normalized email through.
         put_payload = client.put.call_args.kwargs["json"]
-        assert put_payload["email"] == "jimenezisaac021@gmail.com"
+        assert put_payload["email"] == "mixedcase.user@example.com"
 
 
 class TestUpdateExistingLookupEscaping:
@@ -151,7 +151,7 @@ def _make_row(email: str, registered_at: datetime):
 
 
 class TestSyncNewUsersCursorOnPartialFailure:
-    """TR-49 regression: a per-row exception must not let the cursor jump past it.
+    """Regression: a per-row exception must not let the cursor jump past it.
 
     Pre-fix, `max_ts` advanced on every row that didn't itself raise — so a
     later, successfully-synced row would drag the watermark past an earlier

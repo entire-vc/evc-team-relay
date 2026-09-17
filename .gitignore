@@ -164,7 +164,10 @@ venv/
 .claude/
 CLAUDE.md
 
-# Internal documentation (not for OSS)
+# Internal documentation (not for OSS).
+# This rule has been here since the first OSS release and was still bypassed once with
+# `git add -f`, which no ignore rule can prevent. If a dev-docs file belongs in the public
+# repository, generalise it into docs/ instead of force-adding it here.
 dev-docs/
 
 # Internal deployment docs (not for OSS)

@@ -1,4 +1,4 @@
-"""Unit tests for app.core.http.get_client_ip (#228403f8 follow-up).
+"""Unit tests for app.core.http.get_client_ip.
 
 Behind Caddy (infra/Caddyfile, no `trusted_proxies`), `request.client.host` is
 always Caddy's own container IP, never the real caller — that's the bug this
@@ -27,8 +27,8 @@ client = TestClient(app)
 
 
 def test_prefers_x_forwarded_for() -> None:
-    resp = client.get("/whoami", headers={"X-Forwarded-For": "95.165.156.36"})
-    assert resp.json()["ip"] == "95.165.156.36"
+    resp = client.get("/whoami", headers={"X-Forwarded-For": "203.0.113.7"})
+    assert resp.json()["ip"] == "203.0.113.7"
 
 
 def test_x_forwarded_for_multiple_entries_takes_first() -> None:

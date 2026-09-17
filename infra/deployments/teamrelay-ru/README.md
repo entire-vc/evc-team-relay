@@ -1,7 +1,8 @@
 # teamrelay.ru deployment
 
-Second Team Relay prod instance, for the .ru market. Host: alyssa
-(161.104.58.170), SSH alias `tr-ru-vm`.
+A second Team Relay production instance, for the .ru market. It runs on its own
+host, reached through the SSH alias `tr-ru-vm` — an alias, not a hostname: define
+it in your own `~/.ssh/config`. Everything below is relative to that host.
 
 ## Layout on the host (`/opt/relay/`)
 

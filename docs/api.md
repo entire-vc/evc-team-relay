@@ -32,6 +32,26 @@ Response:
 }
 ```
 
+### One token model, whichever way you sign in
+
+Every authentication path converges on the **same locally-minted access token** before any share
+or key operation happens: local email/password login, and SSO through an OAuth/OIDC provider.
+After an OAuth callback the control plane exchanges the code, reads userinfo from the provider,
+finds or creates the user, and then mints *its own* token — signed with `JWT_SECRET`
+(see [configuration](configuration.md)).
+
+A token issued by the identity provider is **never accepted** as a `Bearer` credential: it is used
+only to fetch userinfo during the callback. There is no JWKS endpoint and no provider-JWT
+middleware. Two consequences worth knowing:
+
+- An SSO-only user with no local password can use the full API, including creating agent keys —
+  the callback response carries a usable access token (returned as JSON when the request sends
+  `Accept: application/json` or when the OAuth state carries no `return_url`).
+- Presenting the provider's own token instead of the control plane's returns `401`.
+
+Agent keys are the exception to all of the above: they travel in their own `X-Agent-Key` header,
+not `Authorization`, and no JWT is involved. See [Agent Keys](agent-keys.md).
+
 ## Endpoints
 
 ### Health & Info
