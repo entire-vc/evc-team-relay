@@ -256,10 +256,18 @@ services:
         condition: service_completed_successfully
 
   relay-server:
-    image: ghcr.io/entire-vc/evc-relay-server:0.9.12
-    # Third-party image; publishes linux/amd64 + linux/arm64 as of 0.9.12 —
-    # no platform pin needed, Docker picks the manifest matching the host
-    # automatically, same as control-plane/web-publish.
+    build:
+      context: ../apps/relay-server
+      dockerfile: Dockerfile
+    image: infra-relay-server:latest
+    # Our own image, same shape as control-plane/web-publish above: the local
+    # tag is what scripts/pull-published-images.sh writes after pulling
+    # ghcr.io/entire-vc/evc-team-relay/relay-server:<version>, and `build:`
+    # stays for building from source. It used to pin the third-party fork
+    # ghcr.io/entire-vc/evc-relay-server:0.9.12, which meant release.yml's
+    # smoke-test booted an image the release had not built. Publishes
+    # linux/amd64 + linux/arm64, so no platform pin is needed — Docker picks
+    # the manifest matching the host automatically.
     depends_on:
       minio:
         condition: service_healthy

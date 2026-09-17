@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# Team Relay — pull the published control-plane + web-publish images and tag
-# them locally to match what infra/docker-compose.yml expects (infra-control-
-# plane:latest, infra-web-publish:latest). This is the path for anyone who
-# doesn't have a GitHub token with read access to our private @entire-vc/*
-# packages — which building web-publish from source needs (see
-# apps/web-publish/.npmrc) and every external OSS user is in that position.
+# Team Relay — pull the published control-plane, relay-server and web-publish
+# images and tag them locally to match what infra/docker-compose.yml expects
+# (infra-control-plane:latest, infra-relay-server:latest, infra-web-publish:
+# latest). This is the path for anyone who doesn't have a GitHub token with
+# read access to our private @entire-vc/* packages — which building
+# web-publish from source needs (see apps/web-publish/.npmrc) and every
+# external OSS user is in that position.
 #
-# Both images are published publicly by .github/workflows/release.yml on
+# All three images are published publicly by .github/workflows/release.yml on
 # every version tag; no login is required to pull them.
 #
-# Both images publish linux/amd64 and linux/arm64 — the preflight below only
+# All three publish linux/amd64 and linux/arm64 — the preflight below only
 # fires for a platform outside that pair, with an explanation rather than
 # letting the Docker daemon's own "no matching manifest for ..." surface with
-# no cause and no way forward. relay-server (pulled later by `docker compose
-# up`, not by this script) is also linux/amd64 + linux/arm64 as of 0.9.12 —
-# no platform pin needed anywhere in infra/docker-compose.yml.
+# no cause and no way forward. No platform pin is needed anywhere in
+# infra/docker-compose.yml.
 #
 # Usage:
 #   bash scripts/pull-published-images.sh [version]   # default: latest
@@ -72,7 +72,8 @@ your platform isn't one of those. Two ways forward:
   2. Build from source for your own architecture instead of pulling:
 
          docker build -t infra-control-plane:latest apps/control-plane
-         docker build -t infra-web-publish:latest  apps/web-publish
+         docker build -t infra-relay-server:latest  apps/relay-server
+         docker build -t infra-web-publish:latest   apps/web-publish
 
      Note that web-publish needs a GitHub token with read access to our
      @entire-vc npm packages (apps/web-publish/.npmrc); if you don't have
@@ -107,7 +108,7 @@ if AVAILABLE="$(platform_missing_from "${REGISTRY}/control-plane:${VERSION}")"; 
   unsupported_platform_error "${PLATFORM}" "${AVAILABLE}"
 fi
 
-for component in control-plane web-publish; do
+for component in control-plane relay-server web-publish; do
   echo "Pulling ${REGISTRY}/${component}:${VERSION}..."
   if ! docker pull "${REGISTRY}/${component}:${VERSION}"; then
     # Belt and braces: the preflight above is skipped whenever the manifest
@@ -123,4 +124,4 @@ for component in control-plane web-publish; do
   docker tag "${REGISTRY}/${component}:${VERSION}" "infra-${component}:latest"
 done
 
-echo "Done. infra-control-plane:latest and infra-web-publish:latest are ready for docker compose up -d."
+echo "Done. infra-control-plane:latest, infra-relay-server:latest and infra-web-publish:latest are ready for docker compose up -d."
