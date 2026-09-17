@@ -2,9 +2,9 @@
 
 **Status:** accepted 2026-08-19. Phases 1–3 shipped — the migration below is complete;
 `AGENT_KEY_LENIENT_READ_GRACE` is `false` on prod as of phase 3.
-**Context:** Mesh task [#b69d73fb](http://mesh.entire.host/t/b69d73fb-d219-4fe2-b61a-01aeb6a8d6dd),
-found by Daedalus while independently checking the API answer given in
-[#f87681cb](http://mesh.entire.host/t/f87681cb-0a79-4eed-8477-eaa46ad85cad).
+**Context:** raised during an independent re-check of an earlier API answer about what a
+`write`-scoped agent key is allowed to read. The re-check found the read paths disagreeing with
+each other, which is what this ADR settles.
 
 ## Decision
 
@@ -12,9 +12,9 @@ found by Daedalus while independently checking the API answer given in
 that serves share content to an agent key, and on `POST /v1/web/shares/{id}/upload`'s own `write`
 requirement. The policy lives in one place — `app/core/agent_key_scopes.py` — and every scope check
 in `web.py` calls it: the three auth helpers, plus `upload_mesh_artifact`'s own scope check (folded
-in by task [#3870a0f1](http://mesh.entire.host/t/3870a0f1-08d7-41c2-8c6b-5a733f0f1e72) — that route
-had carried an untouched inline copy since before this ADR, found during cross-verify on this very
-PR, which is exactly the class of defect *One policy, one module* below exists to prevent).
+in later — that route had carried an untouched inline copy of the check since before this ADR,
+found during cross-verification on this very change, which is exactly the class of defect
+*One policy, one module* below exists to prevent).
 
 Two coupled changes ship with it:
 
@@ -79,16 +79,17 @@ Tightening has the opposite profile. It only bites keys that lack a literal `rea
 through the lenient routes — which requires a published share:
 
 ```
-label            | share    | published | last_used_at        | creator
-nhbot            | neurohub | t         | (never)             | pavel@venture-crew.com
-mesh-spark-sync  | spark    | t         | 2026-08-11 06:33    | pavel@venture-crew.com
+label      | published | last_used_at        | creator
+bot-key    | t         | (never)             | first-party
+sync-key   | t         | 2026-08-11 06:33    | first-party
 ```
 
-**Blast radius: two keys, both ours, one never used.** No external customer key is affected.
+**Blast radius: two keys, both first-party, one never used.** No external customer key is
+affected.
 
 (`last_used_at` on a write-only key necessarily records a *write*: the scope check in
 `_auth_share_read_access` raises before the timestamp is written, and the lenient routes did not
-write it at all. So `mesh-spark-sync`'s timestamp is an upload, not a read.)
+write it at all. So `sync-key`'s timestamp is an upload, not a read.)
 
 ## Why the creation default changes too
 
@@ -124,8 +125,7 @@ route changes its verdict in this phase.** The grace is deliberately *not* appli
 routes — that would be the downward unification rejected above.
 
 **Phase 2 (migrate) — shipped 2026-08-21.** The share owner grants `read` to the keys the WARNING
-names — `mesh-spark-sync` (superseded by its replacement `mesh-spark-20260820`, same share) and
-`nhbot`:
+names — `sync-key` (since superseded by a replacement on the same share) and `bot-key`:
 
 ```bash
 curl -X PATCH "https://cp.tr.entire.vc/v1/web/shares/<share_id>/agent-keys/<key_id>" \
@@ -137,15 +137,14 @@ curl -X PATCH "https://cp.tr.entire.vc/v1/web/shares/<share_id>/agent-keys/<key_
 changes the raw secret and so forces reconfiguring whatever integration holds it; that cost is high
 enough that owners would rationally skip the migration and meet the breakage later instead.
 
-**Phase 3 (contract) — shipped 2026-08-23** (Mesh
-[#7922e325](http://mesh.entire.host/t/7922e325-9541-43cd-9fe6-14ed301b3f2d)). Gate cleared: zero
+**Phase 3 (contract) — shipped 2026-08-23.** Gate cleared: zero
 `event=agent_key_read_scope_grace` WARNING lines in the 24h observation window immediately before
 the flip, against live (non-idle) traffic. `AGENT_KEY_LENIENT_READ_GRACE=false` set on prod's
 `/opt/relay/.env` and applied via `docker compose up -d --force-recreate control-plane` (env vars
 are baked in at container creation; a plain `restart` would not have picked up the change).
 Confirmed live post-flip: `get_settings().agent_key_lenient_read_grace` returns `False`,
-`/v1/health` returns `{"ok":true}`, and a `read,write`-scoped key (`gandalf-20260820` on the
-`teamrelay` share) still reads successfully through the lenient routes — the flag change does not
+`/v1/health` returns `{"ok":true}`, and a `read,write`-scoped key on a first-party
+share still reads successfully through the lenient routes — the flag change does not
 affect keys that already carry a literal `read` scope, by construction. Reverting is a config
 change (`AGENT_KEY_LENIENT_READ_GRACE=true` back in `.env` + recreate `control-plane`), not a
 redeploy.

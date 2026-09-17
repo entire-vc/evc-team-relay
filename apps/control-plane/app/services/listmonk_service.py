@@ -36,7 +36,7 @@ def _sql_string_literal(value: str) -> str:
     look up a subscriber by email through this API. A bare `'` is valid in
     an RFC 5321 local-part (`o'brien@x.com` is a legal email) and breaks
     out of the string literal, so every value interpolated into `query`
-    MUST go through this escape (U1, #baa47cc5).
+    MUST go through this escape.
     """
     return value.replace("'", "''")
 
@@ -130,11 +130,11 @@ class ListmonkService:
             return False
 
         # Listmonk stores/matches emails lowercase internally. A mixed-case
-        # registration email (e.g. Jimenezisaac021@gmail.com) POSTs fine the
+        # registration email (e.g. MixedCase.User@Example.com) POSTs fine the
         # first time, but every subsequent sync gets a 409 (already exists)
         # whose exact-case lookup in _update_existing() never matches the
         # lowercased row — attribs/list membership silently stop updating,
-        # forever (TR-34, #38a5bdfd). Normalize once, here, so the same
+        # forever. Normalize once, here, so the same
         # value flows through the POST, the 409 lookup, and the PUT.
         email = email.strip().lower()
 
@@ -222,7 +222,7 @@ class ListmonkService:
         still attempted (a persistently-broken row shouldn't block newer
         registrations forever), but the cursor never jumps past a row that
         hasn't successfully synced, so the failed row gets retried on the
-        next cycle instead of silently skipped for up to 24h (TR-49).
+        next cycle instead of silently skipped for up to 24h.
         """
         rows = db.execute(_NEW_USERS_SINCE_QUERY, {"since": since}).fetchall()
         if not rows:

@@ -1,35 +1,33 @@
 name: Deploy
 
-# Automated deploy to tr-relay-vm (10.10.10.40, Helsinki — canonical prod since the
-# 2026-07-09 cutover; tw-relay/64.188.59.168 is standby/rollback-only) with a
+# Automated deploy of the control plane to a relay host over SSH, with a
 # fail-closed migration gate.
 #
-# Sequence (CLAUDE-workflow.md §1b Deploy Discipline):
-#   1. rsync apps/control-plane/ -> tr-relay-vm:/opt/relay/control-plane-src/
+# Sequence:
+#   1. rsync apps/control-plane/ -> $TARGET_HOST:$RELAY_DIR/control-plane-src/
 #   2. build image on the server
 #   3. run `control-plane-migrate` (alembic upgrade head) — FAIL-CLOSED
 #   4. only on migrate exit 0: `docker compose up -d` the app services
 #
 # A failed migration fails the job BEFORE any app container is restarted; prod is
 # left running the previous image. See scripts/deploy.sh for the on-server logic
-# and docs/DEPLOY.md for the runbook + required repository secrets.
+# and docs/DEPLOY.md for the runbook + required repository secrets/variables.
 #
-# ── How this reaches a private host from a GitHub-hosted runner ──────────────
-# tr-relay-vm has no public address; it lives on the private Helsinki network
-# (vmbr1, 10.10.10.0/24) behind hel01 (66.151.34.194). The runner gets there with
-# a ProxyJump through hel01's `ghdeploy` account — the same pattern the rest of
-# the fleet already deploys with (evc-mesh .10, evc-spark .30, evc-argus .60,
-# contenthub .70, tgbot .80, sites .100).
+# ── Reaching a host that has no public address ───────────────────────────────
+# The target may sit on a private network behind a bastion. Both endpoints come
+# from repository *variables* (`vars.DEPLOY_TARGET_HOST`, `vars.DEPLOY_PROXY_HOST`),
+# never from this file: a fork of this repository has no production topology in
+# it, and a host move is a settings change rather than a commit. Variables, not
+# secrets, on purpose — GitHub masks every secret as `***` in run logs, and a
+# masked hostname makes an SSH failure undebuggable from the run output. Both
+# are required: the job refuses to run with either one unset, rather than
+# ssh-ing to nowhere.
 #
-# `ghdeploy` is deliberately not a shell account. Its shell is /usr/sbin/nologin
-# and this repo's key is pinned in its authorized_keys as:
-#
-#   command="/bin/false",restrict,port-forwarding,permitopen="10.10.10.40:22" ...
-#
-# so the credential this workflow holds can do exactly one thing: open a TCP
-# forward to port 22 of this product's own VM. It cannot get a shell on the
-# hypervisor, and attempts to reach a sibling VM (billing, casdoor, spark, …) are
-# refused by sshd with "administratively prohibited".
+# Give the bastion account the narrowest grant that still works: no shell
+# (`/usr/sbin/nologin`) and a forced-command + `permitopen` restriction pinned to
+# this product's own host and port in its `authorized_keys`, so the credential
+# this workflow holds can do exactly one thing — open a TCP forward to that one
+# host. Reaching any neighbouring machine is then refused by sshd itself.
 #
 # NOTE — why this runs on `ubuntu-latest` and NOT a self-hosted runner:
 # this repository is PUBLIC and forkable, and ci.yml/trivy.yml both trigger on
@@ -62,7 +60,7 @@ on:
 # Never run two deploys to the same host concurrently. Do not cancel an
 # in-progress deploy — a half-applied migration is worse than a queued one.
 concurrency:
-  group: deploy-tr-relay-vm
+  group: deploy-control-plane
   cancel-in-progress: false
 
 permissions:
@@ -99,43 +97,53 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      # Deliberately NOT secrets. None of these are sensitive — the target IP is
-      # named in this file's own header, in docs/DEPLOY.md and in the fleet's
-      # CLAUDE.md — and putting them in secrets actively hurt: GitHub masks every
-      # secret as `***` in the logs, so when TW_RELAY_HOST turned out to carry two
-      # stray characters the resulting "no pinned host key" failure was
-      # undebuggable from the run output. Same convention as evc-spark's deploy.yml
-      # (DEPLOY_HOST/DEPLOY_USER/DEPLOY_PATH in plain env). Only the SSH key and
-      # the pinned host keys are secrets, because only those are actually secret.
+      # Host endpoints come from repository variables, not from this file and
+      # not from secrets. Not from the file, because this repository is a public
+      # showcase and its deploy topology is not part of what it publishes. Not
+      # from secrets, because GitHub masks every secret as `***` in run logs and
+      # that actively hurt once: when the target host value turned out to carry
+      # two stray characters, the resulting "no pinned host key" failure was
+      # undebuggable from the run output. Variables are unmasked and editable
+      # without a commit, which is what these values actually need.
       RELAY_DIR: /opt/relay
-      TARGET_HOST: 10.10.10.40
-      TARGET_USER: root
-      TARGET_PORT: '22'
-      PROXY_HOST: 66.151.34.194
-      PROXY_USER: ghdeploy
-      # Fingerprint of ghdeploy-team-relay@hel01-20260726. Pinned so a truncated,
-      # swapped or rotated key fails with that fact stated, instead of as an
-      # anonymous "Permission denied (publickey)".
+      TARGET_HOST: ${{ vars.DEPLOY_TARGET_HOST }}
+      TARGET_USER: ${{ vars.DEPLOY_TARGET_USER || 'root' }}
+      TARGET_PORT: ${{ vars.DEPLOY_TARGET_PORT || '22' }}
+      PROXY_HOST: ${{ vars.DEPLOY_PROXY_HOST }}
+      PROXY_USER: ${{ vars.DEPLOY_PROXY_USER || 'ghdeploy' }}
+      # Fingerprint of the dedicated deploy key. Pinned so a truncated, swapped
+      # or rotated key fails with that fact stated, instead of as an anonymous
+      # "Permission denied (publickey)". This is a public-key fingerprint, not a
+      # credential; it stays in the file on purpose, so rotating the key and
+      # updating its pin are the same reviewed change.
       DEPLOY_KEY_FINGERPRINT: 'SHA256:5DdPar8rAhyfVMEs42EN0zYRFA8a5DDdzMEtsx/cc+E'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Configure SSH (ProxyJump through hel01 into the private network)
+      - name: Configure SSH (ProxyJump through the bastion)
         env:
           SSH_KEY_B64: ${{ secrets.TW_RELAY_SSH_KEY_B64 }}
           KNOWN_HOSTS_B64: ${{ secrets.TW_RELAY_KNOWN_HOSTS_B64 }}
         run: |
           set -euo pipefail
 
-          # Fail closed on a missing secret. Without this an empty HOST would
-          # turn into an ssh to nowhere with a confusing error three steps later.
+          # Fail closed on a missing secret or variable. Without this an empty
+          # value would turn into an ssh to nowhere with a confusing error three
+          # steps later.
           missing=""
           for v in SSH_KEY_B64 KNOWN_HOSTS_B64; do
-            [ -n "${!v:-}" ] || missing="$missing $v"
+            [ -n "${!v:-}" ] || missing="$missing secrets.$v"
+          done
+          # TARGET_HOST/PROXY_HOST live in repository variables. An unset
+          # variable expands to an empty string with no warning, which would
+          # turn into an ssh to nowhere with a confusing error three steps
+          # later — name it here instead.
+          for v in TARGET_HOST PROXY_HOST; do
+            [ -n "${!v:-}" ] || missing="$missing vars.DEPLOY_$v"
           done
           if [ -n "$missing" ]; then
-            echo "::error::missing/empty required secret(s):$missing"
+            echo "::error::missing/empty required setting(s):$missing"
             exit 1
           fi
 
@@ -194,7 +202,7 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking yes
 
-          Host tr-relay-vm
+          Host relay-target
             HostName ${TARGET_HOST}
             Port ${TARGET_PORT}
             User ${TARGET_USER}
@@ -208,10 +216,10 @@ jobs:
       - name: Verify connectivity to prod (fail fast, before touching anything)
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes tr-relay-vm \
+          ssh -o BatchMode=yes relay-target \
             'echo "connected: $(hostname) / $(hostname -I | cut -d" " -f1)"'
 
-      - name: Sync control-plane source to tr-relay-vm
+      - name: Sync control-plane source to the target host
         run: |
           set -euo pipefail
           # --delete keeps the server source in lock-step with the repo; never
@@ -219,7 +227,7 @@ jobs:
           rsync -az --delete \
             -e "ssh -o BatchMode=yes" \
             apps/control-plane/ \
-            "tr-relay-vm:${RELAY_DIR}/control-plane-src/"
+            "relay-target:${RELAY_DIR}/control-plane-src/"
 
       - name: Build, migrate (fail-closed), and restart
         env:
@@ -229,7 +237,7 @@ jobs:
           # Run the on-server deploy script over stdin. Its exit code propagates
           # back here: a failed migration gate (set -e + explicit exit) fails this
           # step BEFORE `compose up`, so the app is never restarted on a bad migration.
-          ssh -o BatchMode=yes tr-relay-vm \
+          ssh -o BatchMode=yes relay-target \
             "RELAY_DIR='${RELAY_DIR}' DRY_RUN='${DRY_RUN}' bash -s -- control-plane" \
             < scripts/deploy.sh
 

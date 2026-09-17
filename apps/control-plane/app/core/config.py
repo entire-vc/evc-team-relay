@@ -251,7 +251,7 @@ class Settings(BaseSettings):
         default=None,
         description=(
             "Space-separated origins for CSP frame-ancestors on PRIVATE share responses. "
-            "Example: 'https://mesh.entire.host https://mesh-dev.entire.host'"
+            "Example: 'https://app.example.com https://app-dev.example.com'"
         ),
     )
 
@@ -262,7 +262,7 @@ class Settings(BaseSettings):
 
     # Listmonk email list sync
     listmonk_url: str | None = Field(
-        default=None, description="Listmonk base URL (e.g. https://lists.entire.host)"
+        default=None, description="Listmonk base URL (e.g. https://lists.example.com)"
     )
     listmonk_api_user: str = Field(default="api", description="Listmonk API username")
     listmonk_api_password: str | None = Field(default=None, description="Listmonk API password")

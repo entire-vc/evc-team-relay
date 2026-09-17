@@ -1,6 +1,6 @@
 # Agent Keys — Design Doc: Plugin UI + Backend API
 
-_Date: 2026-05-31 | Author: Daedalus | Status: Ready for implementation_
+_Date: 2026-05-31 | Status: Ready for implementation_
 
 ---
 
@@ -12,7 +12,7 @@ Team Relay currently has no way for external tools (Mesh agents, CI pipelines, l
 
 ## Backend API Design
 
-_Date: 2026-05-31 | Designed by: Daedalus_
+_Date: 2026-05-31_
 
 ---
 
@@ -456,7 +456,7 @@ sequenceDiagram
 
 ---
 
-### 8. Open Items for Gandalf (Backend)
+### 8. Open Items (Backend)
 
 | # | Task | Blocking |
 |---|------|---------|
@@ -552,7 +552,7 @@ Option A alone fails moment 2 — too much navigation cost when the user is alre
 │  ┌────────────────────┬──────────────────┬──────────────┐   │
 │  │ Label              │ Created          │              │   │
 │  ├────────────────────┼──────────────────┼──────────────┤   │
-│  │ daedalus-agent     │ 2026-05-20       │ [Revoke]     │   │
+│  │ research-agent     │ 2026-05-20       │ [Revoke]     │   │
 │  └────────────────────┴──────────────────┴──────────────┘   │
 │                                                             │
 │  Share: archive-2025                                        │

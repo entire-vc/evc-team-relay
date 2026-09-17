@@ -12,7 +12,7 @@ Usage:
 
 Environment:
     DATABASE_URL: PostgreSQL connection string
-    LISTMONK_URL: Listmonk base URL (e.g. https://lists.entire.host)
+    LISTMONK_URL: Listmonk base URL (e.g. https://lists.example.com)
     LISTMONK_API_USER: Listmonk API username (default: api)
     LISTMONK_API_PASSWORD: Listmonk API password
     LISTMONK_LIST_ID: List ID (default: 8)

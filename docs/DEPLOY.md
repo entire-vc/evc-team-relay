@@ -1,56 +1,58 @@
 # Team Relay — Deployment Runbook
 
-> **Rule §1b** (CLAUDE-workflow.md §1b Deploy Discipline): migrations MUST run and succeed
-> BEFORE the app image starts. Failed migration = blocked deploy, never the reverse.
+> **Deploy discipline:** migrations MUST run and succeed BEFORE the app image starts.
+> Failed migration = blocked deploy, never the reverse.
 
 ## Overview
 
-Team Relay is deployed on `tr-relay-vm` (`10.10.10.40`, Helsinki) via Docker Compose. Production
-images are built locally on the server from synced source (`/opt/relay/control-plane-src/`), not
+Team Relay is deployed on a relay host via Docker Compose. Production images are built locally on
+the server from synced source (`$RELAY_DIR/control-plane-src/`, `/opt/relay` by default), not
 pulled from a registry.
 
-> `tw-relay` (`64.188.59.168`) is **standby/rollback-only** since the 2026-07-09 Helsinki cutover —
-> it is not a deploy target. Do not `ssh tw-relay` and run the deploy recipe there.
+Throughout this runbook, `tr-relay-vm` is an **SSH alias, not a hostname** — it is the default
+`SSH_TARGET` in [`scripts/deploy.sh`](../scripts/deploy.sh). Define it in your own
+`~/.ssh/config`, pointing at your relay server (with a `ProxyJump` if the server has no public
+address), and every command below works verbatim; or override it per invocation with
+`SSH_TARGET=<your-alias>`.
+
+If you keep a standby machine for rollback, it is **not** a deploy target: do not SSH into it and
+run these recipes there.
 
 The `control-plane-migrate` service in `docker-compose.yml` is the **fail-closed gate**: it runs
 `alembic upgrade head` and must exit 0 before `control-plane` (or any worker) starts. `web-publish`
 has no migrations, so its deploy skips straight to build + restart.
 
 Three ways to deploy:
-- **[Automated (GitLab CI)](#automated-deploy-gitlab-ci)** — control-plane only. Since the
-  2026-08-23 cutover this runs from the `entire-vc/deploy` project on `git.entire.host`, as the
-  **manual** job `deploy:team-relay`. It is deliberately not push-triggered: a human starts it.
+- **[Automated (CI)](#automated-deploy-ci)** — control-plane only, driven from a separate
+  deployment project as a **manual** job. It is deliberately not push-triggered: a human starts it.
 - **[`scripts/deploy.sh` from a local checkout](#scriptsdeploysh-local-driver)** — still the path
-  for **web-publish** (which CD does not cover), and the fallback for control-plane when Actions
+  for **web-publish** (which CD does not cover), and the fallback for control-plane when CI
   is unavailable. Run it from your machine; it rsyncs the source and runs the same
-  build/gate/restart logic on `tr-relay-vm` over SSH.
+  build/gate/restart logic on the relay host over SSH.
 - **[Manual (SSH)](#manual-upgrade-fallback)** — the emergency fallback when you're already on the
   box, or want to run the steps by hand.
 
 ---
 
-## Automated deploy (GitLab CI)
+## Automated deploy (CI)
 
-Pipeline: `entire-vc/deploy` → `.gitlab-ci.yml`, job `deploy:team-relay`.
-On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh) — unchanged by the cutover, and still
-the single source of the build/gate/restart sequence.
+On-server logic: [`scripts/deploy.sh`](../scripts/deploy.sh) — the single source of the
+build/gate/restart sequence, whichever driver invokes it.
 
-**Trigger** — manual only. Start a pipeline on `main` in `entire-vc/deploy` and play
-`deploy:team-relay`; `verify:team-relay` follows automatically on success. `DRY_RUN` defaults to
-`false` there. The job clones this repo at `${PRODUCT_REF:-main}` rather than keeping a copy of
-the source in the deploy project.
+**Trigger** — manual only. A `deploy` job builds and ships the control plane, and a `verify` job
+follows automatically on success; `DRY_RUN` defaults to `false`. The deploy job clones this repo
+at a chosen ref rather than keeping a copy of the source in the deployment project.
 
-> The old GitHub Actions workflow (`.github/workflows/deploy.yml`) was push-triggered on
-> `apps/control-plane/**` and `scripts/deploy.sh`. It no longer deploys; GitHub is the public
-> showcase mirror. The exclusion of `.github/**` from that filter carried over to the GitLab job
-> for the same reason it existed: a CI-plumbing edit is not a reason to restart production, and a
-> pipeline listing its own path would redeploy prod the instant it merged.
+> `.github/workflows/deploy.yml` is the reference implementation of the same sequence as a GitHub
+> Actions workflow — host endpoints come from repository variables, credentials from secrets. Note
+> its path filter deliberately excludes `.github/**`: a CI-plumbing edit is not a reason to restart
+> production, and a pipeline listing its own path would redeploy prod the instant it merged.
 
 **What it does** (one job, `environment: production`):
-1. Writes the deploy key + pinned host keys and builds an SSH config that reaches
-   `tr-relay-vm` via `ProxyJump` through `ghdeploy@hel01`, then proves connectivity with a
-   cheap `hostname` call before touching anything.
-2. `rsync -az --delete apps/control-plane/ → tr-relay-vm:/opt/relay/control-plane-src/`
+1. Writes the deploy key + pinned host keys and builds an SSH config that reaches the relay host
+   (via `ProxyJump` through a bastion, if the host has no public address), then proves
+   connectivity with a cheap `hostname` call before touching anything.
+2. `rsync -az --delete apps/control-plane/ → <relay host>:/opt/relay/control-plane-src/`
    (syncs only the app source; never touches the server-managed `docker-compose.yml` / `.env`).
 3. Runs `scripts/deploy.sh` over SSH, which on the server: tags the current image as
    `:prev`, builds `infra-control-plane:latest`, runs the **migration gate**, and — only on
@@ -75,8 +77,8 @@ Setting `DRY_RUN=true` builds the image into a throwaway `:candidate` tag and ru
 migration check against it (`alembic upgrade head --sql` — renders the SQL a real upgrade would
 execute and validates the revision graph, without opening a database connection), then stops
 before touching `:latest`/`:prev` or restarting anything. Run it the same way as a real deploy,
-just with the flag set — via the `entire-vc/deploy` pipeline's `DRY_RUN` job variable (start a
-pipeline on `main`, set `DRY_RUN=true`, play `deploy:team-relay`), or manually on the host:
+just with the flag set — via the deploy pipeline's `DRY_RUN` job variable, or manually on the
+host:
 
 ```bash
 ssh tr-relay-vm
@@ -89,7 +91,7 @@ value (`/opt/relay/.env` carries an ED25519 PEM key) and used to fail with `vari
 '-----END PRIVATE KEY-----"' contains whitespaces` before alembic ever ran, which read as a
 broken migration graph rather than what it actually was. Compose's own `env_file` parser handles
 multi-line values correctly, matching the real (online) gate below, which already went through
-compose for the same reason. Fixed 2026-08-23 (Mesh `#efcf85d4`) — the rehearsal appears never to
+compose for the same reason. Fixed 2026-08-23 — the rehearsal appears never to
 have been executed before that, since CI never set `DRY_RUN=true`; two migrations
 (`202608200002`, `202608200003`) also needed a `context.is_offline_mode()` guard around code that
 assumed a real online connection, surfaced only once the transport bug stopped masking them.
@@ -101,87 +103,86 @@ connection attempted either way.
 The **real** deploy keeps its own fail-closed gate regardless: migrations run through compose
 before `up`, and their failure cancels the deploy.
 
-### Required repository secrets (historical — the retired GitHub Actions path)
+### Required repository secrets and variables
 
-> Kept for the record and because the lessons below still apply to the GitHub workflows this
-> repository *does* still run (`ci.yml`, `trivy.yml`, `semgrep.yml`). These secrets no longer
-> deploy anything. The GitLab job authenticates with `DEPLOY_SSH_KEY`, a **file**-type CI
-> variable, so the variable holds a path and `env`/`printenv` never prints the key; the runner
-> sits inside the Helsinki network and reaches the relay host directly, with no `ghdeploy@hel01`
-> ProxyJump hop at all.
+These are what `.github/workflows/deploy.yml` reads. Set them under **Settings → Secrets and
+variables → Actions**, or scope them to the `production` environment, which also lets you add a
+manual-approval protection rule. The workflow fails closed on its first step if any of them is
+missing or empty.
 
-Set these under **Settings → Secrets and variables → Actions** (or scoped to the `production`
-environment, which also lets you add a manual-approval protection rule):
-
-Both are set as of 2026-07-26. The workflow fails closed on its first step if either is missing
-or empty.
+**Secrets** — values that must never appear in a log:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `TW_RELAY_SSH_KEY_B64` | ✅ | Private half of the dedicated `ghdeploy-team-relay@hel01-20260726` ed25519 deploy key, **base64-encoded**. Public half is in `tr-relay-vm:~/.ssh/authorized_keys` **and** in `hel01:/home/ghdeploy/.ssh/authorized_keys` (restricted, see network note). |
-| `TW_RELAY_KNOWN_HOSTS_B64` | ✅ | Pinned host keys for **both** hops (hel01 and `10.10.10.40`), **base64-encoded**. There is no TOFU fallback — an unknown or changed host key fails the deploy. |
+| `TW_RELAY_SSH_KEY_B64` | yes | Private half of a dedicated ed25519 deploy key, **base64-encoded**. Its public half goes in the relay host's `~/.ssh/authorized_keys` and, if you jump through a bastion, in the bastion account's `authorized_keys` as a restricted entry (see the network note below). |
+| `TW_RELAY_KNOWN_HOSTS_B64` | yes | Pinned host keys for **every** hop (bastion and target), **base64-encoded**. There is no TOFU fallback — an unknown or changed host key fails the deploy. |
 
-Only those two. Everything else the job needs — `TARGET_HOST`, `TARGET_USER`, `TARGET_PORT`,
-`PROXY_HOST`, `PROXY_USER`, `RELAY_DIR` — lives in plain `env:` at the top of the job, matching
-evc-spark's `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PATH`.
+**Variables** — deploy topology, which is configuration rather than secret:
 
-> **Why they are not secrets.** None of them are sensitive: the target IP is named in this very
-> document, in the workflow's own header comment, and in the fleet CLAUDE.md. Storing them as
-> secrets was actively harmful — GitHub masks every secret as `***` in run logs, so when
-> `TW_RELAY_HOST` turned out to hold two stray characters (13 bytes for an 11-byte address), the
-> resulting `no pinned host key` failure was impossible to diagnose from the run output. Plain
-> `env:` keeps the logs readable and puts the value under code review.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DEPLOY_TARGET_HOST` | yes | Address or resolvable name of the relay host, as seen *from the bastion* when one is used. |
+| `DEPLOY_PROXY_HOST` | yes | Address or name of the bastion the runner jumps through. |
+| `DEPLOY_TARGET_USER` | no | SSH user on the relay host (default `root`). |
+| `DEPLOY_TARGET_PORT` | no | SSH port on the relay host (default `22`). |
+| `DEPLOY_PROXY_USER` | no | SSH user on the bastion (default `ghdeploy`). |
 
-> ⚠️ **Why both are base64.** A raw multi-line value does not survive `gh secret set` intact.
-> Measured on this repo during the 2026-07-26 bring-up: a 12-line `known_hosts` arrived at the
-> runner as its **last line only** (94 bytes, 0 newlines), leaving the ProxyJump hop entirely
-> unpinned; and the 432-byte / 8-line private key arrived as **418 bytes / 7 lines**, which
-> presents as a bare `Permission denied (publickey)`. Base64 is a single line, so there is
-> nothing to truncate — verified byte-identical on round-trip.
+> **Why the hosts are variables and not secrets.** GitHub masks every secret as `***` in run logs.
+> That is exactly wrong for a hostname: when the target host value once turned out to carry two
+> stray characters (13 bytes for an 11-byte address), the resulting `no pinned host key` failure
+> was impossible to diagnose from the run output. Variables are unmasked, so the logs stay
+> readable — and, unlike a literal in the workflow file, they keep a fork of this repository from
+> carrying anyone's deploy topology.
+
+> **Why both secrets are base64.** A raw multi-line value does not survive `gh secret set` intact.
+> Measured on this repository during bring-up: a 12-line `known_hosts` arrived at the runner as its
+> **last line only** (94 bytes, 0 newlines), leaving the ProxyJump hop entirely unpinned; and a
+> 432-byte / 8-line private key arrived as **418 bytes / 7 lines**, which presents as a bare
+> `Permission denied (publickey)`. Base64 is a single line, so there is nothing to truncate —
+> verified byte-identical on round-trip.
 >
 > Regenerate them with:
 >
 > ```bash
-> # known_hosts (both hops)
-> { ssh-keyscan -t rsa,ecdsa,ed25519 66.151.34.194
->   ssh hel01 'ssh-keyscan -t rsa,ecdsa,ed25519 10.10.10.40'
-> } | base64 | tr -d '\n' | gh secret set TW_RELAY_KNOWN_HOSTS_B64 -R entire-vc/evc-team-relay
+> # known_hosts (every hop). BASTION/TARGET are the values you put in
+> # DEPLOY_PROXY_HOST / DEPLOY_TARGET_HOST.
+> { ssh-keyscan -t rsa,ecdsa,ed25519 "$BASTION"
+>   ssh "$BASTION" "ssh-keyscan -t rsa,ecdsa,ed25519 $TARGET"
+> } | base64 | tr -d '\n' | gh secret set TW_RELAY_KNOWN_HOSTS_B64 -R <owner>/<repo>
 >
 > # private key
 > base64 < /path/to/deploy_key | tr -d '\n' \
->   | gh secret set TW_RELAY_SSH_KEY_B64 -R entire-vc/evc-team-relay
+>   | gh secret set TW_RELAY_SSH_KEY_B64 -R <owner>/<repo>
 > ```
 >
 > **The workflow does not trust either value.** After decoding it asserts that both SSH hops are
 > actually pinned (`ssh-keygen -F`) and that the private key's fingerprint matches
-> `DEPLOY_KEY_FINGERPRINT`, pinned in plain `env:`. If you rotate the key, update that
-> fingerprint in the same commit — otherwise the deploy fails closed, by design, naming the
-> mismatch rather than dying as an anonymous auth error.
+> `DEPLOY_KEY_FINGERPRINT`, pinned in plain `env:` in the workflow. That pin is a public-key
+> fingerprint, not a credential — keeping it in the file means rotating the key and updating its
+> pin are the same reviewed change. If you rotate the key without updating it, the deploy fails
+> closed, by design, naming the mismatch rather than dying as an anonymous auth error.
 
-> **Network note.** `tr-relay-vm` (`10.10.10.40`) has no public address; it sits on the private
-> Helsinki network (`vmbr1`, `10.10.10.0/24`) behind hel01 (`66.151.34.194`). The workflow reaches
-> it from a stock `ubuntu-latest` runner via `ProxyJump` through hel01's `ghdeploy` account — the
-> same pattern evc-mesh (`.10`), evc-spark (`.30`), evc-argus (`.60`), contenthub (`.70`), tgbot
-> (`.80`) and sites (`.100`) already deploy with.
+> **Network note.** A relay host with no public address can sit on a private network behind a
+> bastion; the workflow reaches it from a stock `ubuntu-latest` runner via `ProxyJump`.
 >
-> `ghdeploy` is not a shell account (`/usr/sbin/nologin`), and this repo's key is pinned in its
-> `authorized_keys` as:
+> Give the bastion account the narrowest grant that still works. Make it a non-shell account
+> (`/usr/sbin/nologin`) and pin the deploy key in its `authorized_keys` with a forced command and
+> a `permitopen` restriction naming only this product's own host and port:
 >
 > ```
-> command="/bin/false",restrict,port-forwarding,permitopen="10.10.10.40:22" ssh-ed25519 AAAA... ghdeploy-team-relay@hel01-20260726
+> command="/bin/false",restrict,port-forwarding,permitopen="<target-host>:22" ssh-ed25519 AAAA... deploy-key-comment
 > ```
 >
-> so the credential can do exactly one thing: open a TCP forward to port 22 of this product's own
-> VM. Verified 2026-07-26 — a shell attempt returns *"This account is currently not available"*,
-> and forwarding to a sibling VM (`.20` billing, `.30` spark) is refused with
-> *"administratively prohibited"*.
+> The credential the workflow holds can then do exactly one thing: open a TCP forward to port 22
+> of that one host. Verify it: a shell attempt returns *"This account is currently not available"*,
+> and forwarding to any other machine is refused with *"administratively prohibited"*.
 >
-> ⚠️ **Do not move this job to a self-hosted runner.** This repository is public and forkable, and
-> `ci.yml`/`trivy.yml` trigger on `pull_request`. GitHub runs a fork PR's workflow file *from the
-> PR branch*, so a self-hosted runner registered here could be hijacked by a fork PR that
-> re-points `runs-on` at it — onto a machine holding a production SSH key. Secrets are never
-> exposed to fork-PR workflows, which is precisely why the GitHub-hosted + secret design is the
-> safe one here.
+> > **Do not move this job to a self-hosted runner.** This repository is public and forkable, and
+> > `ci.yml`/`trivy.yml` trigger on `pull_request`. GitHub runs a fork PR's workflow file *from the
+> > PR branch*, so a self-hosted runner registered here could be hijacked by a fork PR that
+> > re-points `runs-on` at it — onto a machine holding a production SSH key. Secrets are never
+> > exposed to fork-PR workflows, which is precisely why the GitHub-hosted + secret design is the
+> > safe one here.
 
 ---
 
@@ -190,7 +191,7 @@ evc-spark's `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PATH`.
 CD covers **control-plane** only, so this remains the way to ship **web-publish**, and the
 fallback for control-plane when Actions is unavailable. Run it from a local checkout; it has
 access to `tr-relay-vm` via the same
-`ProxyJump hel01` alias your `~/.ssh/config` already uses for manual SSH.
+alias your `~/.ssh/config` already uses for manual SSH.
 
 ```bash
 bash scripts/deploy.sh control-plane   # control-plane + workers (migration gate + edition smoke gate)
@@ -216,7 +217,8 @@ unified into one script instead of split between a CI rsync step and this script
 
 `DRY_RUN=true bash scripts/deploy.sh <component>` builds the image and runs the migration gate
 (control-plane only) but stops before `compose up` — use it to rehearse before a real deploy.
-`SSH_TARGET` overrides the remote host (default `tr-relay-vm`) if you're ever deploying elsewhere.
+`SSH_TARGET` overrides the remote host (default `tr-relay-vm`, the alias described in the
+overview) if you're ever deploying elsewhere.
 
 If you're **already SSH'd into `tr-relay-vm`** with the source already synced, running the script
 there directly (`RELAY_DIR=/opt/relay bash -s -- web-publish < scripts/deploy.sh`, or just running
@@ -337,7 +339,7 @@ own distinct `image:` (e.g. `infra-webhook-worker:latest`) will **never be rebui
 pipeline** — it sits on whatever content it had the day someone first `docker build`-ed that tag
 by hand, silently drifting from the rest of the fleet. This is exactly what happened
 2026-07-25 → 2026-08-06: the four workers held `cryptography==48.0.1` while `control-plane` had
-already moved to `50.0.0` (task `#148cdf9e`). Every `up -d --force-recreate` looked successful —
+already moved to `50.0.0`. Every `up -d --force-recreate` looked successful —
 the containers restarted fine — because recreate only swaps which image tag a container runs,
 it does not rebuild that tag.
 
@@ -407,7 +409,7 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
   leaves the server's compose file and `.env` alone — this means fixing the compose *structure*
   (as opposed to the app source) always requires a manual edit on `tr-relay-vm` itself, backed up
   first (`cp docker-compose.yml docker-compose.yml.bak-<ts>-<reason>`).
-- **Worker image consolidation (2026-08-06, task `#148cdf9e`).** Before this date `webhook-worker`,
+- **Worker image consolidation (2026-08-06).** Before this date `webhook-worker`,
   `email-worker`, `listmonk-sync-worker`, and `lifecycle-worker` each had their own `image:` tag
   (`infra-webhook-worker:latest` etc.), built once by hand and never touched again by
   `scripts/deploy.sh` — 12 days of dependency drift went undetected because `--force-recreate`
@@ -416,28 +418,28 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
   rollback path. The old tags will accumulate as dead weight — safe to `docker rmi` them after a
   few successful deploys confirm the new tag is stable.
 - **web-publish** is covered by `scripts/deploy.sh web-publish` (see above) — merges to
-  `apps/web-publish/` do NOT deploy themselves; someone has to run the script. This was a real gap
-  (task `c3f38d9a`): three merged fixes sat undeployed for up to 3 days because nothing rebuilt the
-  container. **relay-server** (the Rust Yjs relay, separate repo `evc-relay-server`) is still not
+  `apps/web-publish/` do NOT deploy themselves; someone has to run the script. This was a real gap:
+  three merged fixes once sat undeployed for up to 3 days because nothing rebuilt the
+  container. **relay-server** (the Rust Yjs relay, a separate repository) is still not
   covered by anything here — rebuild it manually if its source changes.
 - **`infra/Caddyfile` is host-managed and NOT synced by the deploy pipeline** (same gap as the
   compose file above). A fix applied here must ALSO be applied live on `tr-relay-vm`
   (`/opt/relay/Caddyfile`, content-preserving write + `caddy validate` + `caddy reload` inside
   `relay-caddy-1` — it's a bind-mounted single file, don't `sed -i` it, write a fresh copy so the
   inode is preserved) or it silently only exists in git. Confirmed drifted at least once already
-  (TR-47's `/metrics` block, TR-43's WS-token-stripping fix) — always diff live vs repo before
+  (a `/metrics` block, and a WS-token-stripping fix) — always diff live vs repo before
   assuming they match.
-- **Firewall.** See the network note under [Automated deploy](#required-repository-secrets) if
-  GitHub-hosted runners can't reach `tr-relay-vm`.
+- **Firewall.** See the network note under
+  [Required repository secrets and variables](#required-repository-secrets-and-variables) if
+  hosted CI runners can't reach the relay host.
 - **`infra/Caddyfile` is NOT deployed by CD or the manual steps above — sync it by hand, every
   time.** Neither the automated pipeline nor the manual upgrade recipe touches
   `/opt/relay/Caddyfile`; it's a `docker-compose.yml`-managed bind mount the deploy tooling
   deliberately leaves alone (same reasoning as the server-managed compose file, above), but
   unlike compose/`.env` there is no independent reason for it to diverge from git — it's meant to
-  track `infra/Caddyfile` exactly. This has silently regressed the public `/metrics` block twice
-  (task history: `c27b715a`, `77117bf7`) — most recently by surviving the 2026-07-09 Helsinki
-  host migration, since a host migration copies data/config that was already on the box, not
-  what's in git. **After editing `infra/Caddyfile`, or after any host migration, manually sync
+  track `infra/Caddyfile` exactly. This has silently regressed the public `/metrics` block twice —
+  most recently by surviving a host migration, since a host migration copies data/config that was
+  already on the box, not what's in git. **After editing `infra/Caddyfile`, or after any host migration, manually sync
   it:**
   ```bash
   scp infra/Caddyfile tr-relay-vm:/opt/relay/Caddyfile   # back up the old one on the host first
@@ -454,9 +456,8 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
 
 ## References
 
-- `CLAUDE-workflow.md §1b` — shared deploy-discipline rule (migration before code, always)
-- `entire-vc/deploy` → `.gitlab-ci.yml`, jobs `deploy:team-relay` / `verify:team-relay` — the
-  automated deploy pipeline (control-plane only, manual start)
+- `.github/workflows/deploy.yml` — reference CI implementation of the automated deploy
+  (control-plane only)
 - `scripts/deploy.sh` — rsync (driver mode) → build → migrate-gate (control-plane only) → restart,
   for both control-plane and web-publish
 - `infra/docker-compose.yml` — dev/local compose template (build-context variant of same gate)
