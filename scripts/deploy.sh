@@ -24,7 +24,6 @@
 #   SSH_TARGET          ssh alias/host used in driver mode            (default tr-relay-vm)
 #   IMAGE               control-plane image tag                      (default infra-control-plane:latest)
 #   WEB_PUBLISH_IMAGE   web-publish image tag                        (default infra-web-publish:latest)
-#   GITHUB_TOKEN         BuildKit secret for web-publish's `npm ci`   (else read from $RELAY_DIR/.env)
 #   DRY_RUN             if "true": rehearsal only — see below for exactly what that means
 #
 # DRY_RUN=true is a genuine no-side-effects rehearsal, not "build for real but skip the
@@ -301,17 +300,12 @@ deploy_web_publish() {
   #    is what keeps a dry run from touching :latest/:prev; see deploy_control_plane
   #    for why (#507d6021, an earlier dry-run-then-real-run sequence corrupted
   #    :prev because the build overwrote :latest regardless of DRY_RUN).
-  #    The Dockerfile's `npm ci` reads GITHUB_TOKEN via a BuildKit secret mount
-  #    (never baked into a layer) — pull it from the environment, falling back
-  #    to the server's own $RELAY_DIR/.env so this works unattended too.
-  local github_token="${GITHUB_TOKEN:-}"
-  if [ -z "$github_token" ] && [ -f "$RELAY_DIR/.env" ]; then
-    github_token="$(grep -m1 '^GITHUB_TOKEN=' "$RELAY_DIR/.env" | cut -d= -f2-)"
-  fi
-  [ -n "$github_token" ] || die "GITHUB_TOKEN not set and not found in $RELAY_DIR/.env — required as the npm-ci build secret"
+  #    The build needs no credential: @entire-vc/tokens and @entire-vc/ui-svelte
+  #    are on the public npm registry, so the GITHUB_TOKEN BuildKit secret this
+  #    used to require — and die on when absent — is gone.
 
   log "building $candidate from web-publish-src/"
-  GITHUB_TOKEN="$github_token" docker build --secret id=github_token,env=GITHUB_TOKEN -t "$candidate" web-publish-src/
+  docker build -t "$candidate" web-publish-src/
 
   # web-publish has no migrations — no fail-closed gate needed here. Do not add
   # one; control-plane's gate above is the only migration-bearing component.

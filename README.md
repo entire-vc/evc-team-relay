@@ -68,10 +68,10 @@ cp relay/relay.toml.example relay/relay.toml
 # Edit relay.toml: MinIO credentials from .env, and the [[auth]] public_key
 # derived from the same key (see docs/installation.md step 3)
 
-# Pull the published images instead of building from source — web-publish's
-# build needs a GitHub token scoped to our private packages, which nobody
-# outside the org has. Point releases only; run from evc-team-relay/ (one
-# level up from infra/).
+# Pull the published images instead of building from source — faster, and
+# byte-identical to what the release workflow shipped. Building from source
+# works too: every dependency is public. Point releases only; run from
+# evc-team-relay/ (one level up from infra/).
 bash ../scripts/pull-published-images.sh
 
 docker compose up -d

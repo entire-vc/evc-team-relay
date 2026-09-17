@@ -152,10 +152,10 @@ This allows the Obsidian plugin (and other browser-based clients) to authenticat
 
 ### 6. Pull the Published Images
 
-`web-publish` builds from source only with a GitHub token scoped to our private
-`@entire-vc/*` packages — not available outside the org. Pull the images the release
-workflow already publishes publicly instead (run from the repo root, one level up from
-`infra/`):
+Building from source works — the `@entire-vc/*` packages `web-publish` depends on are
+published on the public npm registry, so no credential is involved. Pulling the images the
+release workflow already published is simply faster and gets you the exact bytes that were
+tested (run from the repo root, one level up from `infra/`):
 
 ```bash
 bash scripts/pull-published-images.sh

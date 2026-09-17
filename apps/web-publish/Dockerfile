@@ -4,12 +4,13 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files and registry config
+# Copy package files and the npm config (min-release-age supply-chain delay)
 COPY package.json package-lock.json* .npmrc ./
 
-# Install dependencies — token mounted as BuildKit secret, never baked into a layer
-RUN --mount=type=secret,id=github_token \
-    GITHUB_TOKEN=$(cat /run/secrets/github_token) npm ci
+# Install dependencies. @entire-vc/tokens and @entire-vc/ui-svelte are public
+# on npmjs.org, so this build needs no registry credential; the github_token
+# BuildKit secret this used to mount is gone.
+RUN npm ci
 
 # Copy source code
 COPY . .

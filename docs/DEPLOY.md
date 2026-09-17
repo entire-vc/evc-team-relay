@@ -208,9 +208,8 @@ unified into one script instead of split between a CI rsync step and this script
 - **control-plane**: tag `:prev` → `docker build` → migration gate (fail-closed) →
   `compose up -d --force-recreate` → health check → edition smoke gate (auto-rolls back on
   failure). Unchanged from before this script covered web-publish too.
-- **web-publish**: tag `:prev` → `docker build --secret id=github_token,...` (the Dockerfile's
-  `npm ci` needs a GitHub token for scoped package installs; taken from `$GITHUB_TOKEN` in your
-  shell, or read from `tr-relay-vm:/opt/relay/.env` if unset) → `compose up -d --force-recreate` →
+- **web-publish**: tag `:prev` → `docker build` (no build secret: the `@entire-vc/*` packages
+  its `npm ci` installs are public on npmjs.org) → `compose up -d --force-recreate` →
   health check. No migration gate — web-publish has no migrations — and no edition smoke gate,
   that check is control-plane/billing-specific.
 
@@ -271,9 +270,8 @@ cd /opt/relay
 # 2. Tag the current image BEFORE overwriting (enables fast rollback)
 docker tag infra-web-publish:latest infra-web-publish:prev
 
-# 3. Build new image — the Dockerfile's `npm ci` needs GITHUB_TOKEN as a BuildKit secret
-GITHUB_TOKEN=$(grep -m1 '^GITHUB_TOKEN=' .env | cut -d= -f2-)
-docker build --secret id=github_token,env=GITHUB_TOKEN -t infra-web-publish:latest web-publish-src/
+# 3. Build new image — no build secret needed, every npm dependency is public
+docker build -t infra-web-publish:latest web-publish-src/
 
 # 4. Restart
 docker compose up -d --force-recreate web-publish

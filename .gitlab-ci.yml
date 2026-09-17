@@ -195,25 +195,17 @@ check-migration-drift:
     - uv run alembic check
 
 # ── web-publish (SvelteKit) ─────────────────────────────────────────────────
-# These two were absent from the first version of this file, and the header
-# said why: the lockfile pinned @entire-vc/tokens and @entire-vc/ui-svelte to
-# npm.pkg.github.com, and `npm ci` installs from `resolved`, so repointing the
-# registry alone did not redirect them.
+# @entire-vc/tokens and @entire-vc/ui-svelte are published on the PUBLIC npm
+# registry, so `npm ci` here needs no registry config and no credential at all.
 #
-# That was true and is now fixed at the source: both packages were ALREADY
-# published in the GitLab Package Registry of evc-brandkit (project 9) at
-# exactly the pinned versions — nothing had to be published, and no Maintainer
-# rights were needed. The lockfile's two entries were re-resolved against it.
-#
-# ⚠️ Auth is written to ~/.npmrc HERE rather than living in the repo's .npmrc
-# as a ${VAR} placeholder. That is deliberate: npm does not error on an
-# unexpanded ${VAR}, it takes the string literally and sends it as the token,
-# so a missing variable degrades into a confusing 401 instead of a clear
-# failure. CI_JOB_TOKEN is always populated by the runner, so no emptiness
-# check is needed — unlike the GITHUB_TOKEN this replaced.
-#
-# evc-brandkit has ci_job_token_scope_enabled=false, so no allowlist entry is
-# required for this project to read its packages.
+# History, because this job carried a token twice and both times it broke the
+# other pipeline: the lockfile first pinned the two packages to
+# npm.pkg.github.com (GitLab runners have no GitHub token — red here), then to
+# the GitLab Package Registry of evc-brandkit, project 9 (GitHub runners cannot
+# reach git.entire.host — red there). A private scope readable by exactly one
+# of the two CI systems is unfixable by picking the other side; publishing the
+# packages publicly is what ends the swap. The public copies also keep the
+# showcase mirror's lockfile free of an internal hostname and project number.
 .web_publish_job: &web_publish_job
   image: node:22-alpine
   timeout: 20m
@@ -224,7 +216,6 @@ check-migration-drift:
   variables:
     npm_config_cache: "$CI_PROJECT_DIR/apps/web-publish/.npm"
   before_script:
-    - printf '//git.entire.host/api/v4/projects/9/packages/npm/:_authToken=%s\n' "$CI_JOB_TOKEN" > ~/.npmrc
     - cd apps/web-publish
     - npm ci
 

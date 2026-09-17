@@ -20,15 +20,14 @@ jobs:
 
   typecheck-svelte:
     runs-on: ubuntu-latest
-    # apps/web-publish/.npmrc points @entire-vc/* at npm.pkg.github.com, so
-    # `npm ci` needs a token that may read this org's packages. Without it npm
-    # sends no credential and GitHub Packages answers 401 "unauthenticated" —
-    # which is exactly how this job and test-svelte were born red on 2026-07-09
-    # (#104) and stayed red for every run after. Same fix the web-publish Docker
-    # build already got in #30, just applied to the bare-runner jobs too.
+    # @entire-vc/tokens and @entire-vc/ui-svelte are on the PUBLIC npm
+    # registry, so `npm ci` needs no credential and no `packages: read`.
+    # Both were previously private: first on GitHub Packages (401 here without
+    # a token), then in the GitLab Package Registry (404 here, because GitHub
+    # runners cannot reach the internal host at all) — a scope readable by only
+    # one of the two CI systems could not be green in both.
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -40,10 +39,6 @@ jobs:
 
       - name: Install deps
         working-directory: apps/web-publish
-        # .npmrc reads the token from ${GITHUB_TOKEN}; an unset var expands to
-        # an empty _authToken, which npm sends as an anonymous request.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Typecheck
@@ -52,10 +47,9 @@ jobs:
 
   test-svelte:
     runs-on: ubuntu-latest
-    # See typecheck-svelte above: private @entire-vc packages need packages:read.
+    # See typecheck-svelte above: @entire-vc/* is public, no credential needed.
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -67,8 +61,6 @@ jobs:
 
       - name: Install deps
         working-directory: apps/web-publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Run tests
@@ -130,9 +122,10 @@ jobs:
   build-docker:
     runs-on: ubuntu-latest
     needs: [checks-control-plane, typecheck-svelte, test-svelte, check-migration-drift]
+    # Both builds are push:false and both install only from public registries,
+    # so read access to the repository contents is all this job needs.
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -163,5 +156,3 @@ jobs:
           tags: evc-team-relay/web-publish:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
