@@ -115,24 +115,28 @@ missing or empty.
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `TW_RELAY_SSH_KEY_B64` | yes | Private half of a dedicated ed25519 deploy key, **base64-encoded**. Its public half goes in the relay host's `~/.ssh/authorized_keys` and, if you jump through a bastion, in the bastion account's `authorized_keys` as a restricted entry (see the network note below). |
+| `DEPLOY_TARGET_HOST` | yes | Address or resolvable name of the relay host, as seen *from the bastion* when one is used. |
+| `DEPLOY_PROXY_HOST` | yes | Address or name of the bastion the runner jumps through. |
 | `TW_RELAY_KNOWN_HOSTS_B64` | yes | Pinned host keys for **every** hop (bastion and target), **base64-encoded**. There is no TOFU fallback — an unknown or changed host key fails the deploy. |
 
-**Variables** — deploy topology, which is configuration rather than secret:
+**Variables** — the parts of the deploy topology that reveal nothing about where anything is hosted:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DEPLOY_TARGET_HOST` | yes | Address or resolvable name of the relay host, as seen *from the bastion* when one is used. |
-| `DEPLOY_PROXY_HOST` | yes | Address or name of the bastion the runner jumps through. |
 | `DEPLOY_TARGET_USER` | no | SSH user on the relay host (default `root`). |
 | `DEPLOY_TARGET_PORT` | no | SSH port on the relay host (default `22`). |
 | `DEPLOY_PROXY_USER` | no | SSH user on the bastion (default `ghdeploy`). |
 
-> **Why the hosts are variables and not secrets.** GitHub masks every secret as `***` in run logs.
-> That is exactly wrong for a hostname: when the target host value once turned out to carry two
-> stray characters (13 bytes for an 11-byte address), the resulting `no pinned host key` failure
-> was impossible to diagnose from the run output. Variables are unmasked, so the logs stay
-> readable — and, unlike a literal in the workflow file, they keep a fork of this repository from
-> carrying anyone's deploy topology.
+> **Why the hosts are secrets, and how the logs stay diagnosable anyway.** This repository is
+> public, and `${{ vars.X }}` is substituted before a step runs — the literal value would be
+> printed into a run log anyone can read, which is exactly what moving it out of the workflow
+> file was meant to prevent. A secret is masked there instead.
+>
+> Masking a hostname does cost something real: when the target host value once carried two stray
+> characters (13 bytes for an 11-byte address), `***` in the log said nothing and the resulting
+> `no pinned host key` failure was undiagnosable. So the preflight prints the **byte length** of
+> each host value. Length alone would have caught that exact case, and it publishes nothing.
+> Diagnose by shape, never by value.
 
 > **Why both secrets are base64.** A raw multi-line value does not survive `gh secret set` intact.
 > Measured on this repository during bring-up: a 12-line `known_hosts` arrived at the runner as its

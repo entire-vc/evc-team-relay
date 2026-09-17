@@ -15,7 +15,11 @@ name: Deploy
 #
 # ── Reaching a host that has no public address ───────────────────────────────
 # The target may sit on a private network behind a bastion. Both endpoints come
-# from repository *variables* (`vars.DEPLOY_TARGET_HOST`, `vars.DEPLOY_PROXY_HOST`),
+# from repository *secrets* (`secrets.DEPLOY_TARGET_HOST`, `secrets.DEPLOY_PROXY_HOST`),
+# secrets rather than variables because this repository is public: `${{ vars.X }}`
+# is substituted before the step runs, so the literal value is printed into a
+# publicly readable run log, while a secret is masked there. The user and port
+# stay variables — they say nothing about where anything is hosted,
 # never from this file: a fork of this repository has no production topology in
 # it, and a host move is a settings change rather than a commit. Variables, not
 # secrets, on purpose — GitHub masks every secret as `***` in run logs, and a
@@ -106,10 +110,10 @@ jobs:
       # undebuggable from the run output. Variables are unmasked and editable
       # without a commit, which is what these values actually need.
       RELAY_DIR: /opt/relay
-      TARGET_HOST: ${{ vars.DEPLOY_TARGET_HOST }}
+      TARGET_HOST: ${{ secrets.DEPLOY_TARGET_HOST }}
       TARGET_USER: ${{ vars.DEPLOY_TARGET_USER || 'root' }}
       TARGET_PORT: ${{ vars.DEPLOY_TARGET_PORT || '22' }}
-      PROXY_HOST: ${{ vars.DEPLOY_PROXY_HOST }}
+      PROXY_HOST: ${{ secrets.DEPLOY_PROXY_HOST }}
       PROXY_USER: ${{ vars.DEPLOY_PROXY_USER || 'ghdeploy' }}
       # Fingerprint of the dedicated deploy key. Pinned so a truncated, swapped
       # or rotated key fails with that fact stated, instead of as an anonymous
@@ -135,13 +139,24 @@ jobs:
           for v in SSH_KEY_B64 KNOWN_HOSTS_B64; do
             [ -n "${!v:-}" ] || missing="$missing secrets.$v"
           done
-          # TARGET_HOST/PROXY_HOST live in repository variables. An unset
-          # variable expands to an empty string with no warning, which would
-          # turn into an ssh to nowhere with a confusing error three steps
-          # later — name it here instead.
+          # TARGET_HOST/PROXY_HOST live in repository secrets, not variables:
+          # this repository is public, and `${{ vars.X }}` is substituted before
+          # the step runs, so the value would be printed verbatim into a run log
+          # anyone can read. A secret is masked there. An unset one expands to an
+          # empty string with no warning, which would turn into an ssh to nowhere
+          # with a confusing error three steps later — name it here instead.
           for v in TARGET_HOST PROXY_HOST; do
-            [ -n "${!v:-}" ] || missing="$missing vars.DEPLOY_$v"
+            [ -n "${!v:-}" ] || missing="$missing secrets.DEPLOY_$v"
           done
+
+          # Shape, not value. Masking a hostname costs diagnosability: this repo
+          # once lost an afternoon to a target host that carried two stray
+          # characters (13 bytes for an 11-byte address), and `***` in the log
+          # said nothing. Printing the byte length of each host would have caught
+          # exactly that, and it publishes nothing — which is the whole point of
+          # keeping the values in secrets on a public repository.
+          echo "host value lengths: TARGET_HOST=${#TARGET_HOST} PROXY_HOST=${#PROXY_HOST}"
+
           if [ -n "$missing" ]; then
             echo "::error::missing/empty required setting(s):$missing"
             exit 1
