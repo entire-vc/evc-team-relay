@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [control-plane, web-publish]
+        image: [control-plane, relay-server, web-publish]
         platform:
           - name: linux/amd64
             runner: ubuntu-latest
@@ -66,6 +66,14 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ steps.slug.outputs.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ steps.slug.outputs.slug }}
+          # relay-server stamps the version it reports in its own
+          # `relay-server` response header from this ARG (crates/relay/build.rs
+          # -> GIT_VERSION). Inside the build it has neither `.git` (the
+          # context is apps/relay-server/, the repo's .git is outside it) nor
+          # GITHUB_REF_NAME in the builder env, so without this every
+          # published relay-server would report "unknown". Empty for the other
+          # images, whose Dockerfiles declare no such ARG.
+          build-args: ${{ matrix.image == 'relay-server' && format('RELAY_VERSION={0}', github.ref_name) || '' }}
           # web-publish's Dockerfile needs this to `npm ci` against our
           # private @entire-vc scope. Every leg runs its own real npm ci --
           # there is no cross-platform GHA cache entry to replay from on a
@@ -97,7 +105,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        image: [control-plane, web-publish]
+        image: [control-plane, relay-server, web-publish]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -252,7 +260,7 @@ jobs:
       - name: Point latest at this release's tested images
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          for IMAGE in control-plane web-publish; do
+          for IMAGE in control-plane relay-server web-publish; do
             REF="${REGISTRY}/${IMAGE_PREFIX}/${IMAGE}:${VERSION}"
             docker buildx imagetools create --tag "${REGISTRY}/${IMAGE_PREFIX}/${IMAGE}:latest" "$REF"
           done
@@ -275,6 +283,7 @@ jobs:
 
             ```bash
             docker pull ghcr.io/${{ github.repository }}/control-plane:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}/relay-server:${{ github.ref_name }}
             docker pull ghcr.io/${{ github.repository }}/web-publish:${{ github.ref_name }}
             ```
 

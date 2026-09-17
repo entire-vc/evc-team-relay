@@ -24,9 +24,7 @@ This guide covers installing EVC Team Relay on a Linux server using Docker Compo
 Silicon, AWS Graviton, Ampere at Hetzner/OVH, or Raspberry Pi; Docker
 pulls the manifest matching your host automatically, and
 `scripts/pull-published-images.sh` (step 6 below) picks the right one on
-its own for the two images it handles. `relay-server` is pulled later, by
-`docker compose up` itself in step 7 — same automatic manifest match,
-no platform pin, nothing to export.
+its own for all three images — no platform pin, nothing to export.
 
 ### Ports
 
@@ -163,13 +161,13 @@ workflow already publishes publicly instead (run from the repo root, one level u
 bash scripts/pull-published-images.sh
 ```
 
-This tags them locally as `infra-control-plane:latest` / `infra-web-publish:latest`, which
-`docker compose up` picks up without attempting to build. Pass a version to pin one
-(`bash scripts/pull-published-images.sh 1.10.0`) instead of the default `latest`.
+This tags them locally as `infra-control-plane:latest` / `infra-relay-server:latest` /
+`infra-web-publish:latest`, which `docker compose up` picks up without attempting to
+build. Pass a version to pin one (`bash scripts/pull-published-images.sh 1.10.0`)
+instead of the default `latest`.
 
 > **arm64 hosts:** nothing to do here — the script pulls the native `linux/arm64` build
-> of both images automatically. `relay-server` in step 7 is native `linux/arm64` too,
-> pulled directly by `docker compose up` with no platform pin; see
+> of all three images automatically, with no platform pin anywhere; see
 > [Architecture](#architecture) above.
 
 If you do have org access and want to build from source instead (e.g. active development),
@@ -274,10 +272,10 @@ docker compose up -d --build
 
 ### With Pre-built Images
 
-`docker compose pull` won't work here — `control-plane`/`web-publish` are tagged locally
-(`infra-control-plane:latest`/`infra-web-publish:latest`, not a registry reference), by design
-so the same compose file works whether you build from source or pull. Re-run the pull script
-instead:
+`docker compose pull` won't work here — `control-plane`/`relay-server`/`web-publish` are
+tagged locally (`infra-control-plane:latest`/`infra-relay-server:latest`/`infra-web-publish:latest`,
+not a registry reference), by design so the same compose file works whether you build from
+source or pull. Re-run the pull script instead:
 
 ```bash
 bash scripts/pull-published-images.sh [version]
