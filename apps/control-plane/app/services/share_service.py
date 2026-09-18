@@ -51,6 +51,15 @@ def validate_share_path_safety(path: str, kind: models.ShareKind) -> None:
 
     Raises HTTPException if path is unsafe or invalid format.
     """
+    # Empty string is the canonical "whole vault" representation for FOLDER
+    # shares (#1f27561a) — there is no other safe spelling: an absolute "/"
+    # (what Obsidian's vault-root TFolder.path literally is) stays rejected
+    # below since it's genuinely ambiguous with a filesystem absolute path.
+    # Every other check in this function is either inapplicable to "" or
+    # would reject it for the wrong reason, so return immediately.
+    if path == "" and kind == models.ShareKind.FOLDER:
+        return
+
     if not path or path.strip() == "":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path cannot be empty")
 
@@ -868,10 +877,18 @@ def validate_path_within_folder(folder_path: str, file_path: str) -> bool:
         validate_path_within_folder("Projects/", "Projects/sub/doc.md") -> True
         validate_path_within_folder("Projects/", "Other/doc.md") -> False
         validate_path_within_folder("Projects/", "Projects") -> False (exact match, not within)
+        validate_path_within_folder("", "Anything/doc.md") -> True (root share = whole vault)
     """
     # Normalize paths: remove leading/trailing slashes
     folder_path = folder_path.strip("/")
     file_path = file_path.strip("/")
+
+    # Root share ("" = whole vault, #1f27561a) contains every real file path.
+    # Handle this before the "/" suffix logic below, which would otherwise
+    # normalize "" to "/" and then reject every file_path (file_path is
+    # stripped of its own leading "/" above, so it can never start with "/").
+    if folder_path == "":
+        return bool(file_path)
 
     # Ensure folder path ends with / for proper prefix matching
     if not folder_path.endswith("/"):

@@ -10,7 +10,12 @@ from app.db.models import ShareKind, ShareMemberRole, ShareVisibility
 
 class ShareBase(BaseModel):
     kind: ShareKind = ShareKind.DOC
-    path: str = Field(min_length=1, max_length=512)
+    # No min_length here: "" is the canonical "whole vault" path for FOLDER
+    # shares (#1f27561a). Emptiness/format is enforced by
+    # share_service.validate_share_path_safety, which is kind-aware — a
+    # schema-level min_length can't distinguish "empty is fine (FOLDER)" from
+    # "empty is not fine (DOC)".
+    path: str = Field(max_length=512)
     visibility: ShareVisibility = ShareVisibility.PRIVATE
 
 
@@ -47,6 +52,11 @@ class FolderItem(BaseModel):
 
 class ShareUpdate(BaseModel):
     kind: ShareKind | None = None
+    # min_length=1 kept deliberately (unlike ShareCreate, #1f27561a):
+    # update_share()/the PATCH handler treat `if payload.path:` as "was a new
+    # path provided", so an explicit path="" would be silently ignored rather
+    # than applied — converting an existing share to/from vault-root via PATCH
+    # is out of scope here. Create a new root share via POST instead.
     path: str | None = Field(default=None, min_length=1, max_length=512)
     visibility: ShareVisibility | None = None
     password: str | None = Field(default=None, min_length=8, max_length=128)
