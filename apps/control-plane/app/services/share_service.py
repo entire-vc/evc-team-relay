@@ -145,6 +145,36 @@ def create_share(
     # Validate path safety and format
     validate_share_path_safety(payload.path, payload.kind)
 
+    # Reject an EXACT duplicate: same owner + same kind + byte-identical path.
+    # Overlapping-but-different folder shares stay legal on purpose (a root
+    # share at path="" overlaps every other folder share, and carving a
+    # narrower folder out of a broad one with different visibility is a
+    # supported pattern) — find_share_for_path resolves those by
+    # "most specific wins". An exact duplicate is the one case that has no
+    # legitimate use and no deterministic resolution: two rows with identical
+    # path length make that function's max() tie-break arbitrary, so which of
+    # the two visibilities applies depends on DB row order.
+    #
+    # Compared with == against payload.path directly because nothing
+    # normalizes the path on the way in: the schema declares it a plain str
+    # and validate_share_path_safety only validates, so what lands in
+    # Share.path is byte-identical to the request. (find_share_for_path
+    # strip("/")-es at read time, but that is a read-side concern and
+    # normalizing here instead would change what gets persisted.)
+    duplicate_stmt = select(models.Share.id).where(
+        models.Share.owner_user_id == owner.id,
+        models.Share.kind == payload.kind,
+        models.Share.path == payload.path,
+    )
+    # .first(), not scalar_one_or_none(): rows predating this check may already
+    # contain duplicates, and that must surface as this 409 rather than as a
+    # MultipleResultsFound 500.
+    if db.execute(duplicate_stmt).first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A share already exists at this exact path",
+        )
+
     # TR-39: a share can't carry content at creation time (ShareCreate has no
     # content field — it's added via a later update), so public+published at
     # creation would always be an empty public page. Require content first.
