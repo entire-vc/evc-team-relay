@@ -16,7 +16,10 @@ services:
       start_period: 10s
 
   minio:
-    image: minio/minio:latest
+    # Docker Hub's minio/minio repo now denies anonymous pulls (denied:
+    # requested access to the resource is denied) — use MinIO's own quay.io
+    # mirror instead, which is unauthenticated and tag-for-tag identical.
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     env_file:
       - ./.env
@@ -66,7 +69,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     env_file:
       - ./.env
     depends_on:
