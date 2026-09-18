@@ -233,7 +233,7 @@ services:
         condition: service_healthy
   relay-server:
     mem_limit: 64m
-    image: ghcr.io/entire-vc/evc-relay-server:0.9.12
+    image: ghcr.io/entire-vc/evc-team-relay/relay-server:1.13.0
     depends_on:
       minio:
         condition: service_healthy
