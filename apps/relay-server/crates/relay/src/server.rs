@@ -1073,6 +1073,18 @@ fn verify_socket_token(
                 // the sole error series on /d/:doc_id/ws/:doc_id2 gave no way to tell a token
                 // clock-skew/expiry problem apart from a signature/key mismatch.
                 let error_type = e.to_metric_label();
+                if matches!(e, y_sweet_core::auth::AuthError::Expired) {
+                    // Diagnostic for #cde2a0b7: HOW expired — race at the TTL boundary
+                    // (~1-2s), stale cached token (minutes+) or clock skew (constant N s).
+                    // Value only; the token and its claims are never logged or labelled.
+                    if let Some(overshoot) =
+                        authenticator.expired_overshoot_secs(token, current_time_epoch_millis())
+                    {
+                        server_state
+                            .metrics
+                            .record_ws_token_expired_overshoot(overshoot);
+                    }
+                }
                 AppError::auth(StatusCode::UNAUTHORIZED, e.into(), error_type)
             })?
     } else {
@@ -2542,6 +2554,90 @@ mod test {
 
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.auth_error_type, Some("expired"));
+    }
+
+    /// Observations in `(lo, hi]` of the (process-global) overshoot histogram,
+    /// read from ONE `gather()` snapshot. Two separate gathers (one per bound)
+    /// are not atomic: a parallel test recording between them shifts one bound
+    /// and makes the window read wrong or underflow.
+    fn overshoot_observed_in(lo: f64, hi: f64) -> u64 {
+        let families = prometheus::default_registry().gather();
+        let Some(metric) = families
+            .iter()
+            .find(|f| f.get_name() == "relay_server_ws_token_expired_overshoot_seconds")
+            .and_then(|f| f.get_metric().first())
+        else {
+            return 0;
+        };
+        let cumulative = |le: f64| {
+            metric
+                .get_histogram()
+                .get_bucket()
+                .iter()
+                .find(|b| b.get_upper_bound() == le)
+                .map(|b| b.get_cumulative_count())
+                .unwrap_or(0)
+        };
+        cumulative(hi).saturating_sub(cumulative(lo))
+    }
+
+    #[tokio::test]
+    async fn test_websocket_expired_token_records_overshoot_seconds() {
+        // #dd739c96: on the `expired` branch, record now - exp so the three causes of
+        // #cde2a0b7 (TTL-boundary race / stale cached token / clock skew) can be told apart.
+        let mut authenticator = y_sweet_core::auth::Authenticator::gen_key().unwrap();
+        authenticator.set_expected_audience(Some("https://test.example.com".to_string()));
+        let server_state = Arc::new(
+            Server::new(
+                None,
+                Duration::from_secs(60),
+                Some(authenticator.clone()),
+                None,
+                vec![],
+                CancellationToken::new(),
+                true,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+
+        // Registry is process-global and other tests also reject expired tokens, so
+        // assert on deltas over bucket WINDOWS, not on cumulative `<= le` counts.
+        let mint = |age_ms: u64| {
+            authenticator
+                .gen_doc_token_cwt(
+                    "test-doc",
+                    Authorization::Full,
+                    ExpirationTimeEpochMillis(current_time_epoch_millis() - age_ms),
+                    None,
+                    None,
+                )
+                .unwrap()
+        };
+
+        // Buckets are cumulative, so a bare `<= le` delta also picks up whatever
+        // another parallel test records; a (lo, hi] window only sees values that
+        // really are in that range. The sibling test above rejects a 5s-old token
+        // (overshoot >= 5), which sits outside both windows below.
+        let observed_in = overshoot_observed_in;
+
+        let before = observed_in(2.0, 5.0);
+        let err = verify_socket_token(&server_state, "test-doc", Some(&mint(3_000))).unwrap_err();
+        assert_eq!(err.auth_error_type, Some("expired"));
+        assert!(
+            observed_in(2.0, 5.0) > before,
+            "a token expired 3s ago must be observed in the (2, 5] bucket"
+        );
+
+        let before = observed_in(300.0, 3600.0);
+        let err = verify_socket_token(&server_state, "test-doc", Some(&mint(400_000))).unwrap_err();
+        assert_eq!(err.auth_error_type, Some("expired"));
+        assert_eq!(
+            observed_in(300.0, 3600.0),
+            before + 1,
+            "a token expired 400s ago must be observed in the (300, 3600] bucket"
+        );
     }
 
     #[tokio::test]

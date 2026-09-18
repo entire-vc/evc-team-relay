@@ -1,4 +1,4 @@
-use prometheus::{CounterVec, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry};
+use prometheus::{CounterVec, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry};
 use std::sync::{Arc, OnceLock};
 
 #[derive(Clone)]
@@ -25,6 +25,7 @@ pub struct RelayMetrics {
     // Authentication & security metrics
     pub http_auth_errors_total: CounterVec,
     pub http_auth_success_total: CounterVec,
+    pub ws_token_expired_overshoot_seconds: Histogram,
 
     // Object store metrics
     pub s3_requests_total: CounterVec,
@@ -218,6 +219,20 @@ impl RelayMetrics {
         )?;
         registry.register(Box::new(http_auth_success_total.clone()))?;
 
+        // How far past `exp` a WS-upgrade token was when rejected as `expired`. Tells
+        // apart (a) a TTL-boundary race (median ~1-2s), (b) a stale cached token after
+        // sleep/network loss (long tail to minutes/hours) and (c) client/server clock
+        // skew (a narrow peak at N s). Deliberately UNLABELED: no user/share/doc ids —
+        // series count is fixed at one per bucket, however many clients connect.
+        let ws_token_expired_overshoot_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "relay_server_ws_token_expired_overshoot_seconds",
+                "Seconds by which a WebSocket-upgrade token was past its expiry when rejected as expired",
+            )
+            .buckets(vec![1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 3600.0]),
+        )?;
+        registry.register(Box::new(ws_token_expired_overshoot_seconds.clone()))?;
+
         // Object store metrics
         let s3_requests_total = CounterVec::new(
             Opts::new(
@@ -246,6 +261,7 @@ impl RelayMetrics {
             doc_connections_closed_total,
             http_auth_errors_total,
             http_auth_success_total,
+            ws_token_expired_overshoot_seconds,
             s3_requests_total,
         }))
     }
@@ -381,6 +397,11 @@ impl RelayMetrics {
             .inc();
     }
 
+    pub fn record_ws_token_expired_overshoot(&self, overshoot_seconds: f64) {
+        self.ws_token_expired_overshoot_seconds
+            .observe(overshoot_seconds);
+    }
+
     pub fn record_s3_request(&self, method: &str, outcome: &str) {
         self.s3_requests_total
             .with_label_values(&[method, outcome])
@@ -453,6 +474,45 @@ mod tests {
             .with_label_values(&["prefix_mismatch", "403", "/doc/new", "POST"])
             .get();
         assert_eq!(prefix, 1.0);
+    }
+
+    #[test]
+    fn test_ws_token_expired_overshoot_is_unlabeled_and_bucketed() {
+        let registry = Registry::new();
+        let metrics = RelayMetrics::new_with_registry(&registry).unwrap();
+
+        metrics.record_ws_token_expired_overshoot(3.0);
+        metrics.record_ws_token_expired_overshoot(400.0);
+
+        let families = registry.gather();
+        let family = families
+            .iter()
+            .find(|f| f.get_name() == "relay_server_ws_token_expired_overshoot_seconds")
+            .expect("histogram must be registered");
+        assert_eq!(
+            family.get_metric().len(),
+            1,
+            "exactly one series, no label fan-out"
+        );
+        let metric = &family.get_metric()[0];
+        // Cardinality guard: adding a user/share/doc label here must turn this red.
+        assert!(
+            metric.get_label().is_empty(),
+            "overshoot histogram must carry no labels, got {:?}",
+            metric.get_label()
+        );
+        let h = metric.get_histogram();
+        assert_eq!(h.get_sample_count(), 2);
+        let cum = |le: f64| {
+            h.get_bucket()
+                .iter()
+                .find(|b| b.get_upper_bound() == le)
+                .map(|b| b.get_cumulative_count())
+                .unwrap()
+        };
+        assert_eq!(cum(5.0), 1, "3s overshoot lands at <=5");
+        assert_eq!(cum(300.0), 1, "400s overshoot is NOT <=300");
+        assert_eq!(cum(3600.0), 2, "400s overshoot lands at <=3600");
     }
 
     #[test]
