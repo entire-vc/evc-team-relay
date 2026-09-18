@@ -34,6 +34,45 @@ pub enum CwtError {
     ScopeViolation { reason: String },
 }
 
+/// Read the `exp` claim (seconds since epoch) out of a CWT WITHOUT verifying it.
+///
+/// Diagnostic-only: used to measure by how much an already-rejected token was
+/// past its expiry (see `Authenticator::expired_overshoot_secs`). It must only
+/// ever be called AFTER `verify_*` has reported `Expired`, which happens strictly
+/// after the signature check, so the value it reads is the one the issuer signed.
+/// Never use it to make an accept/reject decision.
+///
+/// Both COSE_Sign1 and COSE_Mac0 are the 4-array `[protected, unprotected,
+/// payload, signature|tag]`, optionally wrapped in CBOR tags (CWT 61, then COSE
+/// 18 / 17), so the payload is element 2 either way.
+pub fn peek_expiration_unverified(token_bytes: &[u8]) -> Option<u64> {
+    let mut value: ciborium::Value = ciborium::from_reader(token_bytes).ok()?;
+    // CWT tag (61) may wrap the COSE tag (17 / 18): unwrap however many there are.
+    while let ciborium::Value::Tag(_, inner) = value {
+        value = *inner;
+    }
+    let ciborium::Value::Array(mut parts) = value else {
+        return None;
+    };
+    if parts.len() != 4 {
+        return None;
+    }
+    let ciborium::Value::Bytes(payload) = parts.swap_remove(2) else {
+        return None;
+    };
+    let ciborium::Value::Map(claims) = ciborium::from_reader(payload.as_slice()).ok()? else {
+        return None;
+    };
+    claims.into_iter().find_map(|(k, v)| match (k, v) {
+        (ciborium::Value::Integer(k), ciborium::Value::Integer(v))
+            if TryInto::<u64>::try_into(k) == Ok(4) =>
+        {
+            TryInto::<u64>::try_into(v).ok()
+        }
+        _ => None,
+    })
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct CwtClaims {
     pub issuer: Option<String>,
@@ -1761,6 +1800,41 @@ mod tests {
         assert!(ed25519_auth
             .verify_cwt_sign1(&sign1_token, "test-audience")
             .is_ok());
+    }
+
+    #[test]
+    fn test_peek_expiration_unverified_reads_exp_from_sign1_and_mac0() {
+        let authenticator = create_test_authenticator();
+        let claims = |exp: Option<u64>| CwtClaims {
+            issuer: Some("relay-server".to_string()),
+            subject: None,
+            audience: Some("https://api.example.com".to_string()),
+            expiration: exp,
+            issued_at: None,
+            scope: "server".to_string(),
+            channel: None,
+        };
+
+        let sign1 = authenticator
+            .create_cwt_sign1(claims(Some(1_700_000_123)))
+            .unwrap();
+        assert_eq!(peek_expiration_unverified(&sign1), Some(1_700_000_123));
+
+        let mac0 = authenticator.create_cwt_mac0(claims(Some(42))).unwrap();
+        assert_eq!(peek_expiration_unverified(&mac0), Some(42));
+
+        // The default entry point wraps in the CWT tag (61) too — this is what real
+        // tokens look like, and the shape a first version of the helper missed.
+        let cwt = authenticator
+            .create_cwt(claims(Some(1_800_000_000)))
+            .unwrap();
+        assert_eq!(peek_expiration_unverified(&cwt), Some(1_800_000_000));
+
+        // No exp claim / not a CWT at all -> None, never a panic.
+        let no_exp = authenticator.create_cwt(claims(None)).unwrap();
+        assert_eq!(peek_expiration_unverified(&no_exp), None);
+        assert_eq!(peek_expiration_unverified(b"not cbor"), None);
+        assert_eq!(peek_expiration_unverified(&[]), None);
     }
 
     // ── H6 fixes ────────────────────────────────────────────────────────────────

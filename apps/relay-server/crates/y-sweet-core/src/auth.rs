@@ -1944,6 +1944,18 @@ impl Authenticator {
         }
     }
 
+    /// For a token that `verify_token_with_channel` rejected as `Expired`: how many
+    /// seconds past its `exp` it was at `current_time` (epoch millis), with
+    /// millisecond resolution. `None` if the token is not a parseable CWT.
+    ///
+    /// Only meaningful after an `Expired` verdict — see
+    /// `cwt::peek_expiration_unverified` for why that keeps the value trustworthy.
+    pub fn expired_overshoot_secs(&self, token: &str, current_time: u64) -> Option<f64> {
+        let bytes = b64_decode(token).ok()?;
+        let exp_secs = crate::cwt::peek_expiration_unverified(&bytes)?;
+        Some((current_time as f64 / 1000.0 - exp_secs as f64).max(0.0))
+    }
+
     /// Verify a token and extract channel claim (CWT tokens only)
     pub fn verify_token_with_channel(
         &self,
