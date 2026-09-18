@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.db import models
+from app.services import share_service
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -16,9 +20,6 @@ def login(client: TestClient, email: str, password: str) -> str:
     return response.json()["access_token"]
 
 
-@pytest.mark.skip(
-    reason="Duplicate path detection not implemented - same path allowed for different shares"
-)
 def test_duplicate_share_path_returns_409(client: TestClient) -> None:
     """Test that creating a share with duplicate path returns 409 Conflict."""
     admin_token = login(client, "bootstrap@example.com", "super-secret")
@@ -58,6 +59,88 @@ def test_duplicate_share_path_returns_409(client: TestClient) -> None:
         "already exists" in error_data["error"]["message"].lower()
         or "duplicate" in error_data["error"]["message"].lower()
     )
+
+
+def test_duplicate_folder_share_path_returns_409(client: TestClient) -> None:
+    """Exact-duplicate rejection is not doc-only: it applies to folder shares too."""
+    admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+    response1 = client.post(
+        "/shares",
+        json={
+            "kind": "folder",
+            "path": "Projects/Alpha",
+            "visibility": "private",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response1.status_code == 201, response1.text
+
+    # Same owner, same kind, byte-identical path — only visibility differs.
+    response2 = client.post(
+        "/shares",
+        json={
+            "kind": "folder",
+            "path": "Projects/Alpha",
+            "visibility": "public",
+        },
+        headers=auth_headers(admin_token),
+    )
+
+    assert (
+        response2.status_code == 409
+    ), f"Expected 409, got {response2.status_code}: {response2.text}"
+    error_data = response2.json()
+    assert "error" in error_data
+    assert error_data["error"]["code"] == 409
+    assert (
+        "already exists" in error_data["error"]["message"].lower()
+        or "duplicate" in error_data["error"]["message"].lower()
+    )
+
+
+@pytest.mark.parametrize(
+    "root_first",
+    [True, False],
+    ids=["root-then-nested", "nested-then-root"],
+)
+def test_overlapping_folder_shares_still_allowed(
+    client: TestClient, db_session, root_first: bool
+) -> None:
+    """Overlapping-but-different folder shares must KEEP working (regression guard).
+
+    The exact-duplicate 409 must not spill over onto the legitimate pattern of
+    a broad share plus a narrower one carved out of it — a root share
+    (path="") overlaps every other folder share by construction. Both
+    creation orders are exercised because the check queries pre-existing rows,
+    so an over-broad predicate would only fail in one direction.
+
+    Also pins that "most specific wins" still resolves to the NESTED share
+    regardless of which one was created first.
+    """
+    admin_token = login(client, "bootstrap@example.com", "super-secret")
+
+    root_payload = {"kind": "folder", "path": "", "visibility": "private"}
+    nested_payload = {"kind": "folder", "path": "Projects", "visibility": "private"}
+    order = [root_payload, nested_payload] if root_first else [nested_payload, root_payload]
+
+    created_ids: dict[str, str] = {}
+    for payload in order:
+        response = client.post("/shares", json=payload, headers=auth_headers(admin_token))
+        assert (
+            response.status_code == 201
+        ), f"overlapping folder share {payload['path']!r} was rejected: {response.text}"
+        created_ids[payload["path"]] = response.json()["id"]
+
+    admin = db_session.execute(
+        select(models.User).where(models.User.email == "bootstrap@example.com")
+    ).scalar_one()
+
+    found = share_service.find_share_for_path(db_session, admin, "Projects/x.md")
+    assert found is not None, "no share resolved for a path covered by both shares"
+    assert (
+        str(found.id) == created_ids["Projects"]
+    ), "most-specific-wins broken: expected the nested 'Projects' share, got the root share"
 
 
 def test_path_traversal_rejected(client: TestClient) -> None:
