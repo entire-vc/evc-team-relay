@@ -18,7 +18,7 @@
     <div style="display: flex; gap: 1.5rem; align-items: center; font-size: 0.8125rem; flex-wrap: nowrap; height: 32px;">
         <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;">
             <span class="text-muted">Path:</span>
-            <strong>{{ share.path }}</strong>
+            <strong>{{ share.path if share.path else "(whole vault)" }}</strong>
             <span class="text-muted">({% if share.kind.value == 'doc' %}doc{% else %}folder{% endif %})</span>
         </div>
         <div style="display: flex; align-items: center; gap: 0.25rem; height: 100%;">

@@ -194,29 +194,24 @@ def test_folder_share_no_extension_required(client: TestClient) -> None:
 
 
 def test_empty_path_rejected(client: TestClient) -> None:
-    """Test that empty paths are rejected."""
+    """Test that empty/whitespace-only paths are rejected for DOC shares.
+
+    #1f27561a: the schema no longer blanket-rejects "" via Pydantic
+    min_length=1 — "" is the canonical "whole vault" path for FOLDER shares
+    (see test_root_folder_share.py). For DOC shares, which always need a real
+    file, every "empty" spelling is still rejected — now uniformly by
+    share_service.validate_share_path_safety, so all of them are 400 rather
+    than "" being a special 422 case.
+    """
     admin_token = login(client, "bootstrap@example.com", "super-secret")
 
-    # "" returns 422 (Pydantic min_length=1)
-    # "   " and "\t" pass Pydantic but return 400 from our validation
-    empty_paths_422 = [""]  # Pydantic validation
-    empty_paths_400 = ["   ", "\t"]  # Our validation catches whitespace-only
-
-    for empty_path in empty_paths_422:
+    for empty_path in ["", "   ", "\t"]:
         response = client.post(
             "/shares",
             json={"kind": "doc", "path": empty_path, "visibility": "private"},
             headers=auth_headers(admin_token),
         )
-        assert response.status_code == 422, f"Empty path not rejected: '{empty_path}'"
-
-    for empty_path in empty_paths_400:
-        response = client.post(
-            "/shares",
-            json={"kind": "doc", "path": empty_path, "visibility": "private"},
-            headers=auth_headers(admin_token),
-        )
-        assert response.status_code == 400, f"Whitespace path not rejected: '{empty_path}'"
+        assert response.status_code == 400, f"Empty/whitespace path not rejected: '{empty_path}'"
 
 
 def test_null_byte_rejected(client: TestClient) -> None:

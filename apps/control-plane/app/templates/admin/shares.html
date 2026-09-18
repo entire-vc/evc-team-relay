@@ -50,7 +50,7 @@
             <tr>
                 <td>
                     <span class="text-muted" style="font-size: 0.75rem;">{% if share.kind.value == 'doc' %}doc{% else %}folder{% endif %}</span>
-                    {{ share.path }}
+                    {{ share.path if share.path else "(whole vault)" }}
                 </td>
                 <td>
                     <span class="visibility-{{ share.visibility.value }}">{{ share.visibility.value | capitalize }}</span>
