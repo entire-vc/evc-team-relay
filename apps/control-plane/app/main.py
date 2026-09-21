@@ -274,6 +274,13 @@ Get a token by calling `POST /auth/login` with valid credentials.
                 )
 
     @app.on_event("startup")
+    def _warn_control_plane_public_url() -> None:
+        """Warn once (never fail) when CONTROL_PLANE_PUBLIC_URL is left at its placeholder."""
+        message = get_settings().control_plane_public_url_warning
+        if message:
+            logger.warning(message)
+
+    @app.on_event("startup")
     def _validate_billing_config() -> None:
         """M-16: require a Billing Service token once billing leaves stub mode."""
         settings = get_settings()
