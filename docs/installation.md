@@ -63,6 +63,9 @@ POSTGRES_PASSWORD=$(openssl rand -hex 16)
 MINIO_ROOT_PASSWORD=$(openssl rand -hex 16)
 BOOTSTRAP_ADMIN_EMAIL=admin@yourdomain.com
 BOOTSTRAP_ADMIN_PASSWORD=your-secure-password
+# Public URL of the control-plane API. Without it, file attachments do not transfer
+# (base_url falls back to http://localhost:8000) while WebSocket sync looks healthy.
+CONTROL_PLANE_PUBLIC_URL=https://cp.yourdomain.com
 
 # REQUIRED — Ed25519 keypair for relay auth. Generate the private half:
 openssl genpkey -algorithm ed25519 -out relay_private.pem

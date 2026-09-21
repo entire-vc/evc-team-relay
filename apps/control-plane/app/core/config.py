@@ -112,6 +112,39 @@ class Settings(BaseSettings):
         host = urlsplit(str(self.relay_public_url)).netloc
         return f"https://{host}"
 
+    @property
+    def control_plane_public_url_warning(self) -> str | None:
+        """Startup warning text when CONTROL_PLANE_PUBLIC_URL was left at its placeholder.
+
+        Fires only when the value still equals the code default AND relay_public_url
+        points at a non-local host: that combination means a real (non-localhost)
+        deployment that forgot the variable, so POST /shares/{id}/file-token hands
+        clients http://localhost:8000 as base_url, attachments never transfer, and
+        WebSocket sync still looks healthy. A localhost relay_public_url means the
+        localhost default is deliberate (dev / single-machine install): no warning.
+        Returns None otherwise. Never raises; the caller only logs.
+        """
+        placeholder = type(self).model_fields["control_plane_public_url"].default
+        if (self.control_plane_public_url or "").strip() != placeholder:
+            return None
+        host = (urlsplit(str(self.relay_public_url)).hostname or "").lower()
+        if (
+            not host
+            or host == "localhost"
+            or host.endswith(".localhost")
+            or host in ("0.0.0.0", "::1")
+            or host.startswith("127.")
+        ):
+            return None
+        return (
+            f"CONTROL_PLANE_PUBLIC_URL is not set (still the placeholder {placeholder}) "
+            f"while RELAY_PUBLIC_URL points at {host}. File attachment transfer will "
+            "break: the base_url returned by POST /shares/{id}/file-token will be the "
+            "placeholder, while WebSocket sync keeps looking healthy. Set "
+            "CONTROL_PLANE_PUBLIC_URL to this control-plane's public https URL "
+            "(e.g. https://cp.example.com)."
+        )
+
     def relay_doc_ws_url(self, doc_id: str) -> str:
         """Per-doc client-connect URL for the non-deprecated relay-server route.
 
