@@ -76,15 +76,22 @@ cp.{$DOMAIN_BASE} {
     respond 404
   }
 
-  # Cheap guard against oversized bodies. Deliberately far looser than any
-  # real endpoint needs: the only upload route (branding logo/favicon) caps
-  # itself at 1MB in the application, and the largest body observed on our
-  # own prod over 30 days was ~190KB across 112k requests, with zero 413s.
+  # Cheap guard against oversized bodies. Was 10MB, deliberately far looser
+  # than the only two routes that needed it at the time (branding logo/
+  # favicon at 1MB app-side; the largest real body over 30 days was
+  # ~190KB/112k requests, zero 413s). Raised to 25MB (#9d24f75c) to match
+  # apps/control-plane's own MAX_SYNC_WRITE_SIZE now that TWO more routes on
+  # this same site block carry real payloads up to that size: sync-write
+  # (document content) already allowed 25MB at the app layer while silently
+  # capped at 10MB here — a pre-existing, unrelated-to-this-fix mismatch —
+  # and PUT .../files/{path}/content (vault attachments, newly added here)
+  # replaces what used to be an uncapped direct-to-MinIO presigned PUT, so it
+  # needs real headroom for images/PDFs, not the old branding-logo ceiling.
   # Note this is a read-time guard: Caddy answers 413 when the upstream reads
   # past the limit, so an upstream that ignores the body still sees the
-  # request. Verified: 11MB -> 413, 1MB -> 200.
+  # request. Verified: 11MB -> 413, 1MB -> 200 (pre-existing 10MB baseline).
   request_body {
-    max_size 10MB
+    max_size 25MB
   }
   reverse_proxy control-plane:8000 {
     # Force Connection: close to prevent stale keep-alive sockets

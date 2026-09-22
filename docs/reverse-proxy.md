@@ -87,6 +87,13 @@ checking explicitly:
   a proxy default tuned for short HTTP requests will cut them off.
 - **Route each hostname to the right backend** — the control plane, the relay
   server, and (if enabled) web publishing are three different services.
+- **Allow request bodies up to 25MB on the control-plane hostname.** Vault
+  attachments (images, PDFs, anything embedded with `![[...]]`) upload
+  through the control plane, not directly to storage — see §5 below for why —
+  so a proxy default tuned for small JSON bodies (often 1MB) will reject
+  anything past that with no explanation on the Obsidian side beyond "sync
+  failed". The bundled Caddy already sets this; a proxy that replaces it
+  needs the same ceiling.
 
 ## 4. Don't publish the container ports directly
 
@@ -108,6 +115,7 @@ them. Route everything through your proxy → your proxy's own entry point
 | `.env` → `RELAY_AUDIENCE`       | leave unset — it's then derived from `RELAY_PUBLIC_URL`'s host and can't drift from it |
 | `relay/relay.toml` → `[server].url` | `https://` + that same hostname |
 | your proxy's route for the relay | matches that same hostname |
+| `.env` → `CONTROL_PLANE_PUBLIC_URL` | `https://` + your control-plane hostname (`cp.` + `DOMAIN_BASE`, §1) |
 
 Same host in every one of these. A single mismatched character — a missing
 dot, a trailing slash, `http` vs `https` — rejects every relay token, and
@@ -115,6 +123,26 @@ nothing about the failure is loud: tokens are issued and signed correctly,
 the WebSocket handshake completes, and the rejection happens silently on the
 first message. Leaving `RELAY_AUDIENCE` unset removes one of the five places
 this can drift.
+
+**`CONTROL_PLANE_PUBLIC_URL` is a row of its own, not just another instance
+of "same host":** it doesn't need to match the relay's hostname (it's a
+different service, on its own `cp.` subdomain per §1) — it needs to match
+*itself*, i.e. be genuinely reachable at the address you set it to. It has a
+placeholder default (`http://localhost:8000`) that only makes sense from
+inside the compose network, and the control plane logs a startup warning if
+it's still set to that placeholder — but a self-hoster who never reads
+startup logs (most people run this detached) can go a long time without
+noticing. The externally-visible symptom is specific and easy to
+mis-diagnose as a proxy problem: sign-in and document sync both work fine
+(they don't depend on this value), but vault attachments fail outright,
+because file-token responses carry this URL as their `base_url` and the
+Obsidian plugin's HEAD/upload-url/download-url calls all go straight to it. A
+control plane serving vault attachments no longer routes those bytes through
+raw storage (this used to be a presigned MinIO URL, unreachable unless you
+also publish MinIO itself — see the code comments on `get_file_download_url`/
+`get_file_upload_url` in `apps/control-plane/app/api/routers/shares.py` if
+you're touching that code), so as long as this one value is set correctly,
+nothing about your storage backend needs to be exposed at all.
 
 ## 6. Verify by outcome, not by health check
 
