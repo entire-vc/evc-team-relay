@@ -877,13 +877,26 @@ def get_file_upload_url(
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> UploadUrlResponse:
-    """CAS.ts writeFile() step 1: mint a presigned MinIO PUT for this attachment.
+    """CAS.ts writeFile() step 1: mint a control-plane URL for this attachment.
+
+    Used to mint a presigned MinIO PUT directly (same gap as effef307's
+    download-url, just never closed on this side — #9d24f75c): unusable
+    outside the relay's own compose network, since MinIO has no public
+    endpoint and publishing one would force every self-hoster to expose
+    their object store (same rationale as get_file_download_url's docstring
+    above). Now returns a control-plane URL (PUT .../content, below) that
+    relays the bytes itself, matching get_file_content's GET-relay
+    precedent — this was the one place that precedent hadn't been applied
+    yet, and it broke self-host attachment UPLOADS the same way the
+    pre-effef307 download path broke attachment DOWNLOADS: connection
+    refused against an internal-only hostname the client can never reach.
 
     The client PUTs directly to the returned URL and never calls back to
     confirm success, so this is the only point where control-plane can index
     the attachment — written optimistically here (same as web.py's
     mesh-artifact/sync-artifact uploads, which write bytes+index together;
-    here the storage write happens client-side a moment later instead).
+    here the storage write happens a moment later, in put_file_content below,
+    instead of inline).
     """
     token_payload = _decode_file_token(share_id, path, authorization)
     # An agent-key-minted token's subject is the share owner (a stand-in — the
@@ -902,12 +915,18 @@ def get_file_upload_url(
     share_service.ensure_write_access(db, share, user)
 
     settings = get_settings()
-    minio_client = _get_minio_client()
-    _ensure_minio_bucket(minio_client, settings.minio_bucket)
     object_name = f"web-assets/{share_id}/{path}"
     content_type = token_payload.get("content_type") or "application/octet-stream"
-    url = minio_client.presigned_put_object(
-        settings.minio_bucket, object_name, expires=timedelta(minutes=10)
+    # authorization is guaranteed "Bearer <token>" here — _decode_file_token
+    # already rejected anything else above. Reusing the same file-token as
+    # the PUT's own query credential mirrors get_file_download_url exactly:
+    # it already proves write access to this exact share_id+path and is
+    # already short-lived (10 min).
+    _, _, raw_token = authorization.partition(" ")
+    base = settings.control_plane_public_url.rstrip("/")
+    url = (
+        f"{base}/shares/{share_id}/files/{quote(path, safe='/')}/content"
+        f"?token={quote(raw_token, safe='')}"
     )
 
     now_iso = security.utcnow().isoformat()
@@ -938,6 +957,65 @@ def get_file_upload_url(
     db.commit()
 
     return UploadUrlResponse(uploadUrl=url)
+
+
+@router.put("/{share_id}/files/{path:path}/content")
+async def put_file_content(
+    request: Request,
+    share_id: uuid.UUID,
+    path: str,
+    token: str = Query(..., description="File-token from upload-url's uploadUrl"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Accept attachment bytes directly (CAS.ts writeFile() step 2).
+
+    Mirrors get_file_content's GET-relay pattern (and sync_write_file's own
+    body-read-then-put_object shape, same file): reads the PUT body and
+    writes it to MinIO server-side, instead of the client PUTting straight to
+    a presigned MinIO URL — MinIO is not publicly reachable (effef307). Auth
+    is a query param, not a header, for the same reason get_file_content's
+    is: this is the URL get_file_upload_url hands the client for a bare PUT,
+    and reusing the upload file-token as that query credential is not a new
+    exposure class versus the presigned-MinIO-URL shape it replaces (see
+    get_file_upload_url's docstring).
+    """
+    token_payload = _decode_file_token_value(token, share_id, path)
+    if token_payload.get("agent_write") is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent key does not have write scope",
+        )
+    user = _user_from_file_token(db, token_payload)
+    share = share_service.get_share(db, share_id)
+    share_service.ensure_write_access(db, share, user)
+
+    body = await request.body()
+    if len(body) > MAX_SYNC_WRITE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Max size: {MAX_SYNC_WRITE_SIZE // (1024 * 1024)}MB",
+        )
+
+    settings = get_settings()
+    minio_client = _get_minio_client()
+    _ensure_minio_bucket(minio_client, settings.minio_bucket)
+    object_name = f"web-assets/{share_id}/{path}"
+    content_type = token_payload.get("content_type") or "application/octet-stream"
+    try:
+        minio_client.put_object(
+            settings.minio_bucket,
+            object_name,
+            io.BytesIO(body),
+            length=len(body),
+            content_type=content_type,
+        )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store file: {e}",
+        ) from e
+
+    return Response(status_code=status.HTTP_200_OK)
 
 
 @router.patch("/{share_id}", response_model=share_schema.ShareRead)
