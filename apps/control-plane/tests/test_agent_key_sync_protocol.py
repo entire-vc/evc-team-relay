@@ -1037,19 +1037,24 @@ class TestAgentKeyFileToken:
     ):
         """Positive control for the test above: a key that genuinely holds
         write scope must still work end to end — otherwise the 403 above
-        would be meaningless (a broken chain 403s on everything)."""
+        would be meaningless (a broken chain 403s on everything).
+
+        uploadUrl is now a control-plane URL, not a raw MinIO one (#9d24f75c
+        — same reasoning as the download side's effef307 fix): minting it
+        no longer touches MinIO at all, the actual PUT .../content route
+        does. presigned_put_object is asserted NOT called here for that
+        reason, not because of any access check."""
         share = make_folder_share(db_session, test_user)
         raw_key = make_agent_key(db_session, share, scopes="read,write")
         file_token = self._mint(client, share.id, raw_key)
 
-        mock_client = MagicMock()
-        mock_client.bucket_exists.return_value = True
-        mock_client.presigned_put_object.return_value = "https://minio.test/presigned-put"
-        with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
-            resp = client.post(
-                f"{BASE}/{share.id}/files/attachments/photo.png/upload-url",
-                headers={"Authorization": f"Bearer {file_token}"},
-            )
+        resp = client.post(
+            f"{BASE}/{share.id}/files/attachments/photo.png/upload-url",
+            headers={"Authorization": f"Bearer {file_token}"},
+        )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["uploadUrl"] == "https://minio.test/presigned-put"
-        mock_client.presigned_put_object.assert_called_once()
+        upload_url = resp.json()["uploadUrl"]
+        assert "minio" not in upload_url.lower()
+        assert upload_url.startswith(
+            f"http://localhost:8000/shares/{share.id}/files/attachments/photo.png/content?token="
+        )

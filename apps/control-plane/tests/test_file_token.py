@@ -412,19 +412,42 @@ class TestFileContent:
 
 
 class TestUploadUrl:
+    def test_returns_control_plane_url_not_minio(
+        self, client: TestClient, db_session: Session, owner
+    ):
+        """Regression for #9d24f75c: must NOT be a raw MinIO presigned URL —
+        same reasoning as TestDownloadUrl's effef307 regression above, just
+        never applied to this sibling route until now. MinIO has no public
+        endpoint, so a self-host client behind a reverse proxy with no public
+        route to storage could mint an upload-url that HEAD/download-url
+        both worked for but that itself connection-refused every time.
+        """
+        share = make_folder_share(db_session, owner, slug="upurl-not-minio")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token)
+        r = client.post(
+            f"/shares/{share.id}/files/attachments/photo.png/upload-url",
+            headers=bearer(data["token"]),
+        )
+        assert r.status_code == 200, r.text
+        upload_url = r.json()["uploadUrl"]
+        assert "minio" not in upload_url.lower()
+        assert upload_url.startswith(
+            f"http://localhost:8000/shares/{share.id}/files/attachments/photo.png/content?token="
+        )
+
     def test_owner_gets_upload_url_and_index_updated(
         self, client: TestClient, db_session: Session, owner
     ):
         share = make_folder_share(db_session, owner, slug="upurl-owner")
         token = login(client, owner.email, "test123456")
         data = mint(client, share.id, token)
-        with minio_patch(exists=True):
-            r = client.post(
-                f"/shares/{share.id}/files/attachments/photo.png/upload-url",
-                headers=bearer(data["token"]),
-            )
+        r = client.post(
+            f"/shares/{share.id}/files/attachments/photo.png/upload-url",
+            headers=bearer(data["token"]),
+        )
         assert r.status_code == 200, r.text
-        assert r.json()["uploadUrl"] == "https://minio.test/presigned-put"
+        assert r.json()["uploadUrl"].startswith("http://localhost:8000/")
 
         db_session.refresh(share)
         items = share.web_folder_items or []
@@ -481,3 +504,102 @@ class TestUploadUrl:
         items = share.web_folder_items or []
         matches = [i for i in items if i.get("path") == "attachments/photo.png"]
         assert len(matches) == 1, "re-upload must update in place, not duplicate the index entry"
+
+
+# ── PUT /shares/{id}/files/{path}/content (byte-receiving, #9d24f75c) ────────
+
+
+class TestFileContentUpload:
+    def test_end_to_end_returns_200(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-upload-e2e")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token)
+        with minio_patch(exists=True):
+            up = client.post(
+                f"/shares/{share.id}/files/attachments/photo.png/upload-url",
+                headers=bearer(data["token"]),
+            )
+            assert up.status_code == 200, up.text
+            # bare PUT, no Authorization header — the credential is in the URL,
+            # exactly like TestFileContent's bare GET for the download side.
+            r = client.put(
+                relative_url(up.json()["uploadUrl"]),
+                content=b"real-png-bytes",
+                headers={"Content-Type": "image/png"},
+            )
+        assert r.status_code == 200, r.text
+
+    def test_bytes_actually_reach_minio_put_object(
+        self, client: TestClient, db_session: Session, owner
+    ):
+        """Stronger version of the above: assert put_object was called with
+        this share's object_name and the exact bytes sent, not just a 200."""
+        share = make_folder_share(db_session, owner, slug="content-upload-verify")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token)
+        mock_client = MagicMock()
+        mock_client.bucket_exists.return_value = True
+        with patch("app.api.routers.shares._get_minio_client", return_value=mock_client):
+            up = client.post(
+                f"/shares/{share.id}/files/attachments/photo.png/upload-url",
+                headers=bearer(data["token"]),
+            )
+            assert up.status_code == 200, up.text
+            r = client.put(
+                relative_url(up.json()["uploadUrl"]),
+                content=b"exact-bytes-under-test",
+                headers={"Content-Type": "image/png"},
+            )
+        assert r.status_code == 200, r.text
+        mock_client.put_object.assert_called_once()
+        args, kwargs = mock_client.put_object.call_args
+        assert args[1] == f"web-assets/{share.id}/attachments/photo.png"
+        assert args[2].read() == b"exact-bytes-under-test"
+        assert kwargs["length"] == len(b"exact-bytes-under-test")
+        assert kwargs["content_type"] == "image/png"
+
+    def test_viewer_forbidden(self, client: TestClient, db_session: Session, owner, viewer):
+        """/file-token itself only requires READ access (module docstring:
+        each downstream route independently re-checks read vs write), so a
+        viewer can mint one — the PUT .../content route must reject it on
+        its own, the same way TestUploadUrl.test_viewer_only_forbidden shows
+        upload-url does for the mint-adjacent step. Going straight through
+        /content with a viewer-minted token, skipping upload-url entirely,
+        is what actually proves THIS route's own check, not upload-url's.
+        """
+        share = make_folder_share(db_session, owner, slug="content-upload-viewer")
+        add_member(db_session, share, viewer, models.ShareMemberRole.VIEWER)
+        viewer_token = login(client, viewer.email, "test123456")
+        data = mint(client, share.id, viewer_token)
+        r = client.put(
+            f"/shares/{share.id}/files/attachments/photo.png/content?token={data['token']}",
+            content=b"irrelevant",
+            headers={"Content-Type": "image/png"},
+        )
+        assert r.status_code == 403
+
+    def test_garbage_token_returns_401(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-upload-bad-token")
+        r = client.put(
+            f"/shares/{share.id}/files/attachments/photo.png/content?token=not-a-real-token",
+            content=b"irrelevant",
+        )
+        assert r.status_code == 401
+
+    def test_no_token_returns_422(self, client: TestClient, db_session: Session, owner):
+        share = make_folder_share(db_session, owner, slug="content-upload-no-token")
+        r = client.put(
+            f"/shares/{share.id}/files/attachments/photo.png/content", content=b"irrelevant"
+        )
+        assert r.status_code == 422
+
+    def test_session_jwt_rejected_not_a_file_token(
+        self, client: TestClient, db_session: Session, owner
+    ):
+        share = make_folder_share(db_session, owner, slug="content-upload-session-jwt")
+        token = login(client, owner.email, "test123456")
+        r = client.put(
+            f"/shares/{share.id}/files/attachments/photo.png/content?token={token}",
+            content=b"irrelevant",
+        )
+        assert r.status_code == 401
