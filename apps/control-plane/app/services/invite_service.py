@@ -289,16 +289,51 @@ async def redeem_invite(
                 detail="This invite is restricted to a different email address",
             )
 
-    # Handle new user registration or existing user
-    access_token = None
-    if not user:
-        if not new_user_data:
+    if not user and not new_user_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either authenticate or provide registration details",
+        )
+
+    # Owner / already-member checks apply only to an existing user: a user
+    # registered by this very call can be neither.
+    existing_member = None
+    if user:
+        if user.id == invite.share.owner_user_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Either authenticate or provide registration details",
+                detail="You are already the owner of this share",
             )
 
-        # Create new user
+        # Already a member -> idempotent success, no limit check, no new row.
+        existing_member = db.execute(
+            select(models.ShareMember).where(
+                models.ShareMember.share_id == invite.share_id,
+                models.ShareMember.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+
+    # #7703d4fe: the owner/admin-driven POST /shares/{id}/members route
+    # (shares.py add_member) has always enforced max_members_per_share —
+    # invite-link redemption is the far more common path and used to add the
+    # ShareMember row unconditionally.
+    #
+    # #5fc7ed2b: the check must run BEFORE create_user. create_user commits on
+    # its own, so a 403 raised after it left a committed account with no share
+    # and no membership that nothing ever cleaned up.
+    if not existing_member:
+        settings = get_settings()
+        if settings.billing_enabled:
+            owner = invite.share.owner
+            casdoor_id = billing_service.get_casdoor_id(db, owner)
+            await billing_service.check_limit(
+                casdoor_id,
+                "max_members_per_share",
+                usage_service.count_share_members(db, invite.share_id),
+            )
+
+    access_token = None
+    if not user:
         user_payload = user_schema.UserCreate(
             email=new_user_data.email,
             password=new_user_data.password,
@@ -318,37 +353,7 @@ async def redeem_invite(
                 ) from e
             raise
 
-    # Check if user is the owner
-    if user.id == invite.share.owner_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You are already the owner of this share",
-        )
-
-    # Check if user is already a member (idempotent - just return success)
-    existing_member = db.execute(
-        select(models.ShareMember).where(
-            models.ShareMember.share_id == invite.share_id,
-            models.ShareMember.user_id == user.id,
-        )
-    ).scalar_one_or_none()
-
     if not existing_member:
-        # #7703d4fe: the owner/admin-driven POST /shares/{id}/members route
-        # (shares.py add_member) has always enforced max_members_per_share —
-        # this is the far more common path (invite-link redemption) and it
-        # added the ShareMember row unconditionally, letting a share's
-        # member count run past its plan's cap with no rejection at all.
-        settings = get_settings()
-        if settings.billing_enabled:
-            owner = invite.share.owner
-            casdoor_id = billing_service.get_casdoor_id(db, owner)
-            await billing_service.check_limit(
-                casdoor_id,
-                "max_members_per_share",
-                usage_service.count_share_members(db, invite.share_id),
-            )
-
         # Add user as member with atomic use count increment
         member = models.ShareMember(
             share_id=invite.share_id,
