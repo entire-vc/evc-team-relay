@@ -26,9 +26,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.clients.billing_client import BillingClient
 from app.core.config import get_settings
+from app.db.models import User
 from app.services import billing_service, billing_stub, usage_service
 
 
@@ -797,6 +799,56 @@ class TestInviteRedeemMemberLimitEnforcementViaRoute:
         # 4th redemption must not have partially applied.
         members_resp = client.get(f"/shares/{share_id}/members", headers=auth_headers(owner_token))
         assert len(members_resp.json()) == 3
+
+    def test_invite_redeem_rejected_at_cap_leaves_no_orphan_user(
+        self, client: TestClient, db_session
+    ):
+        """#5fc7ed2b: redeem_invite used to create the new User (create_user
+        commits on its own) BEFORE checking max_members_per_share, so a
+        rejected redemption left a committed account with no share and no
+        membership. The 403 alone proves nothing here -- assert the row."""
+        owner_token = register_and_login(client, "invite-orphan-owner@example.com")
+        share_resp = client.post(
+            "/shares",
+            json={"kind": "doc", "path": "invite-orphan.md"},
+            headers=auth_headers(owner_token),
+        )
+        assert share_resp.status_code == 201, share_resp.text
+        share_id = share_resp.json()["id"]
+
+        for i in range(3):
+            invite_resp = client.post(
+                f"/shares/{share_id}/invites",
+                json={"role": "viewer"},
+                headers=auth_headers(owner_token),
+            )
+            redeem_resp = client.post(
+                f"/invite/{invite_resp.json()['token']}/redeem",
+                json={
+                    "email": f"invite-orphan-member-{i}@example.com",
+                    "password": "test-pass-123",
+                },
+            )
+            assert redeem_resp.status_code == 200, redeem_resp.text
+
+        invite_resp = client.post(
+            f"/shares/{share_id}/invites",
+            json={"role": "viewer"},
+            headers=auth_headers(owner_token),
+        )
+        rejected_email = "invite-orphan-rejected@example.com"
+        redeem_resp = client.post(
+            f"/invite/{invite_resp.json()['token']}/redeem",
+            json={"email": rejected_email, "password": "test-pass-123"},
+        )
+        assert redeem_resp.status_code == 403, redeem_resp.text
+        assert redeem_resp.json()["limit"] == "max_members_per_share"
+
+        db_session.expire_all()
+        orphan_count = db_session.execute(
+            select(func.count()).select_from(User).where(User.email == rejected_email)
+        ).scalar_one()
+        assert orphan_count == 0, "rejected redemption must not leave a User row behind"
 
     def test_invite_redeem_idempotent_reredemption_not_blocked_at_cap(self, client: TestClient):
         """A member re-redeeming an invite they already used must stay
