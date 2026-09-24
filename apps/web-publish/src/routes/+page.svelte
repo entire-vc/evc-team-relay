@@ -31,7 +31,14 @@
 		<div class="hero-content">
 			<div class="logo-container">
 				{#if branding?.logo_url}
-					<img src={branding.logo_url} alt="{instanceName} logo" class="logo" />
+					<img
+						src={branding.logo_url}
+						alt="{instanceName} logo"
+						class="logo"
+						width="120"
+						height="120"
+						fetchpriority="high"
+					/>
 				{:else}
 					<svg class="logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 						<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>

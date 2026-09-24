@@ -4,7 +4,7 @@
 	import CopyButton from '$lib/components/CopyButton.svelte';
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
-	import { extractTitle, extractDescription, estimateReadingTime } from '$lib/markdown';
+	import { extractTitle, extractDescription, estimateReadingTime } from '$lib/markdown-meta';
 	import type { PageData } from './$types';
 	import { page } from '$app/stores';
 	import {
