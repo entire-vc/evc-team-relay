@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
 	import { browser } from '$app/environment';
+	import RenderedContentStyles from './RenderedContentStyles.svelte';
 	// $lib/markdown (marked + on-demand katex/hljs) is loaded lazily, only when
 	// this component actually needs to render client-side — a normal view with
 	// server-rendered initialHtml never calls renderAndEnhance() at all, so it
@@ -167,27 +168,7 @@
 	});
 </script>
 
-<svelte:head>
-	<!-- KaTeX CSS for math rendering -->
-	<link
-		rel="stylesheet"
-		href="https://cdn.jsdelivr.net/npm/katex@0.16.28/dist/katex.min.css"
-		crossorigin="anonymous"
-	/>
-	<!-- Highlight.js CSS for code syntax highlighting -->
-	<link
-		rel="stylesheet"
-		href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"
-		media="(prefers-color-scheme: light)"
-		crossorigin="anonymous"
-	/>
-	<link
-		rel="stylesheet"
-		href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css"
-		media="(prefers-color-scheme: dark)"
-		crossorigin="anonymous"
-	/>
-</svelte:head>
+<RenderedContentStyles html={renderedHtml} />
 
 {#if isRendering}
 	<div class="markdown-loading">

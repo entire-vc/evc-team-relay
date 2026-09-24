@@ -7,6 +7,7 @@
 	interface Branding {
 		name: string;
 		logo_url: string;
+		logo_src?: string;
 		favicon_url: string;
 	}
 
@@ -93,7 +94,7 @@
 			<div class="brand-container">
 				{#if branding?.logo_url}
 					<img
-						src={branding.logo_url}
+						src={branding.logo_src ?? branding.logo_url}
 						alt="{branding.name} logo"
 						class="brand-logo"
 						width="32"

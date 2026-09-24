@@ -179,6 +179,12 @@ export interface ServerInfo {
 	branding: {
 		name: string;
 		logo_url: string;
+		/**
+		 * Same-origin URL to render the logo from (set by the root layout when the
+		 * control plane hands us a relative logo path). logo_url stays the absolute
+		 * control-plane URL, which og:image / twitter:image need.
+		 */
+		logo_src?: string;
 		favicon_url: string;
 		custom_head_code: string;
 		custom_body_code: string;
