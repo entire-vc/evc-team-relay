@@ -55,6 +55,11 @@ describe('renderMarkdown — lazy-renderer kill switch', () => {
 		expect(html).toContain('Just a paragraph');
 		// Renders without throwing is the main assertion here — the warm-up
 		// itself is fire-and-forget (`void loadHljsCore()`), so there's no
-		// return value to assert on directly.
+		// return value to assert on directly. Tried asserting the dynamic
+		// import actually fires via vi.doMock('highlight.js/lib/core', ...);
+		// it doesn't reliably intercept here because the module is already
+		// resolved by Vite's dep pre-bundling from an earlier test in this
+		// file by the time this test runs — not worth fighting for this
+		// low-severity gap (found in MR !315 self-review, code-reviewer).
 	});
 });
