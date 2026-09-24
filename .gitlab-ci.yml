@@ -88,13 +88,17 @@ hold-gate:
       HOLD=$(grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -c . || true)
       test "$HOLD" -gt 0 || { echo "REFUSING: $LABELS_FILE parsed to zero labels — a gate that knows no hold label passes everything"; exit 1; }
       echo "hold labels known: $HOLD"
+      echo "pipefail: $(set -o | grep pipefail)"
       echo "labels on this merge request: '${CI_MERGE_REQUEST_LABELS:-}'"
       FOUND=""
       OLDIFS=$IFS; IFS=','
+      # No `grep -q` at the end of this pipe: the runner shell sets pipefail, and
+      # -q exits on the first match, so the upstream tr/sed can take SIGPIPE (141)
+      # and a real match reads as "not found". Let grep drain its input instead.
       for L in ${CI_MERGE_REQUEST_LABELS:-}; do
         L=$(printf '%s' "$L" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -n "$L" ] || continue
-        if grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$L"; then
+        if grep -vE '^\s*(#|$)' "$LABELS_FILE" | tr 'A-Z' 'a-z' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -xF "$L" >/dev/null; then
           FOUND="$FOUND $L"
         fi
       done
