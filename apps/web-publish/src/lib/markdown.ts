@@ -18,9 +18,36 @@
 import { Marked, type Token, type Tokens } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import markedFootnote from 'marked-footnote';
-import hljs from 'highlight.js';
-import katex from 'katex';
 import DOMPurify from 'isomorphic-dompurify';
+import type { HLJSApi } from 'highlight.js';
+import { env } from '$env/dynamic/public';
+import { stripFrontmatter, stripComments } from './markdown-meta';
+
+// Kill switch (#cee667d8): PUBLIC_LAZY_RENDERERS_DISABLED=true reverts to the
+// pre-fix behaviour — hljs core + katex are fetched on every render, whether
+// or not the document actually has code/math, same as when they were static
+// imports. $env/dynamic/public (not $env/static/public) so this is a runtime
+// container-restart toggle, not something that needs a rebuild+redeploy to
+// flip — the point of a kill switch is not needing the slow path to turn it
+// off.
+const LAZY_RENDERERS_DISABLED = env.PUBLIC_LAZY_RENDERERS_DISABLED === 'true';
+
+// Title/description/reading-time extraction lives in ./markdown-meta (no
+// marked/hljs/katex/dompurify deps) — re-exported here only so existing
+// server-side and test imports of `$lib/markdown` keep working. Client route
+// components must import them from `$lib/markdown-meta` directly, not via
+// this re-export, or Rollup can't split this module's heavy deps out of
+// their chunk (see the module-splitting note at the top of markdown-meta.ts).
+export { extractTitle, extractDescription, estimateReadingTime } from './markdown-meta';
+
+// highlight.js and katex are NOT imported statically here on purpose. Both
+// are loaded via dynamic import(), and only when the document actually
+// contains something that needs them (a fenced code block / a math
+// expression) — see highlightCode()/restoreMath() below. This module is
+// imported by client components (MarkdownViewer.svelte /
+// EditableMarkdownViewer.svelte) as well as server load()s, so a static
+// import here shipped hljs's full language bundle + katex to every visitor
+// of every published page, even ones with neither code nor math (#cee667d8).
 
 // ---------------------------------------------------------------------------
 // HTML escaping utility (defense-in-depth before DOMPurify)
@@ -66,21 +93,7 @@ function createMathPlaceholderFactory(mathStore: MathStore) {
 // ---------------------------------------------------------------------------
 // Preprocessing pipeline
 // ---------------------------------------------------------------------------
-
-/**
- * Strip Obsidian comments (%%...%%) from content.
- * Handles both inline and multiline comments.
- */
-function stripComments(text: string): string {
-	return text.replace(/%%[\s\S]*?%%/g, '');
-}
-
-/**
- * Strip YAML frontmatter (---\n...\n---) from start of document.
- */
-function stripFrontmatter(text: string): string {
-	return text.replace(/^---\n[\s\S]*?\n---\n?/, '');
-}
+// (stripComments/stripFrontmatter now live in ./markdown-meta, imported above)
 
 /**
  * Protect math expressions from marked parsing by replacing them with placeholders.
@@ -146,8 +159,11 @@ function preprocessMarkdown(raw: string, createPlaceholder: (expression: string,
 
 /**
  * Replace math placeholders with rendered KaTeX HTML.
+ * No-ops (and never imports katex) when the document has no math at all.
  */
-function restoreMath(html: string, mathStore: MathStore): string {
+async function restoreMath(html: string, mathStore: MathStore): Promise<string> {
+	if (mathStore.size === 0) return html;
+	const katex = (await import('katex')).default;
 	for (const [placeholder, { expression, displayMode }] of mathStore.entries()) {
 		try {
 			const rendered = katex.renderToString(expression, {
@@ -540,6 +556,79 @@ function walkTokensForTaskLists(token: Token): void {
 }
 
 // ---------------------------------------------------------------------------
+// Lazy syntax highlighting (highlight.js/lib/core + one grammar per language)
+// ---------------------------------------------------------------------------
+
+/** Fence-label aliases whose highlight.js module filename differs from the label. */
+const HLJS_LANGUAGE_ALIASES: Record<string, string> = {
+	js: 'javascript',
+	jsx: 'javascript',
+	mjs: 'javascript',
+	cjs: 'javascript',
+	ts: 'typescript',
+	tsx: 'typescript',
+	py: 'python',
+	py3: 'python',
+	rb: 'ruby',
+	sh: 'bash',
+	zsh: 'bash',
+	'c++': 'cpp',
+	cxx: 'cpp',
+	'c#': 'csharp',
+	cs: 'csharp',
+	yml: 'yaml',
+	md: 'markdown',
+	html: 'xml',
+	htm: 'xml',
+	golang: 'go'
+};
+
+/** Every real highlight.js language id matches this — also blocks a hostile fence label from being used as an import() path segment. */
+const SAFE_HLJS_LANG_ID = /^[a-z0-9+#-]+$/;
+
+let hljsCorePromise: Promise<HLJSApi> | null = null;
+function loadHljsCore(): Promise<HLJSApi> {
+	if (!hljsCorePromise) {
+		hljsCorePromise = import('highlight.js/lib/core').then((m) => m.default);
+	}
+	return hljsCorePromise;
+}
+
+/** Languages we've already tried to register (success or failure) — avoids re-importing per code block. */
+const attemptedHljsLanguages = new Set<string>();
+
+async function ensureHljsLanguage(hljs: HLJSApi, requested: string): Promise<string | null> {
+	const canonical = HLJS_LANGUAGE_ALIASES[requested] ?? requested;
+	if (hljs.getLanguage(canonical)) return canonical;
+	if (attemptedHljsLanguages.has(canonical)) return null;
+	attemptedHljsLanguages.add(canonical);
+	if (!SAFE_HLJS_LANG_ID.test(canonical)) return null;
+	try {
+		const mod = await import(`highlight.js/lib/languages/${canonical}.js`);
+		hljs.registerLanguage(canonical, mod.default);
+		return canonical;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Highlight one fenced code block's contents. Loads highlight.js core and
+ * the requested grammar on demand — a document with no fenced code (or only
+ * unlabelled fences) never imports highlight.js at all, UNLESS the kill
+ * switch is set, in which case every block (including unlabelled ones) goes
+ * through hljs's 'plaintext' grammar, matching the pre-#cee667d8 behaviour.
+ * Unknown/unsupported languages degrade to plain escaped text either way.
+ */
+async function highlightCode(code: string, lang: string): Promise<string> {
+	if (!lang && !LAZY_RENDERERS_DISABLED) return escapeHtml(code);
+	const hljs = await loadHljsCore();
+	const resolved = await ensureHljsLanguage(hljs, (lang || 'plaintext').toLowerCase());
+	if (!resolved) return escapeHtml(code);
+	return hljs.highlight(code, { language: resolved }).value;
+}
+
+// ---------------------------------------------------------------------------
 // Configure marked instance
 // ---------------------------------------------------------------------------
 //
@@ -641,14 +730,15 @@ const customRenderer = {
 function buildMarkedInstance(context: RenderContext): Marked {
 	const instance = new Marked(
 		markedHighlight({
+			async: true,
 			langPrefix: 'hljs language-',
-			highlight(code, lang) {
+			async highlight(code, lang) {
 				// Mermaid: pass through as a special div instead of highlighting
+				// (mermaid itself is loaded client-side, separately — see MarkdownViewer.svelte)
 				if (lang === 'mermaid') {
 					return code;
 				}
-				const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-				return hljs.highlight(code, { language }).value;
+				return highlightCode(code, lang);
 			}
 		}),
 		markedFootnote()
@@ -765,6 +855,13 @@ export async function renderMarkdown(markdown: string, context?: RenderContext):
 	const mathStore: MathStore = new Map();
 	const createPlaceholder = createMathPlaceholderFactory(mathStore);
 
+	// Kill switch: warm katex unconditionally, same cost shape as when it was
+	// a static import — restoreMath() below still only USES it if the
+	// document has actual math, but the fetch happens regardless.
+	if (LAZY_RENDERERS_DISABLED) {
+		void import('katex');
+	}
+
 	// Step 1: Preprocess (strip frontmatter, comments, protect math)
 	const preprocessed = preprocessMarkdown(markdown, createPlaceholder);
 
@@ -773,104 +870,10 @@ export async function renderMarkdown(markdown: string, context?: RenderContext):
 	const rawHtml = await marked.parse(preprocessed);
 
 	// Step 3: Restore math placeholders with KaTeX-rendered HTML
-	const withMath = restoreMath(rawHtml, mathStore);
+	const withMath = await restoreMath(rawHtml, mathStore);
 
 	// Step 4: Sanitize
 	const sanitizedHtml = DOMPurify.sanitize(withMath, SANITIZE_CONFIG);
 
 	return sanitizedHtml;
-}
-
-/**
- * Extract title from markdown (first h1 heading, or YAML title, or filename).
- * Handles frontmatter stripping.
- */
-export function extractTitle(markdown: string, fallback: string = 'Untitled'): string {
-	// Try to extract title from YAML frontmatter first
-	const fmMatch = markdown.match(/^---\n([\s\S]*?)\n---/);
-	if (fmMatch) {
-		const titleMatch = fmMatch[1].match(/^title:\s*(.+)$/m);
-		if (titleMatch) {
-			// Remove quotes if present
-			return titleMatch[1].trim().replace(/^["']|["']$/g, '');
-		}
-	}
-
-	// Strip frontmatter before looking for h1
-	const stripped = stripFrontmatter(markdown);
-
-	// Look for first h1 heading
-	const h1Match = stripped.match(/^#\s+(.+)$/m);
-	if (h1Match) {
-		return h1Match[1].trim();
-	}
-
-	// Fallback to filename or default
-	return fallback;
-}
-
-/**
- * Extract description from markdown for SEO meta tags.
- * Priority: frontmatter description > first paragraph text (up to 160 chars).
- */
-export function extractDescription(markdown: string, fallback: string = ''): string {
-	// Try frontmatter description first
-	const fmMatch = markdown.match(/^---\n([\s\S]*?)\n---/);
-	if (fmMatch) {
-		const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
-		if (descMatch) {
-			return descMatch[1].trim().replace(/^["']|["']$/g, '');
-		}
-	}
-
-	// Strip frontmatter and find first paragraph of plain text
-	const stripped = stripFrontmatter(markdown);
-	// Remove headings, code blocks, images, links syntax, HTML tags
-	const lines = stripped.split('\n');
-	const textLines: string[] = [];
-	let inCodeBlock = false;
-
-	for (const line of lines) {
-		if (line.startsWith('```')) {
-			inCodeBlock = !inCodeBlock;
-			continue;
-		}
-		if (inCodeBlock) continue;
-		if (line.startsWith('#')) continue;
-		if (line.startsWith('![[')) continue;
-		if (line.startsWith('![')) continue;
-		if (line.startsWith('---')) continue;
-		if (line.startsWith('> [!')) continue; // callout headers
-		const trimmed = line.trim();
-		if (trimmed.length === 0) {
-			if (textLines.length > 0) break; // stop at first blank line after content
-			continue;
-		}
-		// Clean markdown syntax from text
-		const cleaned = trimmed
-			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [text](url) → text
-			.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // [[link|text]] → link
-			.replace(/[*_~`]+/g, '') // bold, italic, strikethrough, code
-			.replace(/==([^=]+)==/g, '$1') // highlights
-			.replace(/<[^>]+>/g, ''); // HTML tags
-		textLines.push(cleaned);
-	}
-
-	const description = textLines.join(' ').trim();
-	if (description.length > 160) {
-		return description.substring(0, 157) + '...';
-	}
-	return description || fallback;
-}
-
-/**
- * Estimate reading time in minutes.
- * Strips frontmatter and comments before counting.
- */
-export function estimateReadingTime(markdown: string): number {
-	const wordsPerMinute = 200;
-	let text = stripFrontmatter(markdown);
-	text = stripComments(text);
-	const words = text.split(/\s+/).filter((w) => w.length > 0).length;
-	return Math.ceil(words / wordsPerMinute);
 }

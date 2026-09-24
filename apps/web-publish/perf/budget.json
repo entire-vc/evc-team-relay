@@ -1,0 +1,12 @@
+{
+	"document-view": {
+		"route": "/[slug]",
+		"max_gzip_bytes": 100000,
+		"_comment": "Static (eager) client JS+CSS a first-time visitor of a published document page downloads before any interaction. Was 1265369 B RAW (no compression at all) before #cee667d8; is 83835 B gzip after the fix (lazy hljs/katex/marked + Caddy encode) — ceiling set ~19% above that measured value, not at the task's looser 300KB target, per the ratchet rule (lower the ceiling to match reality, don't leave headroom for its own sake)."
+	},
+	"home": {
+		"route": "/",
+		"max_gzip_bytes": 90000,
+		"_comment": "Homepage — no markdown/mermaid/katex/hljs on this route at all. Measured 72997 B gzip after #cee667d8; ceiling ~23% above that."
+	}
+}
