@@ -11,7 +11,7 @@
 	},
 	"document-view-nested": {
 		"route": "/[slug]/[...path]",
-		"max_gzip_bytes": 100000,
-		"_comment": "Folder-share nested document route — same MarkdownViewer as document-view but a DISTINCT compiled leaf in the build manifest, so a regression introduced directly in this route file wouldn't be caught by document-view's entry alone."
+		"max_gzip_bytes": 95000,
+		"_comment": "Folder-share nested document route — same MarkdownViewer as document-view but a DISTINCT compiled leaf in the build manifest, so a regression introduced directly in this route file wouldn't be caught by document-view's entry alone. Measured 79620 B gzip after #cee667d8; ceiling ~19% above that, per the same ratchet rule as document-view/home."
 	}
 }
