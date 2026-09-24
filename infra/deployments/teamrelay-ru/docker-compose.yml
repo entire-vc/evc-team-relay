@@ -18,10 +18,13 @@ services:
 
   minio:
     mem_limit: 384m
-    # Docker Hub's minio/minio repo now denies anonymous pulls (denied:
-    # requested access to the resource is denied) — use MinIO's own quay.io
-    # mirror instead, which is unauthenticated and tag-for-tag identical.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Neither Docker Hub (minio/minio) nor quay.io (quay.io/minio/*) serves
+    # this image to anonymous pulls any more (401, from every host we tried).
+    # So it comes from this project's own registry, pinned by digest: the
+    # RELEASE.2025-09-07T16-13-09Z linux/amd64 image, byte-identical to the one
+    # already running. Pulling needs `docker login git.entire.host:5050` with a
+    # read_registry deploy token — see README.md ("MinIO images").
+    image: git.entire.host:5050/entire-vc/evc-team-relay/minio@sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2
     command: server /data --console-address ":9001"
     env_file:
       - ./.env
@@ -40,7 +43,8 @@ services:
 
   minio-init:
     mem_limit: 64m
-    image: quay.io/minio/mc:latest
+    # Same source as minio above (mc:latest as of 2025-09, pinned by digest).
+    image: git.entire.host:5050/entire-vc/evc-team-relay/mc@sha256:eb4ea9884b77704230e2423e9004d2fa738dc272876b9cc41a297d29443b8780
     env_file:
       - ./.env
     depends_on:
