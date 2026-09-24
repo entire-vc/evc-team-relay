@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { updateShareContent } from '$lib/api';
 	import type { RenderContext } from '$lib/markdown';
+	import RenderedContentStyles from './RenderedContentStyles.svelte';
 
 	// $lib/markdown (marked + on-demand katex/hljs) loaded lazily on first
 	// render — this component only mounts for share owners in edit mode, but
@@ -101,6 +102,8 @@
 		}
 	}
 </script>
+
+<RenderedContentStyles html={renderedHtml} />
 
 {#if isEditing}
 	<!-- Edit mode -->
