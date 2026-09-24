@@ -16,10 +16,15 @@ services:
       start_period: 10s
 
   minio:
-    # Docker Hub's minio/minio repo now denies anonymous pulls (denied:
-    # requested access to the resource is denied) — use MinIO's own quay.io
-    # mirror instead, which is unauthenticated and tag-for-tag identical.
-    image: quay.io/minio/minio:latest
+    # Neither Docker Hub (minio/minio) nor quay.io (quay.io/minio/minio) serves
+    # MinIO images to anonymous pulls any more, and a compose file that needs a
+    # registry login cannot be used for a first install. This is a
+    # community-maintained MinIO fork (https://github.com/pgsty/minio),
+    # S3-API compatible, published on Docker Hub without a login. It is pinned
+    # by digest so a first install pulls exactly what was tested; the pin also
+    # means no silent updates, so bump the tag and digest deliberately. To use
+    # your own mirror, set MINIO_IMAGE (and MC_IMAGE for the client) in .env.
+    image: ${MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372}
     command: server /data --console-address ":9001"
     env_file:
       - ./.env
@@ -69,7 +74,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: ${MC_IMAGE:-pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd}
     env_file:
       - ./.env
     depends_on:
