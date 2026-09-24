@@ -25,7 +25,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		"form-action 'self'"
 	].join('; ');
 
-	response.headers.set('Content-Security-Policy', csp);
+	// A route that sets its own (stricter) CSP, e.g. the logo proxy, keeps it.
+	if (!response.headers.has('Content-Security-Policy')) {
+		response.headers.set('Content-Security-Policy', csp);
+	}
 	response.headers.set(
 		'Permissions-Policy',
 		'geolocation=(), microphone=(), camera=(), payment=(), usb=()'
