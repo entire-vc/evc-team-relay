@@ -8,5 +8,10 @@
 		"route": "/",
 		"max_gzip_bytes": 90000,
 		"_comment": "Homepage — no markdown/mermaid/katex/hljs on this route at all. Measured 72997 B gzip after #cee667d8; ceiling ~23% above that."
+	},
+	"document-view-nested": {
+		"route": "/[slug]/[...path]",
+		"max_gzip_bytes": 100000,
+		"_comment": "Folder-share nested document route — same MarkdownViewer as document-view but a DISTINCT compiled leaf in the build manifest, so a regression introduced directly in this route file wouldn't be caught by document-view's entry alone."
 	}
 }

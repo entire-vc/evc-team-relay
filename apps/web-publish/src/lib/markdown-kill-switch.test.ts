@@ -44,4 +44,17 @@ describe('renderMarkdown — lazy-renderer kill switch', () => {
 		expect(html).toContain('const');
 		expect(html).toContain('katex');
 	});
+
+	it('flag=true: warms hljs core (not just katex) even for a document with no code or math at all', async () => {
+		process.env.PUBLIC_LAZY_RENDERERS_DISABLED = 'true';
+		const { renderMarkdown } = await import('./markdown.js');
+		// Plain prose, nothing that would trigger a code/math path on its own —
+		// this only exercises the unconditional warm-up in renderMarkdown(),
+		// not highlightCode()/restoreMath()'s own gating.
+		const html = await renderMarkdown('Just a paragraph, nothing special.');
+		expect(html).toContain('Just a paragraph');
+		// Renders without throwing is the main assertion here — the warm-up
+		// itself is fire-and-forget (`void loadHljsCore()`), so there's no
+		// return value to assert on directly.
+	});
 });
