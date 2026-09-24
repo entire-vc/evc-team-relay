@@ -444,8 +444,27 @@ function createEmbedExtension(context: RenderContext) {
 // Marked extensions: Callouts
 // ---------------------------------------------------------------------------
 
-/** Callout type metadata: icon (Unicode) and CSS color class suffix */
-const CALLOUT_TYPES: Record<string, { icon: string; color: string }> = {
+/**
+ * Callout type metadata: icon (Unicode) and CSS color class suffix.
+ * Declared as a plain, fully type-checked literal (CALLOUT_TYPES_LITERAL)
+ * and THEN stripped of its prototype via Object.setPrototypeOf — NOT
+ * Object.assign(Object.create(null) as T, {...}), which looked like it
+ * restored type-checking on the literal but doesn't: both Object.assign
+ * and Object.setPrototypeOf are typed `(...): any` in lib.es2015.core.d.ts,
+ * so a cast on the Object.create(null) target is silently discarded and a
+ * wrong value type in the literal (e.g. `icon: 123`) compiles clean either
+ * way — verified empirically, not assumed, after code-reviewer's suggested
+ * cast turned out not to work (checked via `tsc --noEmit --strict` with a
+ * deliberately-wrong literal both ways: the assign+cast form let it through
+ * silently, the literal-then-setPrototypeOf form correctly rejected it).
+ * Null-prototype for the same reason as HLJS_LANGUAGE_ALIASES (#5bcfc26c):
+ * `callout.type` below comes from a document's `[!type]` marker, and a plain
+ * `{}` would let `__proto__`/`constructor` resolve through the prototype
+ * chain instead of missing the lookup, silently dropping the intended
+ * `|| CALLOUT_TYPES['note']` fallback (no icon/color, not a crash here, but
+ * still the wrong behavior for the same reason).
+ */
+const CALLOUT_TYPES_LITERAL: Record<string, { icon: string; color: string }> = {
 	note: { icon: '\u270F\uFE0F', color: 'blue' },
 	info: { icon: '\u2139\uFE0F', color: 'blue' },
 	todo: { icon: '\u2611\uFE0F', color: 'blue' },
@@ -474,6 +493,10 @@ const CALLOUT_TYPES: Record<string, { icon: string; color: string }> = {
 	quote: { icon: '\u275D', color: 'gray' },
 	cite: { icon: '\u275D', color: 'gray' }
 };
+const CALLOUT_TYPES: Record<string, { icon: string; color: string }> = Object.setPrototypeOf(
+	CALLOUT_TYPES_LITERAL,
+	null
+);
 
 /**
  * Walk tokens to detect callout blockquotes and annotate them.
@@ -567,7 +590,22 @@ function walkTokensForTaskLists(token: Token): void {
  * node_modules/highlight.js/lib/languages/*.js (excluding the deprecated
  * `.js.js` re-export shims), `hljs.getLanguage(name).aliases`.
  */
-const HLJS_LANGUAGE_ALIASES: Record<string, string> = {
+// Null-prototype: `requested` below comes straight from document content (a
+// fence's info string), so a plain `{}` here would let a label like
+// `__proto__`/`constructor` resolve through the object's OWN prototype chain
+// instead of missing the lookup — `canonical` would become a live object/
+// function instead of `undefined`, crashing `hljs.getLanguage(canonical)`
+// with a full-page 503 (#5bcfc26c). `Object.create(null)` has no prototype
+// chain to fall through to, so `[...][anything not an own key]` is always
+// `undefined`, exactly like a `Map`.
+//
+// Declared as a plain, fully type-checked literal and THEN stripped of its
+// prototype via Object.setPrototypeOf — see the comment on CALLOUT_TYPES
+// above for why NOT Object.assign(Object.create(null) as T, {...}): both
+// Object.assign and Object.setPrototypeOf are typed `(...): any`, so that
+// form's cast is silently discarded and doesn't actually restore checking
+// on this ~190-entry generated table (verified empirically).
+const HLJS_LANGUAGE_ALIASES_LITERAL: Record<string, string> = {
 	ado: "stata",
 	adoc: "asciidoc",
 	ahk: "autohotkey",
@@ -754,6 +792,10 @@ const HLJS_LANGUAGE_ALIASES: Record<string, string> = {
 	zone: "dns",
 	zsh: "bash",
 };
+const HLJS_LANGUAGE_ALIASES: Record<string, string> = Object.setPrototypeOf(
+	HLJS_LANGUAGE_ALIASES_LITERAL,
+	null
+);
 
 /** Every real highlight.js language id matches this — also rejects a hostile fence label before it can be used as a lookup key. */
 const SAFE_HLJS_LANG_ID = /^[a-z0-9+#.-]+$/;
@@ -777,7 +819,13 @@ function loadHljsCore(): Promise<HLJSApi> {
  * "Failed to resolve module specifier" the moment a client-side render path
  * actually calls it — confirmed live against a real page (#cee667d8).
  */
-const HLJS_LANGUAGE_LOADERS: Record<string, () => Promise<{ default: LanguageFn }>> = {
+// Null-prototype for the same reason as HLJS_LANGUAGE_ALIASES above: `canonical`
+// reaching this lookup is document-controlled, and `["constructor"]` on a plain
+// `{}` returns a callable (the real `Object` constructor) instead of `undefined`
+// — `!loader` would be false, so it would actually be AWAITED as a language
+// loader (#5bcfc26c). Literal-then-setPrototypeOf, not assign+cast — see the
+// comment on CALLOUT_TYPES above.
+const HLJS_LANGUAGE_LOADERS_LITERAL: Record<string, () => Promise<{ default: LanguageFn }>> = {
 	"1c": () => import("highlight.js/lib/languages/1c"),
 	abnf: () => import("highlight.js/lib/languages/abnf"),
 	accesslog: () => import("highlight.js/lib/languages/accesslog"),
@@ -972,6 +1020,10 @@ const HLJS_LANGUAGE_LOADERS: Record<string, () => Promise<{ default: LanguageFn 
 	yaml: () => import("highlight.js/lib/languages/yaml"),
 	zephir: () => import("highlight.js/lib/languages/zephir"),
 };
+const HLJS_LANGUAGE_LOADERS: Record<string, () => Promise<{ default: LanguageFn }>> = Object.setPrototypeOf(
+	HLJS_LANGUAGE_LOADERS_LITERAL,
+	null
+);
 
 /** Languages we've already tried to register — caches the PROMISE, not a boolean, so concurrent fenced blocks in the same document (marked awaits all code-token callbacks via one Promise.all) await the same in-flight registration instead of racing and losing. */
 const hljsLanguageAttempts = new Map<string, Promise<string | null>>();
