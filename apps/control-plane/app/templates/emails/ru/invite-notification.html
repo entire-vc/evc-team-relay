@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Вас приглашают к совместной работе{% endblock %}
+{% block content %}
+<h2>Вас приглашают к совместной работе!</h2>
+
+<p><strong>{{ inviter_email }}</strong> приглашает вас в:</p>
+
+<div class="highlight">
+    <p><strong>{{ share_kind|kind_label }}:</strong> {{ share_path }}</p>
+    <p><strong>Ваша роль:</strong> {{ role|role_label }}</p>
+    {% if expires_at %}
+    <p><strong>Действует до:</strong> {{ expires_at }}</p>
+    {% endif %}
+</div>
+
+<p style="text-align: center;">
+    <!-- invite_url = trusted base_url (get_base_url, never client headers) +
+         secrets.token_hex(32) — no attacker-controlled content. -->
+    <!-- nosemgrep: generic.html-templates.security.var-in-href.var-in-href -->
+    <a href="{{ invite_url }}" class="button">Принять приглашение</a>
+</p>
+
+<p style="font-size: 14px; color: #666;">
+    Или скопируйте ссылку: <code>{{ invite_url }}</code>
+</p>
+
+<p style="font-size: 14px; color: #666;">
+    Если вы не знаете {{ inviter_email }} или не ждали этого приглашения,
+    просто проигнорируйте письмо.
+</p>
+{% endblock %}

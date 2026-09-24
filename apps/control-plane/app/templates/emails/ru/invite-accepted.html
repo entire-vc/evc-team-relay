@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Приглашение принято{% endblock %}
+{% block content %}
+<h2>Ваше приглашение принято!</h2>
+
+<p><strong>{{ new_member_email }}</strong> принял(а) ваше приглашение и получил(а) доступ к Шаре:</p>
+
+<div class="highlight">
+    <p><strong>Шара:</strong> {{ share_path }}</p>
+    <p><strong>Роль:</strong> {{ role|role_label }}</p>
+</div>
+
+<p>Теперь у этого участника есть доступ к совместной работе в Шаре.</p>
+{% endblock %}
