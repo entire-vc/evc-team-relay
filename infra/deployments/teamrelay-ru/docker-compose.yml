@@ -127,6 +127,9 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL}
+      # System emails (incl. the offer §13.3 data-deletion notice) are rendered in
+      # the process that calls send_*: control-plane and lifecycle-worker.
+      EMAIL_LOCALE: ${EMAIL_LOCALE:-ru}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -224,6 +227,7 @@ services:
       LIFECYCLE_FROM_NAME: ${LIFECYCLE_FROM_NAME:-}
       LIFECYCLE_FROM_EMAIL: ${LIFECYCLE_FROM_EMAIL:-}
       LIFECYCLE_UNSUBSCRIBE_SECRET: ${LIFECYCLE_UNSUBSCRIBE_SECRET:-change-me}
+      EMAIL_LOCALE: ${EMAIL_LOCALE:-ru}
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL}
       SERVER_NAME: ${SERVER_NAME:-Team Relay}
       ARGUS_ENABLED: ${ARGUS_ENABLED:-false}
