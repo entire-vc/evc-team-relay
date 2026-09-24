@@ -250,3 +250,37 @@ describe('renderMarkdown — concurrent-call isolation', () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #5bcfc26c — prototype-pollution-shaped crash via document-controlled
+// dictionary lookups (fence language, callout type)
+// ---------------------------------------------------------------------------
+
+describe('renderMarkdown — __proto__/constructor as document-controlled dictionary keys', () => {
+	it('code fence labelled __proto__ degrades to unhighlighted code instead of throwing', async () => {
+		const html = await renderMarkdown('```__proto__\nplain block\n```');
+		expect(html).toContain('plain block');
+	});
+
+	it('code fence labelled constructor degrades to unhighlighted code instead of throwing', async () => {
+		const html = await renderMarkdown('```constructor\nplain block\n```');
+		expect(html).toContain('plain block');
+	});
+
+	it('callout type __proto__ falls back to the note styling instead of losing its icon/color', async () => {
+		const html = await renderMarkdown('> [!__proto__] Title\n> Body');
+		expect(html).toContain('Title');
+		// The 'note' fallback (icon + 'callout-blue') should be present; a
+		// prototype-pollution miss would silently drop both (rendered
+		// 'callout-undefined' with no icon instead — confirmed on unfixed code).
+		expect(html).toContain('callout-blue');
+		expect(html).toContain('✏️');
+	});
+
+	it('callout type constructor falls back to the note styling instead of losing its icon/color', async () => {
+		const html = await renderMarkdown('> [!constructor] Title\n> Body');
+		expect(html).toContain('Title');
+		expect(html).toContain('callout-blue');
+		expect(html).toContain('✏️');
+	});
+});
