@@ -230,6 +230,21 @@ test-svelte:
   stage: test
   script:
     - npm test
+
+# Bundle-size ratchet (#cee667d8): fails if the static (eager) client JS+CSS
+# for a route exceeds perf/budget.json. Pure Node, no browser — reads
+# .svelte-kit/output's own manifest, so it needs a real `npm run build`
+# first. allow_failure explicit per fleet rule (§0z p.12): GitLab defaults
+# manual jobs to allow_failure:true, but this one isn't manual, so the
+# explicit false here is belt-and-suspenders against that default drifting
+# in if the job type ever changes.
+bundle-budget-svelte:
+  <<: *web_publish_job
+  stage: test
+  allow_failure: false
+  script:
+    - npm run build
+    - node perf/check-bundle-budget.mjs
 # ── deploy ──────────────────────────────────────────────────────────────────
 # Ships the production control plane on merge to the canonical branch. Before
 # this job a human had to press the button in `entire-vc/deploy`; modelled on

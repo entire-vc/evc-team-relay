@@ -67,6 +67,11 @@ cp.{$DOMAIN_BASE} {
   import no_framing
   import access_log_redacted
 
+  # Caddy does not compress responses by default. Without this the control-
+  # plane's JSON/HTML responses go out over the wire at their raw size —
+  # confirmed live (#cee667d8): no content-encoding at all on this host.
+  encode zstd gzip
+
   # TR-47: /metrics must never be reachable on the public edge — it is the
   # unauthenticated Prometheus scrape surface (route templates + counters,
   # confirmed no PII, but still should never be public). Internal scraping
@@ -192,6 +197,11 @@ cp.{$DOMAIN_BASE} {
   # unlike X-Frame-Options — can allow a specific origin.
   import security_headers
   import access_log_redacted
+  # Same gap as cp.{$DOMAIN_BASE} above: no compression by default. This is
+  # the one that matters most here — web-publish ships a large static JS
+  # bundle to every visitor (#cee667d8: 1.27MB raw -> ~400KB over the wire
+  # for the same chunk, before the lazy-loading fix in this same task).
+  encode zstd gzip
   request_body {
     max_size 10MB
   }

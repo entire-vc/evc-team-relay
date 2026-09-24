@@ -1,7 +1,7 @@
 <script lang="ts">
 	import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
-	import { extractDescription } from '$lib/markdown';
+	import { extractDescription } from '$lib/markdown-meta';
 	import {
 		Breadcrumb,
 		BreadcrumbList,
