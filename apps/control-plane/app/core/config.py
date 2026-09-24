@@ -314,6 +314,15 @@ class Settings(BaseSettings):
     minio_secret_key: str = Field(default="minioadmin", description="MinIO secret key")
     minio_secure: bool = Field(default=False, description="Use TLS for MinIO")
     minio_bucket: str = Field(default="relay-assets", description="MinIO bucket name")
+    metrics_minio_interval_seconds: int = Field(
+        default=900,
+        ge=1,
+        description=(
+            "How often metrics_worker walks the MinIO bucket to compute its size "
+            "(O(objects), so much rarer than the 60 s DB gauges). Checked once per 60 s "
+            "cycle, so the effective resolution is 60 s"
+        ),
+    )
 
     # Lifecycle email nudge engine
     lifecycle_enabled: bool = Field(

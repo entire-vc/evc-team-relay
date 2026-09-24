@@ -7,6 +7,8 @@ the request path.  Started via app startup hook in app/main.py.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from minio import Minio
@@ -38,6 +40,12 @@ from app.db.session import get_engine, get_sessionmaker
 logger = get_logger(__name__)
 
 COLLECT_INTERVAL_SECONDS = 60
+
+# The bucket walk is O(objects) and cannot be cancelled once it is running in a
+# pool thread (``asyncio.wait_for`` only abandons the await).  This lock is the
+# only thing that keeps a slow walk from being joined by the next one, so it is
+# taken inside the worker thread and never released by the event loop.
+_minio_walk_lock = threading.Lock()
 
 
 def _init_gauge_labels() -> None:
@@ -230,10 +238,23 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
         pass  # SQLite or unavailable — skip without error
 
 
-def _collect_minio_metrics() -> None:
-    """Query MinIO for bucket size and update the gauge."""
-    settings = get_settings()
+def _minio_collection_due(last_started: float | None, now: float, interval: float) -> bool:
+    """True when the (expensive) MinIO bucket-size walk should run this cycle."""
+    return last_started is None or now - last_started >= interval
+
+
+def _collect_minio_metrics() -> bool:
+    """Query MinIO for bucket size and update the gauge.  True if the gauge was updated.
+
+    Never runs two walks at once: if the previous one is still going (a timed-out
+    walk keeps running in its thread), this cycle is skipped and counted.
+    """
+    if not _minio_walk_lock.acquire(blocking=False):
+        METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
+        logger.debug("metrics_worker: previous minio walk still running, cycle skipped")
+        return False
     try:
+        settings = get_settings()
         client = Minio(
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
@@ -244,34 +265,52 @@ def _collect_minio_metrics() -> None:
         for obj in client.list_objects(settings.minio_bucket, recursive=True):
             total_bytes += obj.size or 0
         MINIO_BUCKET_SIZE_BYTES.labels(bucket=settings.minio_bucket).set(total_bytes)
+        return True
     except S3Error as exc:
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
         logger.warning("metrics_worker: minio s3 error", extra={"error": str(exc)})
     except Exception as exc:
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
         logger.warning("metrics_worker: minio collection error", extra={"error": str(exc)})
+    finally:
+        _minio_walk_lock.release()
+    return False
 
 
 async def run_metrics_collector() -> None:
-    """Async loop started at app startup.  Collects metrics every 60 s.
+    """Async loop started at app startup.  DB gauges every 60 s, MinIO less often.
 
     Sleeps before the first collection so that startup DB operations (bootstrap
     admin, test fixtures) complete before we open a competing session on the
     shared SQLAlchemy pool connection.  Gauge labels are pre-initialised via
     _init_gauge_labels() so they appear in /metrics immediately.
+
+    The MinIO bucket walk is O(objects), so it runs on its own interval
+    (``METRICS_MINIO_INTERVAL_SECONDS``, default 900) instead of every cycle.
     """
+    minio_interval = get_settings().metrics_minio_interval_seconds
     logger.info(
-        "metrics_worker: background collector started", extra={"interval": COLLECT_INTERVAL_SECONDS}
+        "metrics_worker: background collector started",
+        extra={"interval": COLLECT_INTERVAL_SECONDS, "minio_interval": minio_interval},
     )
+    minio_last_started: float | None = None
     while True:
         await asyncio.sleep(COLLECT_INTERVAL_SECONDS)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _collect_db_metrics)
-            await asyncio.wait_for(
-                loop.run_in_executor(None, _collect_minio_metrics),
-                timeout=30.0,
-            )
+            now = time.monotonic()
+            if _minio_collection_due(minio_last_started, now, minio_interval):
+                # A timeout keeps the stamp (the abandoned walk is still running and will
+                # publish); a fast failure or a skipped cycle gives it back, so the next
+                # 60 s cycle retries instead of waiting out the whole interval.
+                previous, minio_last_started = minio_last_started, now
+                updated = await asyncio.wait_for(
+                    loop.run_in_executor(None, _collect_minio_metrics),
+                    timeout=30.0,
+                )
+                if not updated:
+                    minio_last_started = previous
         except asyncio.TimeoutError:
             METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="minio").inc()
             logger.warning("metrics_worker: minio timed out")
