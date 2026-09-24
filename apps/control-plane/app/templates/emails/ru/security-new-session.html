@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Новый вход в вашу учётную запись{% endblock %}
+{% block content %}
+<h2>Обнаружен новый вход</h2>
+
+<p>В вашу учётную запись выполнен новый вход:</p>
+
+<div class="highlight">
+    <p><strong>Устройство:</strong> {{ device_name }}</p>
+    <p><strong>IP-адрес:</strong> {{ ip_address }}</p>
+    <p><strong>Время:</strong> {{ timestamp }}</p>
+</div>
+
+<div class="warning">
+    <p><strong>Это были не вы?</strong></p>
+    <p>Если вы не входили в учётную запись, рекомендуем сразу сменить пароль и
+    проверить активные сеансы.</p>
+</div>
+{% endblock %}

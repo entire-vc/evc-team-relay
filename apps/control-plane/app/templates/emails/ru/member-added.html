@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Вас добавили в Шару{% endblock %}
+{% block content %}
+<h2>Вас добавили в Шару!</h2>
+
+<p><strong>{{ adder_email }}</strong> добавил(а) вас в:</p>
+
+<div class="highlight">
+    <p><strong>Шара:</strong> {{ share_path }}</p>
+    <p><strong>Ваша роль:</strong> {{ role|role_label }}</p>
+</div>
+
+<p>Теперь вам доступна совместная работа в этой Шаре.</p>
+{% endblock %}

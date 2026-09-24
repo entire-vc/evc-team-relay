@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.db.models import EmailQueue, EmailStatus, UserEmailPreferences
+from app.services import email_i18n
 from app.services.instance_settings_service import get_branding
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ class EmailService:
         self.reply_to = settings.email_reply_to
         self.email_enabled = settings.email_enabled
         self.server_name = settings.server_name
+        self.locale = email_i18n.normalize_locale(settings.email_locale)
 
         # Initialize Jinja2 environment
         self._init_templates()
@@ -88,9 +90,19 @@ class EmailService:
     def _init_templates(self) -> None:
         """Initialize Jinja2 template environment."""
         if TEMPLATE_DIR.exists():
+            # A locale directory is searched first, so it overrides only the
+            # templates it translates; the rest fall back to the English ones.
+            search_path = [str(TEMPLATE_DIR)]
+            locale_dir = TEMPLATE_DIR / self.locale
+            if self.locale != email_i18n.DEFAULT_LOCALE and locale_dir.is_dir():
+                search_path.insert(0, str(locale_dir))
             self.jinja_env = Environment(
-                loader=FileSystemLoader(str(TEMPLATE_DIR)),
+                loader=FileSystemLoader(search_path),
                 autoescape=select_autoescape(["html", "xml"]),
+            )
+            self.jinja_env.filters["role_label"] = lambda v: email_i18n.role_label(self.locale, v)
+            self.jinja_env.filters["kind_label"] = lambda v: email_i18n.share_kind_label(
+                self.locale, v
             )
         else:
             logger.warning(f"Email template directory not found: {TEMPLATE_DIR}")
@@ -104,7 +116,10 @@ class EmailService:
             "base_url": str(settings.relay_public_url)
             .replace("wss://", "https://")
             .replace("ws://", "http://"),
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "timestamp": email_i18n.format_datetime(
+                self.locale, datetime.now(timezone.utc), seconds=True
+            ),
+            "locale": self.locale,
             "year": datetime.now().year,
         }
         # Include branding from instance settings if DB available
@@ -638,7 +653,7 @@ class EmailService:
         Returns:
             True if queued successfully
         """
-        subject = f"You've been invited to collaborate on {share_path}"
+        subject = email_i18n.subject(self.locale, "invite_notification", share_path=share_path)
 
         html_body, text_body = self._render_template(
             "invite-notification",
@@ -648,7 +663,9 @@ class EmailService:
                 "share_kind": share_kind,
                 "role": role,
                 "invite_url": invite_url,
-                "expires_at": expires_at.strftime("%Y-%m-%d %H:%M UTC") if expires_at else None,
+                "expires_at": (
+                    email_i18n.format_datetime(self.locale, expires_at) if expires_at else None
+                ),
                 "recipient_email": to_email,
             },
             db=db,
@@ -700,7 +717,12 @@ class EmailService:
         if not self.should_send_email(db, owner_user_id, EMAIL_TYPE_INVITE_ACCEPTED):
             return False
 
-        subject = f"{new_member_email} accepted your invite to {share_path}"
+        subject = email_i18n.subject(
+            self.locale,
+            "invite_accepted",
+            new_member_email=new_member_email,
+            share_path=share_path,
+        )
 
         html_body, text_body = self._render_template(
             "invite-accepted",
@@ -752,7 +774,7 @@ class EmailService:
         if not self.should_send_email(db, member_user_id, EMAIL_TYPE_MEMBER_ADDED):
             return False
 
-        subject = f"You've been added to {share_path}"
+        subject = email_i18n.subject(self.locale, "member_added", share_path=share_path)
 
         html_body, text_body = self._render_template(
             "member-added",
@@ -800,7 +822,7 @@ class EmailService:
         if not self.should_send_email(db, member_user_id, EMAIL_TYPE_SHARE_DELETED):
             return False
 
-        subject = f"Share '{share_path}' has been deleted"
+        subject = email_i18n.subject(self.locale, "share_deleted", share_path=share_path)
 
         html_body, text_body = self._render_template(
             "share-deleted",
@@ -836,7 +858,7 @@ class EmailService:
         Returns:
             True if email sent successfully
         """
-        subject = "Password Reset Request"
+        subject = email_i18n.subject(self.locale, "password_reset")
 
         html_body, text_body = self._render_template(
             "password-reset",
@@ -864,7 +886,7 @@ class EmailService:
         Returns:
             True if email sent successfully
         """
-        subject = "Verify Your Email Address"
+        subject = email_i18n.subject(self.locale, "email_verification")
 
         html_body, text_body = self._render_template(
             "email-verification",
@@ -904,7 +926,7 @@ class EmailService:
         Returns:
             True if queued successfully
         """
-        subject = "New login to your account"
+        subject = email_i18n.subject(self.locale, "security_new_session")
 
         html_body, text_body = self._render_template(
             "security-new-session",
@@ -959,7 +981,7 @@ class EmailService:
         Returns:
             True if queued successfully
         """
-        subject = "Your password was changed"
+        subject = email_i18n.subject(self.locale, "security_password_changed")
 
         html_body, text_body = self._render_template(
             "security-password-changed",
@@ -998,12 +1020,17 @@ class EmailService:
         (offer §13.3). Always sent — not gated by email preferences, same as the
         other billing/security notices: this is a legal notice, not a nudge.
         """
-        subject = "Your subscription was cancelled — data deletion scheduled"
+        formatted_date = email_i18n.format_date(self.locale, deletion_date)
+        subject = email_i18n.subject(
+            self.locale,
+            "billing_cancellation_deletion_scheduled",
+            deletion_date=formatted_date,
+        )
 
         html_body, text_body = self._render_template(
             "billing-cancellation-deletion-scheduled",
             {
-                "deletion_date": deletion_date.strftime("%Y-%m-%d"),
+                "deletion_date": formatted_date,
                 "retention_days": retention_days,
                 "recipient_email": to_email,
             },
@@ -1013,7 +1040,7 @@ class EmailService:
         if not text_body:
             text_body = (
                 f"Your subscription was cancelled. Your shares will be permanently "
-                f"deleted on {deletion_date.strftime('%Y-%m-%d')} ({retention_days} days "
+                f"deleted on {formatted_date} ({retention_days} days "
                 f"after cancellation) unless you resubscribe before then."
             )
 
@@ -1033,7 +1060,7 @@ class EmailService:
         to_email: str,
     ) -> bool:
         """Confirm to a user that their share data has been deleted (offer §13.3)."""
-        subject = "Your data has been deleted"
+        subject = email_i18n.subject(self.locale, "billing_cancellation_deletion_executed")
 
         html_body, text_body = self._render_template(
             "billing-cancellation-deletion-executed",
@@ -1063,7 +1090,7 @@ class EmailService:
         to_email: str,
     ) -> bool:
         """Warn a user that a subscription charge failed (offer §6.5)."""
-        subject = "Payment failed — please update your payment method"
+        subject = email_i18n.subject(self.locale, "billing_payment_failed")
 
         html_body, text_body = self._render_template(
             "billing-payment-failed",

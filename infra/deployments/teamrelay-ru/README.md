@@ -65,6 +65,16 @@ resolve against the real runtime directory, not wherever the compose YAML
 happens to sit inside the git checkout — the `Caddyfile` symlink above is
 what makes `./Caddyfile` land on the git-tracked file.
 
+## Email language
+
+System emails on this deployment are Russian: the compose file sets
+`EMAIL_LOCALE=ru` on `control-plane` (billing and account emails) and
+`lifecycle-worker` (the data-deletion confirmation). `email-worker` only sends
+what was already rendered, so it does not need it. Russian bodies live in
+`apps/control-plane/app/templates/emails/ru/`; a template missing there falls
+back to the English one. Do not set `EMAIL_LOCALE` in `.env.sops`: the compose
+value would override it anyway.
+
 ## Drift guard
 
 `check-drift.py` in this directory compares the live host config against

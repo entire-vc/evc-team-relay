@@ -66,6 +66,7 @@ These create the first admin user when the database is empty.
 | `SMTP_PASSWORD` | If email | — | SMTP password |
 | `SMTP_USE_TLS` | No | `true` | Use STARTTLS |
 | `EMAIL_FROM` | If email | — | From address for emails |
+| `EMAIL_LOCALE` | No | `en` | Language of system emails: `en` or `ru`. Templates missing in a locale fall back to English |
 | `EMAIL_REPLY_TO` | No | — | Reply-to address |
 
 ## Web Publishing
