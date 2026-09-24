@@ -234,6 +234,13 @@ class Settings(BaseSettings):
     email_enabled: bool = Field(
         default=False, description="Enable email sending (if False, logs to console)"
     )
+    email_locale: str = Field(
+        default="en",
+        description=(
+            "Language of system emails (subjects, bodies, dates): 'en' or 'ru'. "
+            "Templates missing in the chosen locale fall back to English."
+        ),
+    )
     password_reset_expire_hours: int = Field(
         default=1, description="Password reset token expiration (hours)"
     )

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Шара удалена{% endblock %}
+{% block content %}
+<h2>Шара удалена</h2>
+
+<p>Следующая Шара удалена и больше недоступна:</p>
+
+<div class="highlight">
+    <p><strong>{{ share_kind|kind_label }}:</strong> {{ share_path }}</p>
+</div>
+
+<p>Если нужно восстановить содержимое, обратитесь к владельцу Шары.</p>
+{% endblock %}
