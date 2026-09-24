@@ -92,7 +92,13 @@
 		<a href="/" class="logo-link">
 			<div class="brand-container">
 				{#if branding?.logo_url}
-					<img src={branding.logo_url} alt="{branding.name} logo" class="brand-logo" />
+					<img
+						src={branding.logo_url}
+						alt="{branding.name} logo"
+						class="brand-logo"
+						width="32"
+						height="32"
+					/>
 				{:else}
 					<svg class="brand-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 						<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" />

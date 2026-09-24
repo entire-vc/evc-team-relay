@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { renderMarkdown } from '$lib/markdown';
 	import { updateShareContent } from '$lib/api';
+	import type { RenderContext } from '$lib/markdown';
+
+	// $lib/markdown (marked + on-demand katex/hljs) loaded lazily on first
+	// render — this component only mounts for share owners in edit mode, but
+	// there's no reason to make even them pay for it before it's needed (#cee667d8).
+	async function renderMarkdown(md: string, context: RenderContext) {
+		const mod = await import('$lib/markdown');
+		return mod.renderMarkdown(md, context);
+	}
 
 	interface Props {
 		content: string;
