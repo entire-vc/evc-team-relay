@@ -32,7 +32,7 @@
 			<div class="logo-container">
 				{#if branding?.logo_url}
 					<img
-						src={branding.logo_url}
+						src={branding.logo_src ?? branding.logo_url}
 						alt="{instanceName} logo"
 						class="logo"
 						width="120"

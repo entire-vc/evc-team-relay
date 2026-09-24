@@ -9,6 +9,7 @@
 		type FolderItem
 	} from '$lib/file-tree';
 	import { browser } from '$app/environment';
+	import { untrack } from 'svelte';
 
 	interface Props {
 		items: FolderItem[];
@@ -51,17 +52,29 @@
 		return ancestors;
 	}
 
-	// Load expanded state on mount; default to all-expanded on first visit
+	// Load expanded state on mount; default to all-expanded on first visit.
+	//
+	// Only currentSlug / currentPath / tree are dependencies of this effect. The
+	// body reads and rewrites `expandedPaths`, so it runs untracked: tracking it
+	// made a tree with files but no folders re-trigger itself forever (empty
+	// Set → persisted `[]` → "first visit" again), which Svelte aborts with
+	// effect_update_depth_exceeded after ~1000 runs of localStorage + Set churn
+	// during hydration (#cee667d8).
 	$effect(() => {
-		if (browser && currentSlug) {
-			const saved = loadExpandedState(currentSlug);
-			if (saved.size === 0 && tree.length > 0) {
+		const slug = currentSlug;
+		const path = currentPath;
+		const nodes = tree;
+		if (!browser || !slug) return;
+		untrack(() => {
+			const saved = loadExpandedState(slug);
+			if (saved.size === 0 && nodes.length > 0) {
 				// First visit: expand all folders
-				expandedPaths = new Set(getAllFolderPaths(tree));
-				saveExpandedState(currentSlug, expandedPaths);
+				const all = new Set(getAllFolderPaths(nodes));
+				expandedPaths = all;
+				saveExpandedState(slug, all);
 			} else {
 				// Ensure ancestors of current path are always expanded
-				const ancestors = getAncestorPaths(currentPath);
+				const ancestors = getAncestorPaths(path);
 				const merged = new Set(saved);
 				let changed = false;
 				for (const a of ancestors) {
@@ -71,9 +84,9 @@
 					}
 				}
 				expandedPaths = merged;
-				if (changed) saveExpandedState(currentSlug, merged);
+				if (changed) saveExpandedState(slug, merged);
 			}
-		}
+		});
 	});
 
 	function toggleExpanded(path: string) {
