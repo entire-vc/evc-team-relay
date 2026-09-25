@@ -287,6 +287,36 @@ docker compose up -d
 
 Migrations run automatically on startup.
 
+### Upgrading an existing install from the official MinIO image
+
+Releases before v1.13.4 ran storage on the official `minio/minio` image (later the
+`quay.io/minio/minio` mirror). Since v1.13.4 the compose file pulls a pinned,
+community-maintained fork (`pgsty/minio`) and `pgsty/mc`, because the official
+images no longer serve anonymous pulls. Your existing `data/minio/` directory
+is reused as-is — there is no data migration step:
+
+```bash
+cd /opt/evc-team-relay
+git pull origin main          # or re-run scripts/pull-published-images.sh
+docker compose up -d
+```
+
+Verified upgrade path: a single-drive `data/minio/` created by
+`minio/minio:RELEASE.2025-09-07T16-13-09Z` (the last official image) with the `relay`
+bucket, small and multipart objects and user metadata was started under the pinned
+`pgsty/minio` image. The server came up healthy, every object read back with an
+identical checksum, put/get/list/delete worked, presigned GET URLs issued before the
+switch kept working, the bucket stayed private, `minio-init` exited 0 on every run
+(it is idempotent), and the on-disk object files and `format.json` were unchanged.
+Switching back to the old image on the upgraded data also worked. This was tested
+on `linux/amd64` with the default single-drive layout; multi-drive setups were not
+tested. Only data written by that release was tried: an install whose `data/minio/`
+was created by an older MinIO release, or in the legacy filesystem mode, was not
+checked, so take the backup below before upgrading.
+
+As with any storage change, take a copy of `data/minio/` (stop the stack first) before
+upgrading if the objects matter to you.
+
 ## Troubleshooting
 
 ### Service Won't Start
