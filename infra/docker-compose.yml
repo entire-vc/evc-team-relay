@@ -150,19 +150,30 @@ services:
     healthcheck:
       # TR-17: watch readiness (DB-connectivity-checked), not the static /health
       # endpoint (always {"ok": true}, no DB check at all — a Postgres outage
-      # never made this healthcheck fail). urlopen() raises HTTPError on a
-      # non-2xx response rather than returning it — explicitly catch it and
-      # exit 1 on any non-200 code, including /health/ready's 503.
+      # never made this healthcheck fail). Any non-200 answer, including
+      # /health/ready's 503, must fail the probe.
       test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import sys,urllib.error,urllib.request\ntry:\n    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready').status == 200 else 1)\nexcept urllib.error.HTTPError:\n    sys.exit(1)",
-        ]
-      interval: 15s
+        - CMD
+        - bash
+        - -c
+        # One bash builtin round-trip over /dev/tcp instead of starting a Python
+        # interpreter (+ importing urllib) on every probe. The image has bash but
+        # no curl/wget, and adding one would grow it just for this. Passes only on
+        # an exact "HTTP/1.1 200" status line, so /health/ready's 503 (DB down) and
+        # any redirect fail. `read -t` bounds a server that accepts and never
+        # answers; `$$` is compose's escape for a literal `$`.
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/8000 &&
+          printf 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          read -r -t 4 status <&3 &&
+          [[ $$status == "HTTP/1.1 200 "* ]]
+      # Every probe also costs the app a DB round-trip, so the interval matters as
+      # much as the probe binary: on an idle stack 15s -> 30s halves the
+      # container's background CPU again. 3 x 30s keeps time-to-unhealthy (~90s)
+      # close to the old 5 x 15s (~75s); nothing here restarts on unhealthy.
+      interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 3
       start_period: 15s
 
   webhook-worker:
