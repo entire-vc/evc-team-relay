@@ -8,3 +8,5 @@ node_modules
 !.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+# Generated cold-browser measurements, retained by CI as an artifact.
+perf/browser-results.json
