@@ -25,7 +25,7 @@ RUN chmod +x /entrypoint.sh
 
 # Not switching to the image's built-in non-root "postgres" user (uid 70) here:
 # /backups is a bind-mount from the prod host (/opt/relay/data/backups on
-# tr-relay-vm), verified root:root 0755 — a non-root container user would
+# relay-host), verified root:root 0755 — a non-root container user would
 # silently lose write access and every nightly backup would fail quietly
 # (entrypoint.sh only log_warns on backup.sh failure, it doesn't crash).
 # Fixing this needs the host dir chowned to uid 70 by someone with prod

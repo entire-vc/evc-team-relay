@@ -5,7 +5,7 @@
 # workflow and a human's eye.
 #
 # This list MUST stay identical to HOLD_LABELS in the fleet tooling
-# (bob/scripts/fleet_gate_labels.py), which is what ~/bin/gh-merge and
+# (the fleet gate-labels script), which is what ~/bin/gh-merge and
 # ~/bin/mesh-merge-train read. Two copies of one rule drift silently, and a
 # label that guards some merge paths but not others is worse than no label at
 # all, because it gets believed and then stops being watched — that is exactly

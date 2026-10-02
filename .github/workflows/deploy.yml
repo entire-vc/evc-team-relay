@@ -114,7 +114,7 @@ jobs:
       TARGET_USER: ${{ vars.DEPLOY_TARGET_USER || 'root' }}
       TARGET_PORT: ${{ vars.DEPLOY_TARGET_PORT || '22' }}
       PROXY_HOST: ${{ secrets.DEPLOY_PROXY_HOST }}
-      PROXY_USER: ${{ vars.DEPLOY_PROXY_USER || 'ghdeploy' }}
+      PROXY_USER: ${{ vars.DEPLOY_PROXY_USER }}
       # Fingerprint of the dedicated deploy key. Pinned so a truncated, swapped
       # or rotated key fails with that fact stated, instead of as an anonymous
       # "Permission denied (publickey)". This is a public-key fingerprint, not a
@@ -202,6 +202,10 @@ jobs:
           # the deploy either dies with an opaque "Host key verification failed"
           # halfway through, or, if anyone ever re-adds a TOFU fallback, sails
           # through unpinned. Fail closed here instead, where the cause is obvious.
+          if [ -z "$PROXY_USER" ]; then
+            echo "::error::vars.DEPLOY_PROXY_USER is not set — refusing to write an SSH config without a proxy user"
+            exit 1
+          fi
           for h in "$PROXY_HOST" "$TARGET_HOST"; do
             if ! ssh-keygen -F "$h" -f ~/.ssh/known_hosts >/dev/null 2>&1; then
               echo "::error::TW_RELAY_KNOWN_HOSTS_B64 has no pinned key for one of the two SSH hops (proxy or target) — refusing to deploy"

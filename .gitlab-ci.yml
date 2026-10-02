@@ -348,3 +348,30 @@ trigger:prod-team-relay:
     # a catch-up deployment, but it means "the job is green" does not prove
     # that this exact commit is in production — `verify:team-relay` and the
     # drift watchdog prove that.
+
+# ── topology-gate ───────────────────────────────────────────────────────────
+# Public repositories must not describe private infrastructure: a deploy runbook
+# once shipped here with the production gateway address, its subnet and a map of
+# every VM, and nothing in CI looked at that class of text. This job scans the
+# whole tracked tree (not just the diff) for non-documentation IPv4 addresses,
+# private subnets, internal host/user names (hashed dictionary in
+# .topology-gate/names.sha256) and references to the private ops tree.
+#
+# Fail-closed on purpose: allow_failure is false, a missing or malformed
+# dictionary is an error (exit 2), and the only way to make an exception is a
+# line with a written reason in .topology-gate/allowlist.txt — there is no skip
+# flag. The unit tests run first so a gate that stopped detecting anything goes
+# red instead of quietly green.
+topology-gate:
+  stage: gate
+  image: python:3.12-alpine
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - apk add --no-cache git
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+  script:
+    - python3 scripts/test_topology_gate.py
+    - python3 scripts/topology_gate.py
