@@ -1,0 +1,7 @@
+# Topology-gate exceptions. Every line needs a reason after '#'. No inline markers, no skip flag.
+# Syntax: path <glob> <rule|*> | value <ipv4> | tokenhash <sha256 of lowercased token>
+tokenhash 948b3bfe5cb2cd5707e81d6e4e3dfb0b9403cf54598d53713e7d4266ab5e0eac  # legacy GitHub secret name; renaming means re-creating the secret and secret rotation is on hold
+tokenhash 9fd546137b5214845520907b5af864d912c15f40db6b3a5b0893d80f5e341b08  # legacy GitHub secret name; renaming means re-creating the secret and secret rotation is on hold
+path apps/control-plane/tests/test_client_ip.py ip-private  # X-Forwarded-For test vector (docker-network address must be ignored)
+path apps/control-plane/tests/test_webhook_service.py *  # SSRF test vectors (private/public addresses the webhook resolver must classify)
+path apps/control-plane/app/core/http.py ip-private  # comment cites the docker-bridge address from a client-IP incident

@@ -11,7 +11,7 @@
 #
 #   1. Driver mode (local checkout, e.g. `bash scripts/deploy.sh web-publish`):
 #      rsyncs apps/<component>/ -> $SSH_TARGET:$RELAY_DIR/<component>-src/, then
-#      re-invokes this same script over SSH on $SSH_TARGET (default tr-relay-vm).
+#      re-invokes this same script over SSH on $SSH_TARGET (default relay-host).
 #   2. Direct mode (running ON the deploy host, e.g. .github/workflows/deploy.yml's
 #      `ssh <host> 'bash -s' < scripts/deploy.sh`, or a human already ssh'd in):
 #      assumes the relevant *-src/ dir is already synced and runs build+deploy.
@@ -21,7 +21,7 @@
 #
 # Env (all optional, sane prod defaults):
 #   RELAY_DIR          deploy root on the server                    (default /opt/relay)
-#   SSH_TARGET          ssh alias/host used in driver mode            (default tr-relay-vm)
+#   SSH_TARGET          ssh alias/host used in driver mode            (default relay-host)
 #   IMAGE               control-plane image tag                      (default infra-control-plane:latest)
 #   WEB_PUBLISH_IMAGE   web-publish image tag                        (default infra-web-publish:latest)
 #   DRY_RUN             if "true": rehearsal only — see below for exactly what that means
@@ -62,7 +62,7 @@ die() { printf '\n\033[1;31m!! %s\033[0m\n' "$*" >&2; exit 1; }
 # links). Falls back to CORS_ALLOWED_ORIGINS (first origin, if comma-separated)
 # only when CONTROL_PLANE_PUBLIC_URL is unset or not a URL — kept as a fallback,
 # not the primary source, because it is NOT guaranteed to be set on every host
-# (#08e44245 defect 1, live-measured: tr-relay-vm's .env carries no
+# (#08e44245 defect 1, live-measured: relay-host's .env carries no
 # CORS/ORIGIN key at all, so requiring it would fail-close a host that was
 # never broken). Prints the resolved /server/info URL and returns 0, or
 # prints nothing and returns 1 if neither source yields a valid http(s)
@@ -136,7 +136,7 @@ esac
 # $RELAY_DIR (default /opt/relay) only exists on the deploy host itself, so its
 # absence here means we're running from a local checkout, not on the server.
 if [ ! -d "$RELAY_DIR" ]; then
-  SSH_TARGET="${SSH_TARGET:-tr-relay-vm}"
+  SSH_TARGET="${SSH_TARGET:-relay-host}"
   SCRIPT_PATH="${BASH_SOURCE[0]}"
   REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 
@@ -257,7 +257,7 @@ deploy_control_plane() {
   #    If not, rolls back to the :prev image automatically.
   #    smoke_url is per-host, never hardcoded — see resolve_smoke_url() above
   #    (#08e44245 defect 1: a hardcoded default meant a deploy on the newer
-  #    tr-ru-vm host silently smoke-tested tr-relay-vm's prod instance instead).
+  #    tr-ru-vm host silently smoke-tested relay-host's prod instance instead).
   #    expected_billing is per-host too — see resolve_expected_billing() above
   #    (#08e44245 defect 2: billing_enabled is deliberate per-host CONFIG, not
   #    a fixed enterprise-build property — tr-ru-vm runs with it off on

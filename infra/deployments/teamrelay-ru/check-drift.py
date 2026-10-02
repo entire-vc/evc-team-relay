@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """check-drift.py — liveness guard for teamrelay.ru's /opt/relay on alyssa.
 
-Unlike tr-relay-vm (a separate host from wherever the repo is checked out,
+Unlike relay-host (a separate host from wherever the repo is checked out,
 requiring an SSH byte-comparison — see that host's own check-drift.py),
 this instance's git checkout lives ON THE SAME HOST at /opt/relay/repo/,
 and the runtime config files (Caddyfile, docker-compose.yml,

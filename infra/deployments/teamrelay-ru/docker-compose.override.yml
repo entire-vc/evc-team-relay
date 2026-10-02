@@ -7,17 +7,17 @@
 #
 # teamrelay.ru (this instance) wired up 2026-09-03 (task #ddb06278, decision in
 # W5 #c09befac's thread). alyssa has no edge/DNAT in front of it (unlike
-# tr-relay-vm, which sits behind hel01's DNAT and so only needs a PRIVATE bind)
+# relay-host, which sits behind the gateway's DNAT and so only needs a PRIVATE bind)
 # — its only external interface is its own public IP. metrics-proxy therefore
-# binds directly to that public address, source-locked to tw-mon via the same
-# DOCKER-USER iptables pattern as tr-relay-vm; nothing new is exposed relative
+# binds directly to that public address, source-locked to the monitoring host via the same
+# DOCKER-USER iptables pattern as relay-host; nothing new is exposed relative
 # to that existing prod posture (plaintext metrics over the open internet,
 # protected by source-IP only — TLS/mTLS on metrics is a separate fleet
 # decision, not this one). Address comes from METRICS_BIND_ADDR in .env, never
 # hardcoded — a hardcoded peer address is exactly how this override broke on
 # this instance the first time. postgres-exporter's DATA_SOURCE_NAME now
 # addresses postgres by its compose SERVICE name (works on any instance,
-# regardless of COMPOSE_PROJECT_NAME/container-name), not the tr-relay-vm
+# regardless of COMPOSE_PROJECT_NAME/container-name), not the relay-host
 # container name it used to hardcode.
 services:
   metrics-proxy:

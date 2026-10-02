@@ -9,7 +9,7 @@ Team Relay is deployed on a relay host via Docker Compose. Production images are
 the server from synced source (`$RELAY_DIR/control-plane-src/`, `/opt/relay` by default), not
 pulled from a registry.
 
-Throughout this runbook, `tr-relay-vm` is an **SSH alias, not a hostname** — it is the default
+Throughout this runbook, `relay-host` is an **SSH alias, not a hostname** — it is the default
 `SSH_TARGET` in [`scripts/deploy.sh`](../scripts/deploy.sh). Define it in your own
 `~/.ssh/config`, pointing at your relay server (with a `ProxyJump` if the server has no public
 address), and every command below works verbatim; or override it per invocation with
@@ -81,7 +81,7 @@ just with the flag set — via the deploy pipeline's `DRY_RUN` job variable, or 
 host:
 
 ```bash
-ssh tr-relay-vm
+ssh relay-host
 RELAY_DIR=/opt/relay DRY_RUN=true bash -s -- control-plane < scripts/deploy.sh
 ```
 
@@ -125,7 +125,7 @@ missing or empty.
 |----------|----------|-------------|
 | `DEPLOY_TARGET_USER` | no | SSH user on the relay host (default `root`). |
 | `DEPLOY_TARGET_PORT` | no | SSH port on the relay host (default `22`). |
-| `DEPLOY_PROXY_USER` | no | SSH user on the bastion (default `ghdeploy`). |
+| `DEPLOY_PROXY_USER` | no | SSH user on the bastion. |
 
 > **Why the hosts are secrets, and how the logs stay diagnosable anyway.** This repository is
 > public, and `${{ vars.X }}` is substituted before a step runs — the literal value would be
@@ -194,7 +194,7 @@ missing or empty.
 
 CD covers **control-plane** only, so this remains the way to ship **web-publish**, and the
 fallback for control-plane when Actions is unavailable. Run it from a local checkout; it has
-access to `tr-relay-vm` via the same
+access to `relay-host` via the same
 alias your `~/.ssh/config` already uses for manual SSH.
 
 ```bash
@@ -206,7 +206,7 @@ bash scripts/deploy.sh                 # defaults to control-plane
 
 **What it does**, per component, when `$RELAY_DIR` (default `/opt/relay`) doesn't exist locally
 (i.e. you're not already on the server): rsyncs `apps/<component>/` →
-`tr-relay-vm:/opt/relay/<component>-src/`, then re-invokes itself over SSH on `tr-relay-vm` to run
+`relay-host:/opt/relay/<component>-src/`, then re-invokes itself over SSH on `relay-host` to run
 the actual build/gate/restart — the exact same server-side logic the Actions workflow invokes,
 unified into one script instead of split between a CI rsync step and this script.
 
@@ -220,10 +220,10 @@ unified into one script instead of split between a CI rsync step and this script
 
 `DRY_RUN=true bash scripts/deploy.sh <component>` builds the image and runs the migration gate
 (control-plane only) but stops before `compose up` — use it to rehearse before a real deploy.
-`SSH_TARGET` overrides the remote host (default `tr-relay-vm`, the alias described in the
+`SSH_TARGET` overrides the remote host (default `relay-host`, the alias described in the
 overview) if you're ever deploying elsewhere.
 
-If you're **already SSH'd into `tr-relay-vm`** with the source already synced, running the script
+If you're **already SSH'd into `relay-host`** with the source already synced, running the script
 there directly (`RELAY_DIR=/opt/relay bash -s -- web-publish < scripts/deploy.sh`, or just running
 a copy of it on the box) skips the rsync/re-invoke step and goes straight to build/restart — that's
 "direct mode", same as how the Actions workflow always invoked it.
@@ -237,7 +237,7 @@ automated pipeline runs.
 
 ```bash
 # 1. SSH to server
-ssh tr-relay-vm
+ssh relay-host
 cd /opt/relay
 
 # 2. Tag the current image BEFORE overwriting (enables fast rollback)
@@ -270,7 +270,7 @@ kept in sync the same way as `control-plane-src/` (rsync from a local checkout, 
 
 ```bash
 # 1. SSH to server
-ssh tr-relay-vm
+ssh relay-host
 cd /opt/relay
 
 # 2. Tag the current image BEFORE overwriting (enables fast rollback)
@@ -393,7 +393,7 @@ The same `service_completed_successfully` guard applies to every worker (they ei
 **Verifying the gate holds** (agent-runnable, no eyeballing):
 
 ```bash
-ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webhook-worker-1 relay-listmonk-sync-worker-1 relay-lifecycle-worker-1; do echo -n \"\$c: \"; docker exec \$c python -c 'import cryptography;print(cryptography.__version__)'; done"
+ssh relay-host "for c in relay-control-plane-1 relay-email-worker-1 relay-webhook-worker-1 relay-listmonk-sync-worker-1 relay-lifecycle-worker-1; do echo -n \"\$c: \"; docker exec \$c python -c 'import cryptography;print(cryptography.__version__)'; done"
 # all five lines must print the same version
 ```
 
@@ -401,7 +401,7 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
 
 ## Notes & limitations
 
-- **Server-managed compose.** The production `docker-compose.yml` lives on `tr-relay-vm`
+- **Server-managed compose.** The production `docker-compose.yml` lives on `relay-host`
   (`/opt/relay/`) and uses `image: infra-control-plane:latest` (built locally) on all six
   control-plane-family services, whereas the repo's `infra/docker-compose.yml` is the
   `build:`-context variant of the same gate (each service keeps its own `build:` block for
@@ -409,7 +409,7 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
   so a rebuild-then-recreate cycle can't leave one service behind — see §docker-compose.yml gate).
   The deploy pipeline deliberately syncs **only** `apps/control-plane/` → `control-plane-src/` and
   leaves the server's compose file and `.env` alone — this means fixing the compose *structure*
-  (as opposed to the app source) always requires a manual edit on `tr-relay-vm` itself, backed up
+  (as opposed to the app source) always requires a manual edit on `relay-host` itself, backed up
   first (`cp docker-compose.yml docker-compose.yml.bak-<ts>-<reason>`).
 - **Worker image consolidation (2026-08-06).** Before this date `webhook-worker`,
   `email-worker`, `listmonk-sync-worker`, and `lifecycle-worker` each had their own `image:` tag
@@ -425,7 +425,7 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
   container. **relay-server** (the Rust Yjs relay, a separate repository) is still not
   covered by anything here — rebuild it manually if its source changes.
 - **`infra/Caddyfile` is host-managed and NOT synced by the deploy pipeline** (same gap as the
-  compose file above). A fix applied here must ALSO be applied live on `tr-relay-vm`
+  compose file above). A fix applied here must ALSO be applied live on `relay-host`
   (`/opt/relay/Caddyfile`, content-preserving write + `caddy validate` + `caddy reload` inside
   `relay-caddy-1` — it's a bind-mounted single file, don't `sed -i` it, write a fresh copy so the
   inode is preserved) or it silently only exists in git. Confirmed drifted at least once already
@@ -444,9 +444,9 @@ ssh tr-relay-vm "for c in relay-control-plane-1 relay-email-worker-1 relay-webho
   already on the box, not what's in git. **After editing `infra/Caddyfile`, or after any host migration, manually sync
   it:**
   ```bash
-  scp infra/Caddyfile tr-relay-vm:/opt/relay/Caddyfile   # back up the old one on the host first
-  ssh tr-relay-vm "docker exec relay-caddy-1 caddy validate --config /etc/caddy/Caddyfile"
-  ssh tr-relay-vm "docker exec relay-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
+  scp infra/Caddyfile relay-host:/opt/relay/Caddyfile   # back up the old one on the host first
+  ssh relay-host "docker exec relay-caddy-1 caddy validate --config /etc/caddy/Caddyfile"
+  ssh relay-host "docker exec relay-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
   ```
   Then verify from **outside** the container — `caddy reload`'s own success message is not proof
   the running config changed (e.g. a single-file bind mount can retain a stale inode after some

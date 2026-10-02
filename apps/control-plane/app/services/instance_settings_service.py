@@ -63,10 +63,10 @@ def _this_instance_origin() -> str | None:
     `env_file: ./.env`, which loads the WHOLE file into the container, not
     just keys also listed under `environment:`. Confirmed live inside both
     running containers: `docker compose exec control-plane env` shows the
-    real per-host value on both tr-relay-vm and tr-ru-vm) → then
+    real per-host value on both relay-host and tr-ru-vm) → then
     cors_allowed_origins (kept as a fallback: it's read the same env_file
     way, but unlike control_plane_public_url it is NOT guaranteed to be set
-    — tr-relay-vm's real .env has no CORS/ORIGIN key at all, so where it
+    — relay-host's real .env has no CORS/ORIGIN key at all, so where it
     "works" today that's the Field default in config.py coincidentally
     matching that host's domain, not a property of the key) → None (leave
     the URL relative — a relative path is a lesser failure than silently

@@ -405,11 +405,11 @@ class TestBrandingAbsoluteUrls:
 # ---------------------------------------------------------------------------
 # #5f51a2dd, Daedalus's MR !269 review: CORS_ALLOWED_ORIGINS-only was wrong.
 # It "worked" on tr.entire.vc only because config.py's Field default happens
-# to equal that host's real domain — tr-relay-vm's actual .env has no CORS/
+# to equal that host's real domain — relay-host's actual .env has no CORS/
 # ORIGIN key at all (same live measurement as #08e44245). The correct primary
 # source is settings.control_plane_public_url, confirmed live inside both
 # running containers (`docker compose exec control-plane env`) to hold the
-# real per-host value on tr-relay-vm AND tr-ru-vm, contradicting this file's
+# real per-host value on relay-host AND tr-ru-vm, contradicting this file's
 # own earlier claim (in the first version of this fix) that the field is
 # "never wired" — it IS, via docker-compose.yml's `env_file: ./.env`, which
 # loads the whole file, not just keys also listed under `environment:`.

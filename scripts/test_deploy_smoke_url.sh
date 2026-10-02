@@ -53,7 +53,7 @@ assert_eq() {
   fi
 }
 
-# --- RED CONTROL (@ralph bounce, defect 1): tr-relay-vm's ACTUAL live shape
+# --- RED CONTROL (@ralph bounce, defect 1): relay-host's ACTUAL live shape
 # — CONTROL_PLANE_PUBLIC_URL set, no CORS/ORIGIN key at all (grep'd live
 # 2026-09-04, 72 keys, zero CORS/ORIGIN matches) — is exactly the fixture the
 # CORS_ALLOWED_ORIGINS-only version of resolve_smoke_url() failed closed on,

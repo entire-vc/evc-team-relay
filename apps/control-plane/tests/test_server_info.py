@@ -123,7 +123,7 @@ def test_server_info_billing_enabled_false_when_stub_mode_on(client):
 
 def test_server_info_billing_enabled_true_only_when_both_conditions_hold(client):
     """Positive control: billing_enabled=true requires BOTH billing_enabled=True
-    AND billing_stub_mode=False -- the genuinely-live shape (tr-relay-vm today)."""
+    AND billing_stub_mode=False -- the genuinely-live shape (relay-host today)."""
     mock_settings = Settings(
         billing_enabled=True,
         billing_stub_mode=False,
