@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "perf:browser": "node perf/check-browser-budget.mjs"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.5.7",
@@ -28,6 +29,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "autoprefixer": "^10.5.4",
     "jsdom": "30.0.1",
+    "playwright": "1.63.0",
     "postcss": "^8.5.26",
     "svelte": "^5.56.10",
     "svelte-check": "^4.7.6",
