@@ -249,6 +249,21 @@ bundle-budget-svelte:
   script:
     - npm run build
     - node perf/check-bundle-budget.mjs
+
+# Browser measurements use the production adapter and an isolated local API
+# fixture. Pin the image to the playwright package version in the lockfile.
+browser-budget-svelte:
+  <<: *web_publish_job
+  image: mcr.microsoft.com/playwright:v1.63.0-noble
+  stage: test
+  allow_failure: false
+  script:
+    - npm run build
+    - npm run perf:browser
+  artifacts:
+    when: always
+    paths: [apps/web-publish/perf/browser-results.json]
+    expire_in: 30 days
 # ── deploy ──────────────────────────────────────────────────────────────────
 # Ships the production control plane on merge to the canonical branch. Before
 # this job a human had to press the button in `entire-vc/deploy`; modelled on

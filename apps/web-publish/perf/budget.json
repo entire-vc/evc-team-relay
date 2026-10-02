@@ -2,16 +2,46 @@
 	"document-view": {
 		"route": "/[slug]",
 		"max_gzip_bytes": 100000,
-		"_comment": "Static (eager) client JS+CSS a first-time visitor of a published document page downloads before any interaction. Was 1265369 B RAW (no compression at all) before #cee667d8; is 83835 B gzip after the fix (lazy hljs/katex/marked + Caddy encode) — ceiling set ~19% above that measured value, not at the task's looser 300KB target, per the ratchet rule (lower the ceiling to match reality, don't leave headroom for its own sake)."
+		"_comment": "Static (eager) client JS+CSS a first-time visitor of a published document page downloads before any interaction. Was 1265369 B RAW (no compression at all) before #cee667d8; is 83835 B gzip after the fix (lazy hljs/katex/marked + Caddy encode) \u2014 ceiling set ~19% above that measured value, not at the task's looser 300KB target, per the ratchet rule (lower the ceiling to match reality, don't leave headroom for its own sake).",
+		"browser": {
+			"path": "/perf-fixture",
+			"runs": 10,
+			"cpu_rate": 4,
+			"max_js_gzip_bytes": 90000,
+			"max_long_tasks": 8,
+			"warn_tbt_ms": 30,
+			"warn_lcp_ms": 450,
+			"timing_tolerance": 0.15
+		}
 	},
 	"home": {
 		"route": "/",
 		"max_gzip_bytes": 90000,
-		"_comment": "Homepage — no markdown/mermaid/katex/hljs on this route at all. Measured 72997 B gzip after #cee667d8; ceiling ~23% above that."
+		"_comment": "Homepage \u2014 no markdown/mermaid/katex/hljs on this route at all. Measured 72997 B gzip after #cee667d8; ceiling ~23% above that.",
+		"browser": {
+			"path": "/",
+			"runs": 10,
+			"cpu_rate": 4,
+			"max_js_gzip_bytes": 80000,
+			"max_long_tasks": 8,
+			"warn_tbt_ms": 30,
+			"warn_lcp_ms": 450,
+			"timing_tolerance": 0.15
+		}
 	},
 	"document-view-nested": {
 		"route": "/[slug]/[...path]",
 		"max_gzip_bytes": 95000,
-		"_comment": "Folder-share nested document route — same MarkdownViewer as document-view but a DISTINCT compiled leaf in the build manifest, so a regression introduced directly in this route file wouldn't be caught by document-view's entry alone. Measured 79620 B gzip after #cee667d8; ceiling ~19% above that, per the same ratchet rule as document-view/home."
+		"_comment": "Folder-share nested document route \u2014 same MarkdownViewer as document-view but a DISTINCT compiled leaf in the build manifest, so a regression introduced directly in this route file wouldn't be caught by document-view's entry alone. Measured 79620 B gzip after #cee667d8; ceiling ~19% above that, per the same ratchet rule as document-view/home.",
+		"browser": {
+			"path": "/perf-fixture/Notes/guide.md",
+			"runs": 10,
+			"cpu_rate": 4,
+			"max_js_gzip_bytes": 90000,
+			"max_long_tasks": 8,
+			"warn_tbt_ms": 30,
+			"warn_lcp_ms": 450,
+			"timing_tolerance": 0.15
+		}
 	}
 }
