@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from slowapi import Limiter
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.sql.compiler import TypeCompiler
 
 # Ensure the project package is importable when tests run without an editable install.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +26,13 @@ from app.core.security import generate_ed25519_keypair
 from app.db import session as session_module
 from app.db.models import Base
 from app.main import build_app
+
+
+@compiles(UUID, "sqlite")
+def compile_sqlite_uuid(_type: UUID, _compiler: TypeCompiler, **_kwargs: object) -> str:
+    # SQLite treats UUID as numeric affinity and can turn valid hex values into
+    # floats. Keep UUID storage textual in tests; PostgreSQL still uses UUID.
+    return "CHAR(36)"
 
 
 @pytest.fixture(scope="session", autouse=True)
