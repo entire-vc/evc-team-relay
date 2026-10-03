@@ -111,6 +111,12 @@ hold-gate:
       echo "no hold label present ✓"
 
 # ── control-plane ───────────────────────────────────────────────────────────
+release-smoke-contract:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - python3 scripts/test_release_smoke.py
+
 .uv_job: &uv_job
   # Debian, not alpine, on purpose: `psycopg[binary]` and `pillow` ship
   # manylinux wheels only. On a musl base pip falls back to building from

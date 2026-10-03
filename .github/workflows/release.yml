@@ -202,11 +202,15 @@ jobs:
 
           cp env.example .env
           sed -i "s|^DOMAIN_BASE=.*|DOMAIN_BASE=localhost|" .env
+          sed -i 's|^RELAY_PUBLIC_URL=.*|RELAY_PUBLIC_URL=ws://localhost:8080|' .env
+          echo 'RELAY_AUDIENCE=http://localhost:8080' >> .env
           sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
           sed -i "s|^RELAY_PRIVATE_KEY=.*|RELAY_PRIVATE_KEY=${RELAY_PRIVATE_KEY_B64}|" .env
 
           cp relay/relay.toml.example relay/relay.toml
-          sed -i 's|url = "https://relay.example.com"|url = "ws://localhost:8080"|' relay/relay.toml
+          # The CWT audience is an HTTP origin, not the client WebSocket URL.
+          # Match the setting itself so placeholder-domain changes cannot no-op.
+          sed -i 's|^url = ".*"$|url = "http://localhost:8080"|' relay/relay.toml
           sed -i 's|key_id = "REPLACE_WITH_KEY_ID"|key_id = "relay_cp_dev"|' relay/relay.toml
           sed -i "s|public_key = \"REPLACE_WITH_PUBLIC_KEY_BASE64\"|public_key = \"${RELAY_PUBLIC_KEY_B64}\"|" relay/relay.toml
           sed -i 's|access_key = "MINIO_ROOT_USER"|access_key = "relay"|' relay/relay.toml
@@ -219,14 +223,12 @@ jobs:
         working-directory: infra
         run: |
           docker compose up -d postgres minio minio-init control-plane-migrate control-plane relay-server web-publish
+          # shellcheck disable=SC2016 # Evaluated inside the timed shell, not this one.
           timeout 90 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" infra-control-plane-1 2>/dev/null)" = "healthy" ]; do sleep 3; done'
 
-      - name: Check /health on a clean database
+      - name: Check relay config, /health and /server/info on a clean database
         working-directory: infra
-        run: |
-          RESULT=$(docker compose exec -T control-plane python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read().decode())")
-          echo "control-plane /health: $RESULT"
-          echo "$RESULT" | grep -q '"ok": *true' || (echo "::error::control-plane /health did not report ok:true" && exit 1)
+        run: python3 ../scripts/release_smoke.py
 
       - name: Dump logs on failure
         if: failure()
