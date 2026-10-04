@@ -117,6 +117,24 @@ release-smoke-contract:
   script:
     - python3 scripts/test_release_smoke.py
 
+artifact-relocation-contract:
+  stage: test
+  image: python:3.12-slim-bookworm
+  services:
+    - name: postgres:15
+      alias: postgres
+  variables:
+    POSTGRES_USER: relocation
+    POSTGRES_PASSWORD: relocation
+    POSTGRES_DB: artifact_relocation_test
+    RELOCATION_TEST_DATABASE_URL: postgresql+psycopg://relocation:relocation@postgres/artifact_relocation_test
+  script:
+    - apt-get update -qq && apt-get install -y -qq postgresql-client
+    - pip install --quiet uv
+    - uv run --with pytest --with pycrdt==0.12.50 --with sqlalchemy --with httpx --with 'psycopg[binary]' --with ruff python -m pytest scripts/test_relocate_artifacts.py -q -s
+    - uv run --with ruff ruff check scripts/relocate_artifacts.py scripts/test_relocate_artifacts.py
+    - uv run --with ruff ruff format --check scripts/relocate_artifacts.py scripts/test_relocate_artifacts.py
+
 .uv_job: &uv_job
   # Debian, not alpine, on purpose: `psycopg[binary]` and `pillow` ship
   # manylinux wheels only. On a musl base pip falls back to building from
