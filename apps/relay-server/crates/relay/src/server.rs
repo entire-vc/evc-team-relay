@@ -1192,12 +1192,14 @@ async fn handle_socket(
     doc_id: String,
     metrics: Arc<RelayMetrics>,
 ) {
-    let (mut sink, mut stream) = socket.split();
+    let (mut sink, stream) = socket.split();
     let (send, mut recv) = channel(1024);
 
-    tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(msg) = recv.recv().await {
-            let _ = sink.send(msg).await;
+            if sink.send(msg).await.is_err() {
+                break;
+            }
         }
     });
 
@@ -1218,19 +1220,51 @@ async fn handle_socket(
     }
     let connection = Arc::new(conn);
 
+    handle_socket_stream(
+        stream,
+        connection,
+        send,
+        cancellation_token,
+        sync_protocol_event_sender,
+        doc_id,
+        metrics,
+    )
+    .await;
+    // Drain queued Close frames, but never retain the split socket indefinitely
+    // when a disconnected peer no longer accepts writes.
+    if tokio::time::timeout(Duration::from_secs(1), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+        let _ = writer.await;
+    }
+}
+
+async fn handle_socket_stream<S>(
+    mut stream: S,
+    connection: Arc<DocConnection>,
+    send: tokio::sync::mpsc::Sender<Message>,
+    cancellation_token: CancellationToken,
+    sync_protocol_event_sender: Arc<SyncProtocolEventSender>,
+    doc_id: String,
+    metrics: Arc<RelayMetrics>,
+) where
+    S: futures::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
     // Register the connection with the sync protocol event sender
     sync_protocol_event_sender.register_doc_connection(doc_id.clone(), Arc::downgrade(&connection));
 
     loop {
         tokio::select! {
-            Some(msg) = stream.next() => {
+            msg = stream.next() => {
                 let msg = match msg {
-                    Ok(Message::Binary(bytes)) => bytes,
-                    Ok(Message::Close(_)) => break,
-                    Err(_e) => {
+                    Some(Ok(Message::Binary(bytes))) => bytes,
+                    None | Some(Ok(Message::Close(_))) => break,
+                    Some(Err(_e)) => {
                         // The stream will complain about things like
                         // connections being lost without handshake.
-                        continue;
+                        break;
                     }
                     msg => {
                         tracing::warn!(?msg, "Received non-binary message");
@@ -1266,8 +1300,10 @@ async fn handle_socket(
                 tracing::debug!("Closing doc connection due to server cancel...");
                 break;
             }
+            _ = send.closed() => break,
         }
     }
+    sync_protocol_event_sender.unregister_doc_connection(&doc_id, &Arc::downgrade(&connection));
 }
 
 async fn check_store(
@@ -2416,6 +2452,216 @@ async fn metrics_endpoint(State(_server_state): State<Arc<Server>>) -> Result<St
 #[cfg(test)]
 mod test {
     use super::*;
+
+    async fn socket_fixture() -> (
+        DocWithSyncKv,
+        Arc<DocConnection>,
+        Arc<SyncProtocolEventSender>,
+        Arc<RelayMetrics>,
+        tokio::sync::mpsc::Sender<Message>,
+        Receiver<Message>,
+    ) {
+        let doc = DocWithSyncKv::new("socket-lifecycle", None, || {}, None)
+            .await
+            .unwrap();
+        let metrics = RelayMetrics::new_with_registry(&prometheus::Registry::new()).unwrap();
+        let events = Arc::new(SyncProtocolEventSender::new().with_metrics(metrics.clone()));
+        let (send, mut recv) = channel(1024);
+        let callback_send = send.clone();
+        let mut connection =
+            DocConnection::new(doc.awareness(), Authorization::Full, move |bytes| {
+                callback_send
+                    .try_send(Message::Binary(bytes.to_vec()))
+                    .unwrap();
+            });
+        connection.set_sync_kv(doc.sync_kv());
+        // Drain the initial sync/awareness handshake, not the responses under test.
+        while recv.try_recv().is_ok() {}
+        (doc, Arc::new(connection), events, metrics, send, recv)
+    }
+
+    #[tokio::test]
+    async fn websocket_eof_releases_connection_without_server_cancellation() {
+        let (_doc, connection, events, metrics, send, _recv) = socket_fixture().await;
+        let weak = Arc::downgrade(&connection);
+        let task = handle_socket_stream(
+            futures::stream::empty(),
+            connection,
+            send,
+            CancellationToken::new(),
+            events,
+            "socket-lifecycle".into(),
+            metrics.clone(),
+        );
+        tokio::time::timeout(Duration::from_millis(250), task)
+            .await
+            .expect("EOF must finish the receive task while server cancellation is pending");
+        assert!(weak.upgrade().is_none(), "EOF retained the DocConnection");
+        assert_eq!(
+            metrics
+                .sync_protocol_connections
+                .with_label_values(&[])
+                .get(),
+            0.0
+        );
+        assert_eq!(metrics.docs_active.with_label_values(&[]).get(), 0.0);
+        assert_eq!(
+            metrics
+                .doc_connections_closed_total
+                .with_label_values(&[])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_transport_error_is_terminal() {
+        let (_doc, connection, events, metrics, send, _recv) = socket_fixture().await;
+        let weak = Arc::downgrade(&connection);
+        // No later EOF or cancellation can rescue an implementation that continues.
+        let stream = futures::stream::iter([Err(axum::Error::new(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )))])
+        .chain(futures::stream::pending());
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            handle_socket_stream(
+                stream,
+                connection,
+                send,
+                CancellationToken::new(),
+                events,
+                "socket-lifecycle".into(),
+                metrics.clone(),
+            ),
+        )
+        .await
+        .expect("a transport error must terminate the receive task");
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            metrics
+                .sync_protocol_connections
+                .with_label_values(&[])
+                .get(),
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_connected_peer_syncs_after_another_peer_disconnects() {
+        use yrs::{updates::encoder::Encode, Map, ReadTxn, Transact};
+        let (doc, connection, events, metrics, send, mut recv) = socket_fixture().await;
+        let (input, stream) = channel(16);
+        let cancel = CancellationToken::new();
+        let weak = Arc::downgrade(&connection);
+        let task = tokio::spawn(handle_socket_stream(
+            tokio_stream::wrappers::ReceiverStream::new(stream),
+            connection,
+            send,
+            cancel.clone(),
+            events.clone(),
+            "socket-lifecycle".into(),
+            metrics.clone(),
+        ));
+        // A real protocol message proves the connected task is running and responsive.
+        let sync_request = y_sweet_core::sync::Message::Sync(
+            y_sweet_core::sync::SyncMessage::SyncStep1(yrs::StateVector::default()),
+        )
+        .encode_v1();
+        input
+            .send(Ok(Message::Binary(sync_request.clone())))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), recv.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!task.is_finished());
+        assert_eq!(
+            metrics
+                .sync_protocol_connections
+                .with_label_values(&[])
+                .get(),
+            1.0
+        );
+
+        let departing = Arc::new(DocConnection::new(
+            doc.awareness(),
+            Authorization::Full,
+            |_| {},
+        ));
+        let departing_weak = Arc::downgrade(&departing);
+        let (departing_send, _departing_recv) = channel(16);
+        handle_socket_stream(
+            futures::stream::iter([Ok(Message::Close(None))]),
+            departing,
+            departing_send,
+            CancellationToken::new(),
+            events,
+            "socket-lifecycle".into(),
+            metrics.clone(),
+        )
+        .await;
+        assert!(departing_weak.upgrade().is_none());
+        assert_eq!(
+            metrics
+                .sync_protocol_connections
+                .with_label_values(&[])
+                .get(),
+            1.0
+        );
+
+        let client = yrs::Doc::new();
+        let map = client.get_or_insert_map("live");
+        map.insert(&mut client.transact_mut(), "control", "still-syncing");
+        let update = client
+            .transact()
+            .encode_state_as_update_v1(&yrs::StateVector::default());
+        let message =
+            y_sweet_core::sync::Message::Sync(y_sweet_core::sync::SyncMessage::Update(update))
+                .encode_v1();
+        input.send(Ok(Message::Binary(message))).await.unwrap();
+        input.send(Ok(Message::Binary(sync_request))).await.unwrap();
+        // The update notification can precede the sync response; either proves progress.
+        tokio::time::timeout(Duration::from_secs(1), recv.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let awareness = doc.awareness();
+            let awareness = awareness.read().unwrap();
+            let txn = awareness.doc().transact();
+            assert_eq!(
+                txn.get_map("live")
+                    .unwrap()
+                    .get(&txn, "control")
+                    .unwrap()
+                    .to_string(&txn),
+                "still-syncing"
+            );
+        }
+        assert!(!task.is_finished());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            metrics
+                .sync_protocol_connections
+                .with_label_values(&[])
+                .get(),
+            0.0
+        );
+        assert_eq!(
+            metrics
+                .doc_connections_closed_total
+                .with_label_values(&[])
+                .get(),
+            2.0
+        );
+    }
     use y_sweet_core::api_types::Authorization;
     use y_sweet_core::auth::ExpirationTimeEpochMillis;
 
