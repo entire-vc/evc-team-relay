@@ -854,6 +854,38 @@ impl SyncProtocolEventSender {
         }
     }
 
+    /// Remove exactly one disconnected socket without removing its live peers.
+    pub fn unregister_doc_connection(
+        &self,
+        doc_id: &str,
+        connection: &std::sync::Weak<crate::doc_connection::DocConnection>,
+    ) {
+        if let Ok(mut connections) = self.doc_connections.write() {
+            let Some(doc_connections) = connections.get_mut(doc_id) else {
+                return;
+            };
+            let before = doc_connections.len();
+            doc_connections.retain(|registered| !registered.ptr_eq(connection));
+            let remaining = doc_connections.len();
+            let removed = before - remaining;
+            if remaining == 0 {
+                connections.remove(doc_id);
+            }
+            if let Some(ref metrics) = self.metrics {
+                if remaining == 0 {
+                    metrics.clear_doc_subscription(doc_id);
+                } else {
+                    metrics.set_sync_protocol_subscriptions_by_channel(doc_id, remaining);
+                }
+                metrics.set_sync_protocol_connections(connections.values().map(Vec::len).sum());
+                metrics.set_docs_active(connections.len());
+                if removed > 0 {
+                    metrics.record_doc_connections_closed(removed);
+                }
+            }
+        }
+    }
+
     /// Unregister all connections for a document (called when document is dropped)
     pub fn unregister_document(&self, doc_id: &str) {
         if let Ok(mut connections) = self.doc_connections.write() {

@@ -111,6 +111,18 @@ hold-gate:
       echo "no hold label present ✓"
 
 # ── control-plane ───────────────────────────────────────────────────────────
+relay-server-tests:
+  stage: test
+  image: rust:1.89-slim-trixie
+  variables:
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  cache:
+    key: relay-rust-1.89
+    paths: [.cargo/registry/, .cargo/git/, apps/relay-server/target/]
+  script:
+    - cd apps/relay-server
+    - cargo test --locked --workspace
+
 release-smoke-contract:
   stage: test
   image: python:3.12-slim
