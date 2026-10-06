@@ -97,6 +97,7 @@ async def login(
     await notification_service.notify_session_created(db, user, device_name, ip_address, user_agent)
     await notification_service.notify_user_login(db, user, ip_address, user_agent)
 
+    db.close()
     return result
 
 
@@ -847,6 +848,7 @@ async def login_with_2fa(
     await notification_service.notify_session_created(db, user, device_name, ip_address, user_agent)
     await notification_service.notify_user_login(db, user, ip_address, user_agent)
 
+    db.close()
     return auth_schema.TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,

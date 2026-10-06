@@ -37,7 +37,7 @@ router = APIRouter(tags=["metrics"])
     include_in_schema=False,
 )
 @_limiter.limit("10/minute")
-def get_metrics(request: Request) -> PlainTextResponse:
+async def get_metrics(request: Request) -> PlainTextResponse:
     """Serve cached Prometheus metrics registry."""
     init_app_info()
     return PlainTextResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

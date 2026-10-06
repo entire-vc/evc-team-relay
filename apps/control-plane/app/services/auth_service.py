@@ -21,7 +21,11 @@ ADMIN_2FA_PENDING_TOKEN_EXPIRE_MINUTES = 5
 
 def authenticate_user(db: Session, email: str, password: str) -> models.User:
     user = user_service.get_user_by_email(db, email)
-    if not user or not security.verify_password(password, user.password_hash):
+    password_hash = user.password_hash if user else None
+    # Password hashing is CPU work and can be slow. End the lookup transaction
+    # first. The returned user has its scalar authentication fields loaded.
+    db.close()
+    if not user or not security.verify_password(password, password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password"
         )

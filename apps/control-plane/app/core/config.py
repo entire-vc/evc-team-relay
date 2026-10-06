@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     project_name: str = "Relay Control Plane (Lite)"
     api_version: str = "0.1.0"
     database_url: str = Field(default="sqlite+pysqlite:///./control-plane.db")
+    database_pool_timeout_seconds: float = Field(
+        default=5.0, gt=0, description="Maximum PostgreSQL connection-pool wait in seconds"
+    )
 
     # Server identity (for multi-server plugin support)
     server_name: str = Field(default="Relay Server", description="Display name for this server")

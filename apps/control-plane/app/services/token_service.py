@@ -169,6 +169,9 @@ def issue_relay_token(
     # of /d/:doc_id/ws/:doc_id2. relay_doc_ws_url() returns a per-doc URL —
     # see its docstring in app/core/config.py for why this is a drop-in
     # shape change, not a new client/server interaction pattern.
+    # log_action commits the audit entry, then refreshes it. Return that read
+    # connection before response serialization/sending; all fields below are scalars.
+    db.close()
     return token_schema.RelayTokenResponse(
         relay_url=settings.relay_doc_ws_url(payload.doc_id),
         token=token,

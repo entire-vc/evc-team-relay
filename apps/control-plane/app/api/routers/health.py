@@ -31,13 +31,13 @@ class DetailedHealthStatus(HealthStatus):
 
 
 @router.get("/health")
-def health() -> dict[str, bool]:
+async def health() -> dict[str, bool]:
     """Basic health check endpoint (backwards compatible)."""
     return {"ok": True}
 
 
 @router.get("/health/live", response_model=HealthStatus)
-def liveness_probe() -> HealthStatus:
+async def liveness_probe() -> HealthStatus:
     """
     Kubernetes liveness probe.
     Returns 200 if the application is running.
