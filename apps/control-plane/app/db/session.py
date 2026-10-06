@@ -25,6 +25,10 @@ def configure_engine(
     connect_args = engine_kwargs.pop("connect_args", {})
     if url.startswith("sqlite"):
         connect_args.setdefault("check_same_thread", False)
+    elif url.startswith("postgresql"):
+        # Bound worker occupancy during exhaustion; retain the 5+10 connection
+        # budget rather than increasing pressure on the database.
+        engine_kwargs.setdefault("pool_timeout", settings.database_pool_timeout_seconds)
 
     _engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args, **engine_kwargs)
     _SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False)

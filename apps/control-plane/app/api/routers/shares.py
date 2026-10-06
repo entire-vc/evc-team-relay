@@ -97,16 +97,20 @@ async def create_share(
     settings = get_settings()
     if settings.billing_enabled:
         casdoor_id = billing_service.get_casdoor_id(db, current_user)
-        await billing_service.check_limit(
-            casdoor_id, "max_shares", usage_service.count_user_shares(db, current_user.id)
+        share_count = usage_service.count_user_shares(db, current_user.id)
+        published_count = (
+            usage_service.count_web_published(db, current_user.id) if payload.web_published else 0
         )
+        db.close()
+        await billing_service.check_limit(casdoor_id, "max_shares", share_count)
         if payload.web_published:
             await billing_service.check_limit(
                 casdoor_id,
                 "max_web_published",
-                usage_service.count_web_published(db, current_user.id),
+                published_count,
             )
             await billing_service.check_visibility(casdoor_id, payload.visibility.value)
+        db.add(current_user)
 
     share = share_service.create_share(db, current_user, payload)
 
@@ -120,6 +124,7 @@ async def create_share(
     # Build response with web_url
     response = share_schema.ShareRead.model_validate(share)
     response.web_url = share_service.get_web_url(share)
+    db.close()
     return response
 
 
@@ -135,6 +140,7 @@ def read_share(
     # Build response with web_url
     response = share_schema.ShareRead.model_validate(share)
     response.web_url = share_service.get_web_url(share)
+    db.close()
     return response
 
 
@@ -249,6 +255,10 @@ def get_share_files_index(
     _authorize_share_sync(request, share, db, current_user, required_scope="read")
 
     folder_items = share.web_folder_items or []
+    # Snapshot loaded JSON before closing: authorization may have committed
+    # telemetry and expired the ORM row. No DB work is needed while building
+    # or sending the index (which can be several megabytes).
+    db.close()
     result = []
     for item in folder_items:
         if item.get("source") != "sync-artifact":
@@ -304,6 +314,9 @@ def download_share_file(
     _authorize_share_sync(request, share, db, current_user, required_scope="read")
 
     folder_items = share.web_folder_items or []
+    # Return the connection before object storage access or response sending.
+    # Keeping the loaded JSON list does not require a live ORM transaction.
+    db.close()
     for item in folder_items:
         if item.get("path") != path:
             continue
@@ -482,6 +495,10 @@ async def sync_write_file(
 
     path = validate_relative_path(path)
 
+    # Authentication is complete. A slow request body must not occupy the
+    # database pool; the mutation below obtains a fresh, locked row.
+    resolved_share_id = share.id
+    db.close()
     body = await request.body()
     if len(body) > MAX_SYNC_WRITE_SIZE:
         raise HTTPException(
@@ -500,7 +517,7 @@ async def sync_write_file(
     # the object store untouched, which only holds if the compare and the swap
     # sit in the same critical section.
     locked = db.execute(
-        select(models.Share).where(models.Share.id == share.id).with_for_update()
+        select(models.Share).where(models.Share.id == resolved_share_id).with_for_update()
     ).scalar_one_or_none()
     if locked is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
@@ -719,6 +736,7 @@ def create_file_token(
         key_scopes = agent_key_scopes.parse_scopes(agent_key.scopes)
         agent_write = agent_key_scopes.satisfies(key_scopes, "write")
 
+    db.close()
     token = security.create_file_token(
         subject=subject,
         share_id=str(share_id),
@@ -749,6 +767,7 @@ def head_share_file(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user)
 
+    db.close()
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
@@ -793,6 +812,7 @@ def get_file_download_url(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user)
 
+    db.close()
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
@@ -842,6 +862,7 @@ def get_file_content(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user)
 
+    db.close()
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
@@ -989,6 +1010,7 @@ async def put_file_content(
     share = share_service.get_share(db, share_id)
     share_service.ensure_write_access(db, share, user)
 
+    db.close()
     body = await request.body()
     if len(body) > MAX_SYNC_WRITE_SIZE:
         raise HTTPException(
@@ -1037,16 +1059,19 @@ async def update_share(
         if new_web_published:
             owner = _billing_owner(db, share, current_user)
             casdoor_id = billing_service.get_casdoor_id(db, owner)
-            if not share.web_published:
-                await billing_service.check_limit(
-                    casdoor_id,
-                    "max_web_published",
-                    usage_service.count_web_published(db, owner.id),
-                )
+            enabling_publication = not share.web_published
+            published_count = (
+                usage_service.count_web_published(db, owner.id) if enabling_publication else 0
+            )
             new_visibility = (
                 payload.visibility if payload.visibility is not None else share.visibility
             )
+            db.close()
+            if enabling_publication:
+                await billing_service.check_limit(casdoor_id, "max_web_published", published_count)
             await billing_service.check_visibility(casdoor_id, new_visibility.value)
+            db.add(share)
+            db.add(current_user)
 
     # Capture old values for notification
     old_values = {
@@ -1140,11 +1165,15 @@ async def add_member(
     if settings.billing_enabled:
         owner = _billing_owner(db, share, current_user)
         casdoor_id = billing_service.get_casdoor_id(db, owner)
+        member_count = usage_service.count_share_members(db, share.id)
+        db.close()
         await billing_service.check_limit(
             casdoor_id,
             "max_members_per_share",
-            usage_service.count_share_members(db, share.id),
+            member_count,
         )
+        db.add(share)
+        db.add(current_user)
 
     # User validation is now done inside add_member service
     result = share_service.add_member(db, share, payload, actor_user_id=current_user.id)
