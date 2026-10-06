@@ -6,8 +6,11 @@ FROM python:3.12-slim
 # availability — see task c3fa1c20 (live GitHub egress block broke this).
 RUN pip install --no-cache-dir --root-user-action=ignore uv==0.12.5
 
+# Bound glibc's per-thread heaps: decoding large folder indexes in the
+# request pool otherwise retains free memory in many separate arenas.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    MALLOC_ARENA_MAX=2 \
     PYTHONPATH=/app \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
