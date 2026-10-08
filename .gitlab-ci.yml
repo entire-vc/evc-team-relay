@@ -23,8 +23,11 @@
 #     docker-in-docker service on the one shared fleet runner. Not attempted
 #     here; the npm blocker that used to compound it is gone.
 #
-#   * **semgrep, trivy, release-drift, release** — untouched. Releases still
+#   * **release-drift, release** — untouched. Releases still
 #     live on GitHub by fleet rule (§0z p.5).
+#
+# Semgrep and Trivy now also run as blocking checks on the canonical pipeline,
+# with the same policies as their public showcase workflows.
 #
 #   * **deploy** — no longer untouched: `trigger:prod-team-relay` below bridges
 #     a successful push-to-main pipeline into `entire-vc/deploy`. The manual
@@ -41,7 +44,7 @@
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS
       when: never
     - if: $CI_COMMIT_BRANCH
 
@@ -110,8 +113,93 @@ hold-gate:
       fi
       echo "no hold label present ✓"
 
+# Canonical blocking scans mirror the public workflow policy. Keep these
+# unconditional: component filtering must never bypass vulnerability checks.
+# Run alongside tests so a scan failure still leaves diagnostic test results.
+# Pipeline success and the deploy bridge both require the scans to pass.
+semgrep-security:
+  stage: test
+  image:
+    name: semgrep/semgrep:1.155.0@sha256:3dab091ee3247fce7e4ed3df9f92b3bd72692c083295f53cec3f135b86404db1
+    entrypoint: [""]
+  timeout: 20m
+  allow_failure: false
+  variables:
+    GIT_DEPTH: "0"
+    SEMGREP_RULES: "p/security-audit p/secrets p/owasp-top-ten p/python"
+  script:
+    - semgrep ci --exclude='apps/relay-server/archive'
+
+trivy-security:
+  stage: test
+  image:
+    name: aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e
+    entrypoint: [""]
+  timeout: 20m
+  allow_failure: false
+  variables:
+    TRIVY_CACHE_DIR: "$CI_PROJECT_DIR/.trivy-cache"
+  cache:
+    key: trivy-vulnerability-db
+    paths: [.trivy-cache/]
+  script:
+    - trivy fs --scanners vuln --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --ignorefile .trivyignore --format table .
+
+# Component rules filter MR and existing feature-branch push pipelines only.
+# Main, explicit/manual/API runs, schedules and new branches run every check.
+# Unknown/shared paths also run every component; rules:changes is an OR, so a
+# mixed-component diff never suppresses either component. GitLab uses Ruby
+# File.fnmatch with FNM_PATHNAME | FNM_DOTMATCH | FNM_EXTGLOB. Shell !(...) is
+# unsupported. The brace globs below are the complement of exact directory
+# names, generated and tested with scripts/test_ci_rules.py::complement. They
+# include prefix/longer names and dotfiles; adding a component requires updating
+# COMPONENTS there and regenerating these patterns. The 50k-check limit fails
+# open to more checks, never fewer. See https://docs.gitlab.com/ci/yaml/#ruleschanges
+.component_full_rules:
+  rules:
+    - &component_full_rule
+      if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || ($CI_PIPELINE_SOURCE != "merge_request_event" && $CI_PIPELINE_SOURCE != "push") || ($CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BEFORE_SHA == "0000000000000000000000000000000000000000")'
+
+.python_rules:
+  rules: &python_rules
+    - *component_full_rule
+    - changes:
+        - "apps/control-plane/**/*"
+        - &shared_root "{[!a]*,a,a[!p]*,ap,ap[!p]*,app,app[!s]*,apps?*}{,/**/*}"
+        - &shared_apps "apps/{[!crw]*,c,c[!o]*,co,co[!n]*,con,con[!t]*,cont,cont[!r]*,contr,contr[!o]*,contro,contro[!l]*,control,control[!-]*,control-,control-[!p]*,control-p,control-p[!l]*,control-pl,control-pl[!a]*,control-pla,control-pla[!n]*,control-plan,control-plan[!e]*,control-plane?*,r,r[!e]*,re,re[!l]*,rel,rel[!a]*,rela,rela[!y]*,relay,relay[!-]*,relay-,relay-[!s]*,relay-s,relay-s[!e]*,relay-se,relay-se[!r]*,relay-ser,relay-ser[!v]*,relay-serv,relay-serv[!e]*,relay-serve,relay-serve[!r]*,relay-server?*,w,w[!e]*,we,we[!b]*,web,web[!-]*,web-,web-[!p]*,web-p,web-p[!u]*,web-pu,web-pu[!b]*,web-pub,web-pub[!l]*,web-publ,web-publ[!i]*,web-publi,web-publi[!s]*,web-publis,web-publis[!h]*,web-publish?*}{,/**/*}"
+        - &component_roots "{apps,apps/control-plane,apps/relay-server,apps/web-publish}"
+
+.rust_rules:
+  rules: &rust_rules
+    - *component_full_rule
+    - changes:
+        - "apps/relay-server/**/*"
+        - *shared_root
+        - *shared_apps
+        - *component_roots
+
+.svelte_rules:
+  rules: &svelte_rules
+    - *component_full_rule
+    - changes:
+        - "apps/web-publish/**/*"
+        - *shared_root
+        - *shared_apps
+        - *component_roots
+
+# The matcher contract remains a blocking gate for every pipeline, including
+# changes to CI/docs alone; it evaluates this YAML with the actual Ruby matcher.
+ci-rules-contract:
+  stage: gate
+  image: ruby:3.3-alpine
+  before_script:
+    - apk add --no-cache python3 py3-yaml
+  script:
+    - python3 scripts/test_ci_rules.py
+
 # ── control-plane ───────────────────────────────────────────────────────────
 relay-server-tests:
+  rules: *rust_rules
   stage: test
   image: rust:1.89-slim-trixie
   variables:
@@ -148,6 +236,7 @@ artifact-relocation-contract:
     - uv run --with ruff ruff format --check scripts/relocate_artifacts.py scripts/test_relocate_artifacts.py
 
 .uv_job: &uv_job
+  rules: *python_rules
   # Debian, not alpine, on purpose: `psycopg[binary]` and `pillow` ship
   # manylinux wheels only. On a musl base pip falls back to building from
   # source and the job dies in a C compiler, which reads like a broken
@@ -174,7 +263,29 @@ test-python:
   stage: test
   timeout: 30m
   script:
-    - uv run pytest -v --tb=short
+    - uv run pytest -v --tb=short --junitxml=test-results.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/control-plane/test-results.xml
+
+# Enabled by the dedicated daily schedule, only after serial isolation passes.
+# Each process owns its in-memory DB. At most one additional, independently
+# pooled SQLite connection is used by the session-lifetime regression tests:
+# 2 workers x 2 DBAPI connections = 4; this suite uses no PostgreSQL service.
+# The ordinary required test-python job stays serial in every full pipeline.
+test-python-shuffled:
+  <<: *uv_job
+  rules:
+    - if: '$TEST_ISOLATION_DAILY == "1" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
+  stage: test
+  timeout: 30m
+  script:
+    - uv run --with pytest-xdist==3.8.0 pytest -v --tb=short -n 2 --dist load --shuffle-seed="$CI_PIPELINE_ID" --junitxml=shuffled-results.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/control-plane/shuffled-results.xml
 
 # Fresh-DB migration smoke — nothing else here exercises the alembic graph
 # against a real database. Without it a broken revision chain (a down_revision
@@ -247,6 +358,7 @@ check-migration-drift:
 # packages publicly is what ends the swap. The public copies also keep the
 # showcase mirror's lockfile free of an internal hostname and project number.
 .web_publish_job: &web_publish_job
+  rules: *svelte_rules
   image: node:22-alpine
   timeout: 20m
   cache:
@@ -336,18 +448,24 @@ browser-budget-svelte:
 # job which does not exist breaks pipeline creation entirely: the merge yields
 # no pipeline, no deployment, and NOT ONE error message.
 #
-# The `needs` list below was not derived by reading this file but by measuring
-# a real push pipeline on `main`: it contains exactly four jobs — lint-python,
-# test-python, alembic-migration-smoke, check-migration-drift — and no
-# `hold-gate`. The rule generalises: before adding a job to `needs`, look at an
-# ACTUAL push pipeline on `main`, not at the yaml.
+# The original four Python/migration prerequisites were verified on a real
+# push pipeline on main. The two unconditional security jobs now also gate the
+# deployment. Pipeline creation for all six prerequisites is checked by the
+# CI rule contract and GitLab's main-branch simulation; hold-gate stays absent.
 trigger:prod-team-relay:
   stage: deploy
   # Pushes to the canonical branch only. It does not run on merge request
   # pipelines: there is nothing to deploy there.
   rules:
     - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
-  needs: ["lint-python", "test-python", "alembic-migration-smoke", "check-migration-drift"]
+      changes:
+        # Complement excludes only known documentation/test-only entries; new
+        # runtime files (including dotfiles) still deploy. Pyproject/lockfile,
+        # migrations and Docker changes remain deployable. Do not use !(...).
+        # Generated by test_ci_rules.py::complement(NON_RUNTIME).
+        - "apps/control-plane/{[!.Rcdpt]*,.,.[!cg]*,.c,.c[!o]*,.co,.co[!v]*,.cov,.cov[!e]*,.cove,.cove[!r]*,.cover,.cover[!a]*,.covera,.covera[!g]*,.coverag,.coverag[!e]*,.coverage,.coverage[!r]*,.coverager,.coverager[!c]*,.coveragerc?*,.g,.g[!i]*,.gi,.gi[!t]*,.git,.git[!i]*,.giti,.giti[!g]*,.gitig,.gitig[!n]*,.gitign,.gitign[!o]*,.gitigno,.gitigno[!r]*,.gitignor,.gitignor[!e]*,.gitignore?*,R,R[!E]*,RE,RE[!A]*,REA,REA[!D]*,READ,READ[!M]*,READM,READM[!E]*,README,README[!.]*,README.,README.[!m]*,README.m,README.m[!d]*,README.md?*,c,c[!o]*,co,co[!n]*,con,con[!f]*,conf,conf[!t]*,conft,conft[!e]*,confte,confte[!s]*,conftes,conftes[!t]*,conftest,conftest[!.]*,conftest.,conftest.[!p]*,conftest.p,conftest.p[!y]*,conftest.py?*,d,d[!o]*,do,do[!c]*,doc,doc[!s]*,docs?*,p,p[!y]*,py,py[!t]*,pyt,pyt[!e]*,pyte,pyte[!s]*,pytes,pytes[!t]*,pytest,pytest[!.]*,pytest.,pytest.[!i]*,pytest.i,pytest.i[!n]*,pytest.in,pytest.in[!i]*,pytest.ini?*,t,t[!e]*,te,te[!s]*,tes,tes[!t]*,test,test[!s]*,tests?*}{,/**/*}"
+        - "scripts/deploy.sh"
+  needs: ["lint-python", "test-python", "alembic-migration-smoke", "check-migration-drift", "semgrep-security", "trivy-security"]
   # ⚠️ Set EXPLICITLY, against `default: interruptible: true` above. An
   # interruptible job would be cancelled by the next push to main — together
   # with its downstream pipeline, i.e. in the middle of a deployment. For a

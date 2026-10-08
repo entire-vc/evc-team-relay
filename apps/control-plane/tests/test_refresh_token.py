@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from datetime import timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core import security
 from app.core.security import utcnow
 from app.db import models
 from app.services import session_service
@@ -30,8 +31,15 @@ class TestRefreshTokenFlow:
         assert data["token_type"] == "bearer"
         assert len(data["refresh_token"]) == 64  # 256 bits = 64 hex chars
 
-    def test_refresh_endpoint_returns_new_tokens(self, client: TestClient, test_user: models.User):
-        """Test that refresh endpoint returns new access and refresh tokens."""
+    def test_refresh_endpoint_returns_new_tokens(
+        self, client: TestClient, test_user: models.User, monkeypatch
+    ):
+        """Refresh both credentials with a measured one-second issuance advance."""
+        # Keep both clocks controlled and in the recent past so JWT verification
+        # remains real without relying on wall-clock waits or future iat claims.
+        now = utcnow().replace(microsecond=0) - timedelta(seconds=2)
+        monkeypatch.setattr(security, "utcnow", lambda: now)
+        monkeypatch.setattr(session_service, "utcnow", lambda: now)
         # Login to get initial tokens
         login_response = client.post(
             "/v1/auth/login",
@@ -40,8 +48,7 @@ class TestRefreshTokenFlow:
         assert login_response.status_code == 200
         initial_tokens = login_response.json()
 
-        # Wait a bit to ensure timestamp difference in JWT tokens
-        time.sleep(1.1)
+        now += timedelta(seconds=1)
 
         # Use refresh token to get new tokens
         refresh_response = client.post(
@@ -55,6 +62,10 @@ class TestRefreshTokenFlow:
         assert "refresh_token" in new_tokens
         assert new_tokens["access_token"] != initial_tokens["access_token"]
         assert new_tokens["refresh_token"] != initial_tokens["refresh_token"]
+        initial_claims = security.decode_access_token(initial_tokens["access_token"])
+        refreshed_claims = security.decode_access_token(new_tokens["access_token"])
+        assert refreshed_claims["iat"] - initial_claims["iat"] == 1
+        assert refreshed_claims["iat"] == int(now.timestamp())
 
     def test_refresh_token_rotation_old_token_invalid(
         self, client: TestClient, test_user: models.User
@@ -182,6 +193,7 @@ class TestLegacyRouteProxy:
         assert response.headers["X-API-Version"] == "1"
 
 
+@pytest.mark.db_commit
 class TestSessionService:
     """Unit tests for session service functions."""
 

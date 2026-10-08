@@ -54,6 +54,17 @@ on:
     paths:
       - 'apps/control-plane/**'
       - 'scripts/deploy.sh'
+      # Test/config/docs changes alone do not restart production. Keep the
+      # broad runtime include so unknown control-plane paths still deploy.
+      - '!apps/control-plane/tests'
+      - '!apps/control-plane/tests/**'
+      - '!apps/control-plane/docs'
+      - '!apps/control-plane/docs/**'
+      - '!apps/control-plane/README.md'
+      - '!apps/control-plane/.gitignore'
+      - '!apps/control-plane/pytest.ini'
+      - '!apps/control-plane/conftest.py'
+      - '!apps/control-plane/.coveragerc'
   workflow_dispatch:
     inputs:
       dry_run:

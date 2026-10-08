@@ -11,11 +11,11 @@ import ctypes
 import gc
 import json
 import platform
+import re
 import tempfile
 import threading
 import time
 import tracemalloc
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -38,7 +38,12 @@ def arena_count() -> int:
                 raise RuntimeError("malloc_info failed")
             libc.fflush(stream)
             output.seek(0)
-            return len(ET.fromstring(output.read()).findall("heap"))
+            # malloc_info emits one <heap nr="..."> per arena. Counting its
+            # opening tags avoids an XML parser (and entity expansion) entirely.
+            count = len(re.findall(rb"<heap\s+nr=\"[0-9]+\"\s*>", output.read()))
+            if count == 0:
+                raise RuntimeError("malloc_info emitted no heap records")
+            return count
         finally:
             libc.fclose(stream)
 

@@ -288,8 +288,10 @@ class TestH7SecretValidation:
         get_settings.cache_clear()
         try:
             app = build_app()
-            with TestClient(app):
-                pass  # no exception expected
+            with TestClient(app) as client:
+                response = client.get("/v1/health")
+                assert response.status_code == 200
+                assert response.json() == {"ok": True}
         finally:
             get_settings.cache_clear()
 
