@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import pkgutil
+import random
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from slowapi import Limiter
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.compiler import TypeCompiler
 
@@ -60,6 +62,33 @@ def test_env():
     get_settings.cache_clear()
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--shuffle-seed", type=int, default=None, help="Reproducible test collection shuffle"
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "db_commit: requires real commits or independent database connections"
+    )
+    workers = config.getoption("numprocesses", default=None)
+    if workers not in (None, 0, 1, 2):
+        raise pytest.UsageError("DB isolation budget allows at most 2 explicit workers; no auto")
+
+
+def pytest_collection_modifyitems(config, items):
+    seed = config.getoption("shuffle_seed")
+    if seed is not None:
+        random.Random(seed).shuffle(items)
+
+
+def pytest_report_header(config):
+    seed = config.getoption("shuffle_seed")
+    if seed is not None:
+        return f"test collection shuffle seed: {seed}; DB worker budget: 2"
+
+
 @pytest.fixture(scope="session")
 def engine(test_env):
     engine = session_module.configure_engine(
@@ -67,39 +96,83 @@ def engine(test_env):
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    return engine
+
+    with engine.begin() as connection:
+        Base.metadata.create_all(connection)
+    yield engine
+    engine.dispose()
 
 
 @pytest.fixture(autouse=True)
-def clean_database(engine):
-    with engine.begin() as conn:
-        Base.metadata.drop_all(conn)
-        Base.metadata.create_all(conn)
-    yield
+def clean_database(engine, request, monkeypatch):
+    if request.node.get_closest_marker("db_commit"):
+        # Opt out when the test observes actual commits/connection availability.
+        # Reset both sides: a committed test must not pollute the next rollback
+        # test, irrespective of collected/shuffled order.
+        with engine.begin() as connection:
+            Base.metadata.drop_all(connection)
+            Base.metadata.create_all(connection)
+        yield None
+        with engine.begin() as connection:
+            Base.metadata.drop_all(connection)
+            Base.metadata.create_all(connection)
+        return
+
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        # sqlite3 legacy mode does not BEGIN for SAVEPOINT. Without this
+        # physical BEGIN, releasing the first savepoint commits outside the
+        # outer SQLAlchemy transaction. Keep legacy commit behavior for the
+        # db_commit opt-out above; only rollback tests need this envelope.
+        connection.exec_driver_sql("BEGIN")
+        # Startup and workers use get_sessionmaker rather than HTTP dependency
+        # overrides. Their commits must join this same rollback boundary too.
+        monkeypatch.setattr(
+            session_module,
+            "_SessionLocal",
+            sessionmaker(
+                bind=connection,
+                autoflush=False,
+                join_transaction_mode="create_savepoint",
+            ),
+        )
+        try:
+            yield connection
+        finally:
+            try:
+                if (
+                    not transaction.is_active
+                    or not connection.connection.dbapi_connection.in_transaction
+                ):
+                    raise AssertionError(
+                        "test ended the outer transaction; use db_commit semantics"
+                    )
+            finally:
+                transaction.rollback()
 
 
 @pytest.fixture
-def db_connection(engine):
-    """Provide a single DBAPI connection for the test.
-
-    All sessions (test setup + HTTP handlers) share this connection so that
-    changes made by either side are immediately visible to the other — no
-    cross-thread StaticPool visibility race with SQLite in-memory.
-
-    A connection-level transaction wraps the test; everything is rolled back
-    on teardown so clean_database only needs to run once per test.
-    """
-    with engine.connect() as connection:
-        yield connection
-        connection.rollback()
+def db_connection(engine, clean_database):
+    """Share setup, handlers and startup inside the test rollback boundary."""
+    if clean_database is not None:
+        yield clean_database
+    else:
+        with engine.connect() as connection:
+            yield connection
+            connection.rollback()
 
 
 @pytest.fixture
 def db_session(db_connection):
-    """Provide a database session bound to the test's shared connection."""
+    """Session commits release a savepoint; teardown rolls back the outer test."""
     from sqlalchemy.orm import Session
 
-    with Session(bind=db_connection, autocommit=False, autoflush=True) as session:
+    with Session(
+        bind=db_connection,
+        autocommit=False,
+        autoflush=True,
+        join_transaction_mode="create_savepoint",
+    ) as session:
         yield session
 
 
@@ -157,7 +230,12 @@ def client(engine, db_connection):
     from sqlalchemy.orm import Session as _Session
 
     def override_get_db():
-        with _Session(bind=db_connection, autocommit=False, autoflush=True) as handler_session:
+        with _Session(
+            bind=db_connection,
+            autocommit=False,
+            autoflush=True,
+            join_transaction_mode="create_savepoint",
+        ) as handler_session:
             yield handler_session
 
     app.dependency_overrides[get_db] = override_get_db

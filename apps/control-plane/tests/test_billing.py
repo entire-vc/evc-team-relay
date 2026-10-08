@@ -136,7 +136,8 @@ class TestBillingStub:
 class TestLimitChecking:
     @pytest.mark.asyncio
     async def test_check_limit_passes_under_max(self):
-        await billing_service.check_limit("cid-under", "max_shares", current_count=2)
+        result = await billing_service.check_limit("cid-under", "max_shares", current_count=2)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_check_limit_raises_at_max(self):
@@ -149,13 +150,17 @@ class TestLimitChecking:
     @pytest.mark.asyncio
     async def test_check_limit_unlimited_key_never_raises(self):
         # Unknown entitlement key -> _get_limit returns None -> unlimited
-        await billing_service.check_limit("cid-x", "nonexistent_key", current_count=999_999)
+        result = await billing_service.check_limit(
+            "cid-x", "nonexistent_key", current_count=999_999
+        )
+        assert result is None
 
 
 class TestVisibilityChecking:
     @pytest.mark.asyncio
     async def test_check_visibility_allows_public(self):
-        await billing_service.check_visibility("cid", "public")
+        result = await billing_service.check_visibility("cid", "public")
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_check_visibility_rejects_private_on_free_plan(self):
@@ -1210,7 +1215,7 @@ class TestBillingWebhook:
             client, {"event": "subscription.created", "data": {"user_id": "casdoor-abc"}}
         )
         assert resp1.status_code == 200
-        assert resp1.json()["duplicate"] is False if "duplicate" in resp1.json() else True
+        assert resp1.json() == {"status": "ok"}
 
         # Replay same event_id -> dedup, no second audit log
         resp2, _ = self._post_webhook(
@@ -1227,15 +1232,36 @@ class TestBillingWebhook:
     def test_webhook_creates_audit_log(self, client: TestClient, db_session):
         from app.db import models
 
-        _, event_id = self._post_webhook(
-            client, {"event": "subscription.activated", "data": {"user_id": "casdoor-audit"}}
+        # A prior event of the same action must not satisfy this check.
+        db_session.add(
+            models.AuditLog(
+                action=models.AuditAction.BILLING_SUBSCRIPTION_ACTIVATED,
+                details={"event_id": "unrelated-event"},
+            )
         )
-        audit = (
+        db_session.commit()
+        response, event_id = self._post_webhook(
+            client,
+            {
+                "event": "subscription.activated",
+                "data": {"user_id": "casdoor-audit", "subscription_id": "sub-audit"},
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"status": "ok"}
+        audits = (
             db_session.query(models.AuditLog)
             .filter_by(action=models.AuditAction.BILLING_SUBSCRIPTION_ACTIVATED)
-            .first()
+            .all()
         )
-        assert audit is not None
+        matching = [audit for audit in audits if audit.details.get("event_id") == event_id]
+        assert len(matching) == 1
+        assert matching[0].details == {
+            "event_id": event_id,
+            "event_type": "subscription.activated",
+            "user_id": "casdoor-audit",
+            "subscription_id": "sub-audit",
+        }
 
     def test_webhook_stores_subscription_id_on_user(self, client: TestClient, db_session):
         from app.db import models

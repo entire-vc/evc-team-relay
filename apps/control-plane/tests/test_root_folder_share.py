@@ -21,7 +21,7 @@ from app.services import share_service
 
 
 def test_empty_path_accepted_for_folder() -> None:
-    share_service.validate_share_path_safety("", models.ShareKind.FOLDER)
+    assert share_service.validate_share_path_safety("", models.ShareKind.FOLDER) is None
 
 
 def test_empty_path_still_rejected_for_doc() -> None:
@@ -46,11 +46,11 @@ def test_absolute_path_still_rejected_for_folder(absolute_path: str) -> None:
 
 
 def test_normal_folder_path_still_accepted() -> None:
-    share_service.validate_share_path_safety("Projects/", models.ShareKind.FOLDER)
+    assert share_service.validate_share_path_safety("Projects/", models.ShareKind.FOLDER) is None
 
 
 def test_normal_doc_path_still_accepted() -> None:
-    share_service.validate_share_path_safety("Projects/doc.md", models.ShareKind.DOC)
+    assert share_service.validate_share_path_safety("Projects/doc.md", models.ShareKind.DOC) is None
 
 
 def test_doc_without_valid_extension_still_rejected() -> None:
