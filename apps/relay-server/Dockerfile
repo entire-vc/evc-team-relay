@@ -1,12 +1,48 @@
-FROM rust:1.89-slim-trixie AS builder
+FROM --platform=$BUILDPLATFORM rust:1.89-slim-trixie AS builder
 
 WORKDIR /build
+
+ARG BUILDARCH
+ARG TARGETOS
+ARG TARGETARCH
+
+# Run Rust and build scripts natively; cross-compile only the target artifact.
+RUN set -eu; \
+    case "$BUILDARCH/$TARGETOS/$TARGETARCH" in \
+      amd64/linux/amd64|arm64/linux/arm64) ;; \
+      amd64/linux/arm64) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross; \
+        rm -rf /var/lib/apt/lists/* ;; \
+      arm64/linux/amd64) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu libc6-dev-amd64-cross; \
+        rm -rf /var/lib/apt/lists/* ;; \
+      *) echo "unsupported relay build platform" >&2; exit 1 ;; \
+    esac
+
+# ring uses cc-rs for target C/assembly; Cargo's linker alone is insufficient.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+    CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+    AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
 
 ARG RELAY_VERSION
 ENV RELAY_VERSION=${RELAY_VERSION}
 
 COPY . .
-RUN cargo build --release
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) rust_target=x86_64-unknown-linux-gnu ;; \
+      arm64) rust_target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported relay target architecture" >&2; exit 1 ;; \
+    esac; \
+    rustup target add "$rust_target"; \
+    cargo build --release --target "$rust_target"; \
+    mkdir -p /build/output; \
+    cp "target/$rust_target/release/relay" /build/output/relay
 
 FROM debian:trixie-slim
 
@@ -21,7 +57,7 @@ RUN mkdir -p /var/run/tailscale /var/cache/tailscale /var/lib/tailscale
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 # Add relay binary
-COPY --from=builder /build/target/release/relay /app/relay
+COPY --from=builder /build/output/relay /app/relay
 COPY ./run.sh /app/run.sh
 COPY ./relay.toml /app/relay.toml
 RUN chmod +x /app/run.sh
