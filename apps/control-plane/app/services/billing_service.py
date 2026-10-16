@@ -214,6 +214,8 @@ def _get_billing_client() -> BillingClient:
             base_url=settings.billing_base_url,
             service_token=settings.billing_service_token,
             service_id=settings.billing_service_id,
+            signing_key_pem=settings.billing_signing_key_pem,
+            signing_key_id=settings.billing_signing_key_id,
         )
     return _billing_client
 

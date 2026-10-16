@@ -27,12 +27,12 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Copy built app and production dependencies
-COPY --from=builder /app/build ./build
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+COPY --from=builder --chown=node:node /app/build ./build
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/package.json ./
 
 # node:22-alpine ships a non-root "node" user (uid 1000) — use it instead of root
-RUN chown -R node:node /app
+RUN chown node:node /app
 USER node
 
 # Set environment variables
