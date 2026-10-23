@@ -52,7 +52,7 @@
     "marked": "^18.0.11",
     "marked-footnote": "^1.4.0",
     "marked-highlight": "^2.2.4",
-    "mermaid": "^11.17.1",
+    "mermaid": "^12.2.0",
     "tailwind-merge": "^3.6.0"
   },
   "overrides": {
