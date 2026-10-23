@@ -208,10 +208,10 @@ def test_every_english_template_has_a_russian_twin_using_the_same_variables(name
     assert ru_path.exists(), f"missing Russian template: ru/{name}"
     ru_vars = _template_vars(TEMPLATE_DIR / "ru", name)
     en_vars = _template_vars(TEMPLATE_DIR, name)
-    assert (
-        ru_vars <= en_vars
-    ), f"ru/{name} uses variables the context never provides: {ru_vars - en_vars}"
+    assert ru_vars <= en_vars, (
+        f"ru/{name} uses variables the context never provides: {ru_vars - en_vars}"
+    )
     if name != "base.html":  # the Russian footer intentionally drops the © year line
-        assert (
-            en_vars <= ru_vars
-        ), f"ru/{name} lost context the English one shows: {en_vars - ru_vars}"
+        assert en_vars <= ru_vars, (
+            f"ru/{name} lost context the English one shows: {en_vars - ru_vars}"
+        )

@@ -67,7 +67,7 @@ what makes `./Caddyfile` land on the git-tracked file.
 
 ## MinIO images
 
-`minio` and `minio-init` use `git.entire.host:5050/entire-vc/evc-team-relay/minio`
+`minio` and `minio-init` use `gitlab.example.com:5050/entire-vc/evc-team-relay/minio`
 and `.../mc`, pinned by digest in `docker-compose.yml`. They are not pulled
 from Docker Hub or quay.io: both refuse anonymous pulls of MinIO now (401, same
 answer from this host and from the EN one), and that will not come back on its
@@ -79,7 +79,7 @@ The registry is private, so the host needs a login once:
 
 ```bash
 # fields TR_RU_REGISTRY_USER / TR_RU_REGISTRY_TOKEN: a read_registry-only deploy token
-docker login git.entire.host:5050 -u "$TR_RU_REGISTRY_USER" --password-stdin
+docker login gitlab.example.com:5050 -u "$TR_RU_REGISTRY_USER" --password-stdin
 ```
 
 To move to a newer MinIO, mirror it from a machine that can still reach a
@@ -88,8 +88,8 @@ registry keeps the old one, so a rollback is a one-line revert):
 
 ```bash
 docker pull --platform linux/amd64 <source>/minio:<RELEASE>
-docker tag  <source>/minio:<RELEASE> git.entire.host:5050/entire-vc/evc-team-relay/minio:<RELEASE>
-docker push --platform linux/amd64 git.entire.host:5050/entire-vc/evc-team-relay/minio:<RELEASE>   # prints the digest to pin
+docker tag  <source>/minio:<RELEASE> gitlab.example.com:5050/entire-vc/evc-team-relay/minio:<RELEASE>
+docker push --platform linux/amd64 gitlab.example.com:5050/entire-vc/evc-team-relay/minio:<RELEASE>   # prints the digest to pin
 ```
 
 ## Email language

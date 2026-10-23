@@ -262,6 +262,18 @@ class Settings(BaseSettings):
     )
     billing_base_url: str = Field(default="https://billing.entire.vc/api/v1")
     billing_service_token: str = Field(default="")
+    billing_signing_key_pem: str = Field(
+        default="",
+        description=(
+            "Ed25519 private key (PEM) used to sign short-lived scoped service JWTs "
+            "for the Billing Service. When set together with billing_signing_key_id, "
+            "it replaces the shared billing_service_token. The key never leaves relay; "
+            "only the public key is registered in billing."
+        ),
+    )
+    billing_signing_key_id: str = Field(
+        default="", description="kid registered in billing for billing_signing_key_pem"
+    )
     billing_service_id: str = Field(
         default="relay",
         description=(

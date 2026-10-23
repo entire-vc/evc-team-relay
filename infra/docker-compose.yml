@@ -301,6 +301,10 @@ services:
     volumes:
       - ./relay/relay.toml:/app/relay.toml:ro
       - ./data/relay:/app/data
+    environment:
+      # Optional. Host that presigned file URLs are signed for; unset keeps
+      # the store endpoint from relay.toml (http://minio:9000 inside compose).
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-}
     restart: unless-stopped
     expose:
       - "8080"

@@ -2193,3 +2193,126 @@ class TestCreateCheckoutSessionServiceId:
             billing_service._get_billing_client()
             _, kwargs = MockBillingClient.call_args
             assert kwargs["service_id"] == "relay-ru"
+
+
+# ---------------------------------------------------------------------------
+# Scoped service-client JWT (replaces the shared BILLING_SERVICE_TOKEN).
+# Verified with the same checks billing's service_auth.verify_service_jwt applies.
+# ---------------------------------------------------------------------------
+
+
+class TestBillingClientScopedJWT:
+    def _keypair(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        key = Ed25519PrivateKey.generate()
+        pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        return key.public_key(), pem
+
+    def _client(self, pem: str, **kw):
+        captured: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={})
+
+        client = BillingClient(
+            base_url="https://billing.example",
+            service_token="shared-secret",
+            signing_key_pem=pem,
+            signing_key_id="relay-2026-10",
+            **kw,
+        )
+        client._client._transport = httpx.MockTransport(handler)
+        return client, captured
+
+    @pytest.mark.asyncio
+    async def test_signs_eddsa_jwt_instead_of_shared_token(self):
+        import jwt
+
+        public_key, pem = self._keypair()
+        client, captured = self._client(pem)
+        await client.get_products()
+        auth = captured[0].headers["Authorization"]
+        assert "shared-secret" not in auth
+        token = auth.removeprefix("Bearer ")
+        assert jwt.get_unverified_header(token) == {
+            "alg": "EdDSA",
+            "typ": "JWT",
+            "kid": "relay-2026-10",
+        }
+        claims = jwt.decode(
+            token,
+            public_key,
+            algorithms=["EdDSA"],
+            audience="evc-billing",
+            options={"require": ["exp", "iat", "iss"]},
+        )
+        assert claims["iss"] == "relay"
+        assert claims["exp"] - claims["iat"] <= 120
+
+    @pytest.mark.asyncio
+    async def test_service_id_override_becomes_iss_and_token_is_fresh_per_request(self):
+        import jwt
+
+        public_key, pem = self._keypair()
+        client, captured = self._client(pem, service_id="relay-ru")
+        await client.get_products()
+        await client.get_products()
+        claims = [
+            jwt.decode(
+                r.headers["Authorization"].removeprefix("Bearer "),
+                public_key,
+                algorithms=["EdDSA"],
+                audience="evc-billing",
+            )
+            for r in captured
+        ]
+        assert all(c["iss"] == "relay-ru" for c in claims)
+
+    @pytest.mark.asyncio
+    async def test_wrong_key_fails_verification(self):
+        import jwt
+
+        other_public, _ = self._keypair()
+        _, pem = self._keypair()
+        client, captured = self._client(pem)
+        await client.get_products()
+        with pytest.raises(jwt.InvalidTokenError):
+            jwt.decode(
+                captured[0].headers["Authorization"].removeprefix("Bearer "),
+                other_public,
+                algorithms=["EdDSA"],
+                audience="evc-billing",
+            )
+
+    @pytest.mark.asyncio
+    async def test_legacy_shared_token_still_used_without_signing_key(self):
+        captured: list[httpx.Request] = []
+        client = BillingClient(base_url="https://billing.example", service_token="tok")
+        client._client._transport = httpx.MockTransport(
+            lambda r: (captured.append(r), httpx.Response(200, json={}))[1]
+        )
+        await client.get_products()
+        assert captured[0].headers["Authorization"] == "Bearer tok"
+
+    def test_rejects_non_ed25519_key(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        pem = (
+            ec.generate_private_key(ec.SECP256R1())
+            .private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+            .decode()
+        )
+        with pytest.raises(ValueError, match="Ed25519"):
+            BillingClient(base_url="https://b", signing_key_pem=pem, signing_key_id="k")

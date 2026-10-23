@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Generator
 from typing import Any
 
 import httpx
+import jwt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from app.core.logging import get_logger
 
@@ -68,17 +73,76 @@ def _parse_billing_error(e: httpx.HTTPStatusError) -> BillingServiceError:
     )
 
 
-class BillingClient:
-    """Async client for Billing Service API."""
+SERVICE_JWT_AUDIENCE = "evc-billing"
+# Billing rejects tokens with exp - iat > 120s; stay well under it.
+SERVICE_JWT_LIFETIME_SECONDS = 60
 
-    def __init__(self, base_url: str, service_token: str, service_id: str = "relay"):
+
+def load_signing_key(pem: str) -> Ed25519PrivateKey:
+    """Parse an Ed25519 private key from PEM (literal newlines or ``\\n`` escapes)."""
+    key = load_pem_private_key(pem.replace("\\n", "\n").encode(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("billing signing key must be an Ed25519 private key")
+    return key
+
+
+class ScopedJWTAuth(httpx.Auth):
+    """Signs a fresh short-lived EdDSA JWT per request (iss=service_id, aud=evc-billing)."""
+
+    def __init__(self, private_key: Ed25519PrivateKey, service_id: str, kid: str):
+        self._key = private_key
         self._service_id = service_id
+        self._kid = kid
+
+    def make_token(self) -> str:
+        now = int(time.time())
+        return jwt.encode(
+            {
+                "iss": self._service_id,
+                "aud": SERVICE_JWT_AUDIENCE,
+                "iat": now,
+                "exp": now + SERVICE_JWT_LIFETIME_SECONDS,
+            },
+            self._key,
+            algorithm="EdDSA",
+            headers={"kid": self._kid},
+        )
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self.make_token()}"
+        yield request
+
+
+class BillingClient:
+    """Async client for Billing Service API.
+
+    Authenticates with a scoped EdDSA JWT when ``signing_key_pem`` + ``signing_key_id``
+    are given, otherwise with the legacy shared ``service_token``.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        service_token: str = "",
+        service_id: str = "relay",
+        signing_key_pem: str = "",
+        signing_key_id: str = "",
+    ):
+        self._service_id = service_id
+        auth: httpx.Auth | None = None
+        headers = {
+            "X-Service-Id": service_id,
+            "Content-Type": "application/json",
+        }
+        if signing_key_pem and signing_key_id:
+            auth = ScopedJWTAuth(load_signing_key(signing_key_pem), service_id, signing_key_id)
+        else:
+            headers["Authorization"] = f"Bearer {service_token}"
         self._client = httpx.AsyncClient(
             base_url=base_url,
+            auth=auth,
             headers={
-                "Authorization": f"Bearer {service_token}",
-                "X-Service-Id": service_id,
-                "Content-Type": "application/json",
+                **headers,
             },
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
             limits=httpx.Limits(max_keepalive_connections=0),

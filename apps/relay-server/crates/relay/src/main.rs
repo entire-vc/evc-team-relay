@@ -537,6 +537,7 @@ fn get_store_from_config(
                     Some(s3_config.prefix.clone())
                 },
                 path_style: s3_config.path_style,
+                public_endpoint: env::var("S3_PUBLIC_ENDPOINT").ok().filter(|v| !v.is_empty()),
             };
 
             let store = S3Store::new(s3_store_config);
@@ -580,6 +581,7 @@ fn get_store_from_config(
                     Some(s3_config.prefix.clone())
                 },
                 path_style: s3_config.path_style,
+                public_endpoint: env::var("S3_PUBLIC_ENDPOINT").ok().filter(|v| !v.is_empty()),
             };
 
             let store = S3Store::new(s3_store_config);

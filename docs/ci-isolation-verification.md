@@ -63,9 +63,9 @@ Default required Python tests remain serial. Daily shuffle is opt-in and has a
 
 ## Canonical CI and unchanged blocking security policies
 
-Baseline MR pipeline [9578](https://git.entire.host/entire-vc/evc-team-relay/-/pipelines/9578)
+Baseline MR pipeline [9578](https://gitlab.example.com/entire-vc/evc-team-relay/-/pipelines/9578)
 (`f0f9b1e03b6f6d018476e1f8a04da40df38577db`) succeeded with13required jobs.
-Candidate MR pipeline [9592](https://git.entire.host/entire-vc/evc-team-relay/-/pipelines/9592)
+Candidate MR pipeline [9592](https://gitlab.example.com/entire-vc/evc-team-relay/-/pipelines/9592)
 (`b9b2d59f0c9a16bbc3688d49ec9ff2b1e5105451`) succeeded with16required jobs.
 All original13 jobs remain required, plus blocking CI contracts and both scans.
 Both pipelines belong to the same MR. This documentation-only follow-up requires

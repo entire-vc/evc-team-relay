@@ -222,9 +222,9 @@ class TestRelayTokenHappyPath:
         assert claims["exp"] > claims["iat"]
         # aud MUST appear — relay-server rejects tokens missing it. Derived from
         # RELAY_PUBLIC_URL=wss://relay.test (conftest.py) -> https://relay.test.
-        assert (
-            claims.get("aud") == "https://relay.test"
-        ), "aud missing or wrong — relay-server requires it (#f975dd60)"
+        assert claims.get("aud") == "https://relay.test", (
+            "aud missing or wrong — relay-server requires it (#f975dd60)"
+        )
 
     def test_issuance_increments_relay_tokens_issued_metric(self, client: TestClient):
         """relay_tokens_issued_total must actually increment on issuance (#188f683c).

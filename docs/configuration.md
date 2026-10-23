@@ -140,11 +140,11 @@ Built-in rate limits (not configurable via env):
 ```bash
 DOMAIN_BASE=relay.example.com
 ACME_EMAIL=admin@example.com
-JWT_SECRET=your-very-long-random-secret-key-here
-POSTGRES_PASSWORD=secure-postgres-password
-MINIO_ROOT_PASSWORD=secure-minio-password
+JWT_SECRET=<set-me>
+POSTGRES_PASSWORD=<set-me>
+MINIO_ROOT_PASSWORD=<set-me>
 BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-BOOTSTRAP_ADMIN_PASSWORD=secure-admin-password
+BOOTSTRAP_ADMIN_PASSWORD=<set-me>
 ```
 
 ### Production `.env`
@@ -155,13 +155,13 @@ DOMAIN_BASE=example.com
 ACME_EMAIL=ops@example.com
 
 # Security
-JWT_SECRET=64-character-random-hex-string
-POSTGRES_PASSWORD=strong-random-password
-MINIO_ROOT_PASSWORD=strong-random-password
+JWT_SECRET=<set-me>
+POSTGRES_PASSWORD=<set-me>
+MINIO_ROOT_PASSWORD=<set-me>
 
 # Admin
 BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-BOOTSTRAP_ADMIN_PASSWORD=strong-admin-password
+BOOTSTRAP_ADMIN_PASSWORD=<set-me>
 
 # Branding
 SERVER_NAME=Acme Corp Relay
@@ -175,14 +175,14 @@ EMAIL_ENABLED=true
 SMTP_HOST=smtp.sendgrid.net
 SMTP_PORT=587
 SMTP_USER=apikey
-SMTP_PASSWORD=your-sendgrid-api-key
+SMTP_PASSWORD=<set-me>
 EMAIL_FROM=relay@example.com
 
 # Web Publishing
 WEB_PUBLISH_DOMAIN=docs.example.com
 
 # Monitoring
-GRAFANA_ADMIN_PASSWORD=secure-grafana-password
+GRAFANA_ADMIN_PASSWORD=<set-me>
 
 # Backups
 BACKUP_RETENTION=30

@@ -18,6 +18,7 @@ const S3_SECRET_ACCESS_KEY: &str = "AWS_SECRET_ACCESS_KEY";
 const S3_SESSION_TOKEN: &str = "AWS_SESSION_TOKEN";
 const S3_REGION: &str = "AWS_REGION";
 const S3_ENDPOINT: &str = "AWS_ENDPOINT_URL_S3"; // Using consistent naming across tools
+const S3_PUBLIC_ENDPOINT: &str = "S3_PUBLIC_ENDPOINT";
 const S3_USE_PATH_STYLE: &str = "AWS_S3_USE_PATH_STYLE";
 const DEFAULT_S3_REGION: &str = "us-east-1";
 
@@ -45,6 +46,14 @@ pub struct S3Config {
 
     // Use old path-style URLs, needed to support some S3-compatible APIs (including some minio setups)
     pub path_style: bool,
+
+    /// Endpoint embedded in presigned URLs handed to clients. Set when
+    /// `endpoint` is only reachable inside the docker network (e.g.
+    /// `http://minio:9000`). SigV4 signs the host, so the URL has to be
+    /// signed against this host rather than rewritten afterwards. Server-side
+    /// requests keep using `endpoint`.
+    #[serde(default)]
+    pub public_endpoint: Option<String>,
 }
 
 impl S3Config {
@@ -120,6 +129,7 @@ impl S3Config {
             bucket,
             bucket_prefix,
             path_style,
+            public_endpoint: env::var(S3_PUBLIC_ENDPOINT).ok().filter(|v| !v.is_empty()),
         })
     }
 }
@@ -128,6 +138,9 @@ const PRESIGNED_URL_DURATION: Duration = Duration::from_secs(60 * 60);
 
 pub struct S3Store {
     pub bucket: Bucket,
+    /// Bucket used only to sign URLs returned to clients; `None` means the
+    /// internal `bucket` is also client-reachable.
+    public_bucket: Option<Bucket>,
     _bucket_checked: OnceLock<()>,
     client: Client,
     pub credentials: Credentials,
@@ -162,17 +175,32 @@ impl S3Store {
             rusty_s3::UrlStyle::VirtualHost
         };
 
+        let public_bucket = config.public_endpoint.as_deref().map(|public| {
+            let public: Url = public.parse().expect("public endpoint is a valid url");
+            Bucket::new(
+                public,
+                path_style,
+                config.bucket.clone(),
+                config.region.clone(),
+            )
+            .expect("Url has a valid scheme and host")
+        });
         let bucket = Bucket::new(endpoint, path_style, config.bucket, config.region)
             .expect("Url has a valid scheme and host");
         let client = Client::new();
 
         S3Store {
             bucket,
+            public_bucket,
             _bucket_checked: OnceLock::new(),
             client,
             credentials,
             prefix: config.bucket_prefix,
         }
+    }
+
+    fn public_bucket(&self) -> &Bucket {
+        self.public_bucket.as_ref().unwrap_or(&self.bucket)
     }
 
     /// Generate a presigned URL for downloading a file from S3 with an optional existence check
@@ -207,7 +235,7 @@ impl S3Store {
         }
 
         let action = self
-            .bucket
+            .public_bucket()
             .get_object(Some(&self.credentials), &prefixed_key);
         let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
@@ -965,7 +993,7 @@ impl Store for S3Store {
 
         // Create action for presigned PUT request
         let mut action = self
-            .bucket
+            .public_bucket()
             .put_object(Some(&self.credentials), &prefixed_key);
 
         // Set content-type if provided
@@ -1013,7 +1041,7 @@ impl Store for S3Store {
         }
 
         let action = self
-            .bucket
+            .public_bucket()
             .get_object(Some(&self.credentials), &prefixed_key);
         let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
@@ -1060,6 +1088,44 @@ mod tests {
         );
     }
 
+    fn signed_host(public_endpoint: Option<&str>) -> (Option<String>, Option<String>) {
+        use super::*;
+        use rusty_s3::S3Action;
+        use std::time::Duration;
+        let store = S3Store::new(S3Config {
+            key: "test-key".to_string(),
+            endpoint: "http://minio:9000".to_string(),
+            secret: "test-secret".to_string(),
+            token: None,
+            bucket: "test-bucket".to_string(),
+            region: "us-east-1".to_string(),
+            bucket_prefix: None,
+            path_style: true,
+            public_endpoint: public_endpoint.map(str::to_string),
+        });
+        let sign = |bucket: &rusty_s3::Bucket| {
+            let url = bucket
+                .get_object(Some(&store.credentials), "files/abc")
+                .sign(Duration::from_secs(60));
+            url.host_str().map(str::to_string)
+        };
+        (sign(store.public_bucket()), sign(&store.bucket))
+    }
+
+    #[test]
+    fn test_presigned_url_uses_public_endpoint_when_set() {
+        let (client_host, internal_host) = signed_host(Some("https://files.example.com"));
+        assert_eq!(client_host.as_deref(), Some("files.example.com"));
+        // Server-side requests keep the internal endpoint.
+        assert_eq!(internal_host.as_deref(), Some("minio"));
+    }
+
+    #[test]
+    fn test_presigned_url_uses_internal_endpoint_when_public_unset() {
+        let (client_host, _) = signed_host(None);
+        assert_eq!(client_host.as_deref(), Some("minio"));
+    }
+
     #[test]
     fn test_prefixed_key_with_trailing_slash() {
         use super::*;
@@ -1073,6 +1139,7 @@ mod tests {
             region: "us-east-1".to_string(),
             bucket_prefix: Some("prefix/".to_string()),
             path_style: true,
+            public_endpoint: None,
         };
 
         let store = S3Store::new(config);
@@ -1103,6 +1170,7 @@ mod tests {
             region: "us-east-1".to_string(),
             bucket_prefix: Some("prefix".to_string()),
             path_style: true,
+            public_endpoint: None,
         };
 
         let store = S3Store::new(config);
@@ -1133,6 +1201,7 @@ mod tests {
             region: "us-east-1".to_string(),
             bucket_prefix: None,
             path_style: true,
+            public_endpoint: None,
         };
 
         let store = S3Store::new(config);
@@ -1310,7 +1379,7 @@ impl Store for S3Store {
 
         // Create action for presigned PUT request
         let mut action = self
-            .bucket
+            .public_bucket()
             .put_object(Some(&self.credentials), &prefixed_key);
 
         // Set content-type if provided
@@ -1355,7 +1424,7 @@ impl Store for S3Store {
         }
 
         let action = self
-            .bucket
+            .public_bucket()
             .get_object(Some(&self.credentials), &prefixed_key);
         let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 

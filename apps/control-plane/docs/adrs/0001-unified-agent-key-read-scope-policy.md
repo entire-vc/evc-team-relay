@@ -164,7 +164,7 @@ redeploy.
   answerable at all — previously the data could not represent it.
 - `PATCH .../agent-keys/{key_id}` is a new authorization surface. It is owner/admin-only, matching
   create and revoke, and refuses revoked keys so that granting scopes cannot undo a revocation.
-- Known consumer of the leniency: `evc-mesh`'s `SearchDocs` and `ListShareFiles`
+- Known consumer of the leniency: `<public-consumer-service>`'s `SearchDocs` and `ListShareFiles`
   (`internal/integration/teamrelay/`) call `GET /v1/web/shares/{slug}` with `X-Agent-Key`. They are
   safe once their configured key carries `read` — which is what phase 2 does.
 

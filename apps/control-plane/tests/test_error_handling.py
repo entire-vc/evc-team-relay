@@ -48,9 +48,9 @@ def test_duplicate_share_path_returns_409(client: TestClient) -> None:
     )
 
     # Should return 409 Conflict with clear message
-    assert (
-        response2.status_code == 409
-    ), f"Expected 409, got {response2.status_code}: {response2.text}"
+    assert response2.status_code == 409, (
+        f"Expected 409, got {response2.status_code}: {response2.text}"
+    )
     error_data = response2.json()
     assert "error" in error_data
     assert error_data["error"]["code"] == 409
@@ -87,9 +87,9 @@ def test_duplicate_folder_share_path_returns_409(client: TestClient) -> None:
         headers=auth_headers(admin_token),
     )
 
-    assert (
-        response2.status_code == 409
-    ), f"Expected 409, got {response2.status_code}: {response2.text}"
+    assert response2.status_code == 409, (
+        f"Expected 409, got {response2.status_code}: {response2.text}"
+    )
     error_data = response2.json()
     assert "error" in error_data
     assert error_data["error"]["code"] == 409
@@ -127,9 +127,9 @@ def test_overlapping_folder_shares_still_allowed(
     created_ids: dict[str, str] = {}
     for payload in order:
         response = client.post("/shares", json=payload, headers=auth_headers(admin_token))
-        assert (
-            response.status_code == 201
-        ), f"overlapping folder share {payload['path']!r} was rejected: {response.text}"
+        assert response.status_code == 201, (
+            f"overlapping folder share {payload['path']!r} was rejected: {response.text}"
+        )
         created_ids[payload["path"]] = response.json()["id"]
 
     admin = db_session.execute(
@@ -138,9 +138,9 @@ def test_overlapping_folder_shares_still_allowed(
 
     found = share_service.find_share_for_path(db_session, admin, "Projects/x.md")
     assert found is not None, "no share resolved for a path covered by both shares"
-    assert (
-        str(found.id) == created_ids["Projects"]
-    ), "most-specific-wins broken: expected the nested 'Projects' share, got the root share"
+    assert str(found.id) == created_ids["Projects"], (
+        "most-specific-wins broken: expected the nested 'Projects' share, got the root share"
+    )
 
 
 def test_path_traversal_rejected(client: TestClient) -> None:
@@ -169,9 +169,9 @@ def test_path_traversal_rejected(client: TestClient) -> None:
         # Should be rejected with 400 Bad Request
         assert response.status_code == 400, f"Path traversal not blocked for: {bad_path}"
         error_data = response.json()
-        assert (
-            "traversal" in error_data["error"]["message"].lower()
-        ), f"Error message should mention traversal: {error_data}"
+        assert "traversal" in error_data["error"]["message"].lower(), (
+            f"Error message should mention traversal: {error_data}"
+        )
 
 
 def test_absolute_path_rejected(client: TestClient) -> None:
@@ -254,9 +254,9 @@ def test_doc_share_valid_extensions_accepted(client: TestClient) -> None:
             headers=auth_headers(admin_token),
         )
 
-        assert (
-            response.status_code == 201
-        ), f"Valid extension rejected: {valid_path}. Response: {response.text}"
+        assert response.status_code == 201, (
+            f"Valid extension rejected: {valid_path}. Response: {response.text}"
+        )
 
 
 def test_folder_share_no_extension_required(client: TestClient) -> None:

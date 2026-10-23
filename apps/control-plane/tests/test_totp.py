@@ -458,9 +458,9 @@ def test_cannot_enable_2fa_twice(client: TestClient) -> None:
     response = client.post("/auth/2fa/enable", headers=auth_headers(user_token))
     assert response.status_code == 400
     data = response.json()
-    assert (
-        "already enabled" in str(data).lower() or "already" in str(data).lower()
-    ), f"Unexpected response: {data}"
+    assert "already enabled" in str(data).lower() or "already" in str(data).lower(), (
+        f"Unexpected response: {data}"
+    )
 
 
 def test_2fa_requires_auth(client: TestClient) -> None:

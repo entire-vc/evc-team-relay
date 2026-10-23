@@ -62,7 +62,7 @@ POSTGRES_PASSWORD=$(openssl rand -hex 16)
 # will fail to connect (postgres and control-plane will disagree on it).
 MINIO_ROOT_PASSWORD=$(openssl rand -hex 16)
 BOOTSTRAP_ADMIN_EMAIL=admin@yourdomain.com
-BOOTSTRAP_ADMIN_PASSWORD=your-secure-password
+BOOTSTRAP_ADMIN_PASSWORD=<set-me>
 # Public URL of the control-plane API. Without it, file attachments do not transfer
 # (base_url falls back to http://localhost:8000) while WebSocket sync looks healthy.
 CONTROL_PLANE_PUBLIC_URL=https://cp.yourdomain.com
@@ -403,6 +403,26 @@ Ensure DNS records are properly configured and ports 80/443 are accessible.
 docker compose exec control-plane curl -s http://localhost:8000/health
 docker compose exec relay-server curl -s http://localhost:9090/metrics | head -5
 ```
+
+### Presigned file URLs behind a docker-internal MinIO
+
+By default the relay signs file (attachment) URLs against the store endpoint
+from `relay.toml`. With the bundled compose that is `http://minio:9000`, which
+only resolves inside the docker network, so a client outside it fails with
+"Network request failed".
+
+To serve those URLs from a public host:
+
+1. Publish MinIO through your reverse proxy, e.g. `https://files.example.com`
+   forwarding to `minio:9000` and passing the `Host` header through unchanged
+   (S3 signatures cover the host).
+2. In `infra/.env` set `S3_PUBLIC_ENDPOINT=https://files.example.com` and
+   `AWS_S3_USE_PATH_STYLE=true`.
+3. Restart the relay: `docker compose up -d relay-server`.
+
+Only URLs handed to clients use the public host; the relay's own reads and
+writes keep using the endpoint in `relay.toml`. Unset `S3_PUBLIC_ENDPOINT` to
+roll back.
 
 ### Shares Visible, Content Not Syncing
 

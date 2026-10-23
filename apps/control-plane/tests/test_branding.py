@@ -367,9 +367,9 @@ class TestBrandingAbsoluteUrls:
         DEFAULT_BRANDING's relative paths completely unresolved."""
         self._set_cors_origin("https://cp.teamrelay.ru")
         branding = instance_settings_service.get_branding(db_session)
-        assert not branding["logo_url"].startswith(
-            "/"
-        ), f"logo_url is still a bare relative path: {branding['logo_url']!r}"
+        assert not branding["logo_url"].startswith("/"), (
+            f"logo_url is still a bare relative path: {branding['logo_url']!r}"
+        )
         assert branding["logo_url"].startswith("https://cp.teamrelay.ru/")
 
     def test_already_absolute_stored_url_is_never_rewritten(self, db_session, client):

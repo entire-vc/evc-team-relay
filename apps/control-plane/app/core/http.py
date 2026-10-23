@@ -5,7 +5,7 @@ control-plane container as the sole ingress. `request.client.host` in that
 setup is Caddy's own container IP (`172.18.0.x`), not the real caller — so
 every audit-log row, security email, agent-key IP-track and invite-redemption
 record written from the raw `request.client.host` recorded the proxy, not the
-client (incident: a login-notification email showed `172.18.0.14` instead of
+client (incident: a login-notification email showed `<container-ip>` instead of
 Pavel's own IP). Caddy forwards the real address in `X-Forwarded-For`; this
 just reads it.
 

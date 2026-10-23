@@ -285,9 +285,11 @@ Get a token by calling `POST /auth/login` with valid credentials.
         """M-16: require a Billing Service token once billing leaves stub mode."""
         settings = get_settings()
         if settings.billing_enabled and not settings.billing_stub_mode:
-            if not settings.billing_service_token:
+            scoped = settings.billing_signing_key_pem and settings.billing_signing_key_id
+            if not scoped and not settings.billing_service_token:
                 raise ValueError(
-                    "BILLING_SERVICE_TOKEN is required when billing is enabled "
+                    "BILLING_SIGNING_KEY_PEM + BILLING_SIGNING_KEY_ID (or legacy "
+                    "BILLING_SERVICE_TOKEN) are required when billing is enabled "
                     "and stub mode is disabled."
                 )
 
