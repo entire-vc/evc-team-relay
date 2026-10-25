@@ -439,4 +439,4 @@ can silently disagree.
 
 - [Configure authentication](configuration.md#authentication)
 - [Set up backups](backup-restore.md)
-- [Install the Obsidian plugin](https://github.com/entire-vc/evc-team-relay-plugin)
+- [Install the Obsidian plugin (Team Relay Sync)](https://community.obsidian.md/plugins/team-relay-sync)

@@ -49,7 +49,7 @@ and it builds exactly one thing: the Rust `relay` binary in [`crates/`](crates/)
   channels are on their own repository; we cannot action their bugs here.
 - **A problem with the server we build and ship** — right here. If you are running
   `ghcr.io/entire-vc/evc-relay-server`, this is your repository.
-- **A problem with the Obsidian plugin** — [evc-team-relay-plugin](https://github.com/entire-vc/evc-team-relay-plugin).
+- **A problem with the Obsidian plugin** — [evc-team-relay-obsidian](https://github.com/entire-vc/evc-team-relay-obsidian).
 - **A problem with the hosted control plane** — [evc-team-relay](https://github.com/entire-vc/evc-team-relay),
   or email <support@entire.vc>.
 

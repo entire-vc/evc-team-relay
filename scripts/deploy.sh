@@ -143,6 +143,11 @@ if [ ! -d "$RELAY_DIR" ]; then
   sync_component() {
     log "syncing apps/$1/ -> $SSH_TARGET:$RELAY_DIR/$1-src/"
     rsync -az --delete -e ssh "$REPO_ROOT/apps/$1/" "$SSH_TARGET:$RELAY_DIR/$1-src/"
+    if [ "$1" = control-plane ]; then
+      # Stamp the synced copy (not the checkout) so /version reports this commit.
+      git -C "$REPO_ROOT" rev-parse HEAD | ssh "$SSH_TARGET" "cat > '$RELAY_DIR/control-plane-src/app/BUILD_SHA'" \
+        || die "could not stamp BUILD_SHA on $SSH_TARGET"
+    fi
   }
 
   case "$COMPONENT" in
@@ -161,11 +166,24 @@ fi
 cd "$RELAY_DIR" || die "deploy root $RELAY_DIR not found on this host"
 [ -f docker-compose.yml ] || die "docker-compose.yml missing in $RELAY_DIR"
 
+# An image without app/BUILD_SHA serves build_sha=unknown on /version and is
+# indistinguishable from a stale one. The deploy pipelines write the
+# stamp before rsync; a manual sync that skipped it must fail here, not ship.
+# Full 40-hex only: the endpoint reports "unknown" for anything else.
+require_build_stamp() {
+  local stamp
+  stamp="$(tr -d '[:space:]' < "$1" 2>/dev/null || true)"
+  [[ "$stamp" =~ ^[0-9a-f]{40}$ ]] \
+    || die "$1 missing or not a full commit sha ('$stamp') — refusing to build an unstamped image"
+}
+
 deploy_control_plane() {
   local image="$IMAGE"
   local candidate="${image%:*}:candidate"
 
   [ -d control-plane-src ] || die "control-plane-src/ missing in $RELAY_DIR — source sync did not run"
+
+  require_build_stamp control-plane-src/app/BUILD_SHA
 
   # 1. Always build into a throwaway candidate tag — NEVER directly into "$image".
   #    This is what keeps a dry run from touching :latest at all: promotion to

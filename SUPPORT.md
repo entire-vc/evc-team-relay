@@ -47,7 +47,7 @@ This repository holds the control plane, the relay server (the Rust sync core, u
 `apps/relay-server/`), web publishing, and deployment infrastructure. Some things live
 elsewhere:
 
-- **The Obsidian plugin** — [evc-team-relay-plugin](https://github.com/entire-vc/evc-team-relay-plugin).
+- **The Obsidian plugin** — [evc-team-relay-obsidian](https://github.com/entire-vc/evc-team-relay-obsidian).
 - **The MCP server** — [evc-team-relay-mcp](https://github.com/entire-vc/evc-team-relay-mcp).
 
 If you are not sure which one broke, open the issue here. Routing it is our job, not yours.

@@ -221,6 +221,11 @@ cp.{$DOMAIN_BASE} {
   import security_headers
   import no_framing
   import access_log_redacted
+
+  # /migrate/ was removed from the site; send old links to the home page.
+  redir /migrate / 301
+  redir /migrate/* / 301
+
   root * /srv/site
   file_server
 }

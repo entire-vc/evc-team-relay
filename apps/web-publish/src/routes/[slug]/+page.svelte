@@ -138,8 +138,8 @@
 				}}
 				class="space-y-4"
 			>
-				<div class="space-y-2">
-					<Label for="password">Password</Label>
+				<div class="grid gap-2">
+					<Label for="password" class="leading-[1.6rem]">Password</Label>
 					<Input
 						id="password"
 						type="password"

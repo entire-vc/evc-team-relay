@@ -3,9 +3,9 @@
  * EVC Team Relay Theme with Tailwind CSS
  */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss/index.css";
+@import "@entire-vc/tokens/css/tailwind-v4.css";
+@source "../node_modules/@entire-vc/ui-svelte/dist";
 
 /* ================================
    EVC Team Relay Color Palette (HSL)
@@ -167,6 +167,9 @@
 	}
 }
 
+/* Element-level rules live in the base layer: in Tailwind v4 unlayered CSS beats
+   every utility, which would let `h1 {margin:0}` override `mb-4` etc. */
+@layer base {
 /* ================================
    Typography
    ================================ */
@@ -325,6 +328,7 @@ img {
 	max-width: 100%;
 	height: auto;
 	display: block;
+}
 }
 
 /* ================================
