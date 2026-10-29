@@ -654,7 +654,8 @@ def sync_folder_file_content(
     content-only, invisible to that protocol regardless of who asked (#ee1745ce
     finding 1/2).
 
-    A push whose content hash equals the stored one writes nothing (two clients re-pushing the same share made ~2/3 of all writes no-ops).
+    A push whose content hash equals the stored one writes nothing (two
+    clients re-pushing the same share made ~2/3 of all writes no-ops).
 
     Access control:
     - This is an authenticated endpoint (requires valid session or user token)
