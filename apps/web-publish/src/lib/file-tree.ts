@@ -3,7 +3,7 @@
  * Transforms flat folder items into a hierarchical tree structure.
  */
 
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 export interface FolderItem {
 	path: string;

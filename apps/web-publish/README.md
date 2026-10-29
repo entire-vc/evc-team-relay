@@ -65,7 +65,8 @@ The app will be available at http://localhost:3000
 ```bash
 CONTROL_PLANE_URL=http://control-plane:8000  # Internal URL to Control Plane API
 PUBLIC_WEB_DOMAIN=docs.example.com           # Public domain for the web app
-ORIGIN=https://docs.example.com              # For CSRF protection
+# The request origin (used for CSRF checks) is https://<Host header>; behind a
+# proxy that does not pass Host through, set HOST_HEADER / PROTOCOL_HEADER.
 ```
 
 ## Production

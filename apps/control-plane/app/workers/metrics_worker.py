@@ -21,6 +21,7 @@ from app.core.metrics import (
     AGENT_KEYS_TOTAL,
     DB_CONNECTIONS_ACTIVE,
     DB_CONNECTIONS_IDLE,
+    DB_CONNECTIONS_OVERFLOW,
     DB_CONNECTIONS_TOTAL,
     DB_HEALTH_STATUS,
     METRICS_COLLECTION_ERRORS_TOTAL,
@@ -69,6 +70,7 @@ def _init_gauge_labels() -> None:
     DB_CONNECTIONS_ACTIVE.set(0)
     DB_CONNECTIONS_IDLE.set(0)
     DB_CONNECTIONS_TOTAL.set(0)
+    DB_CONNECTIONS_OVERFLOW.set(0)
 
 
 _init_gauge_labels()
@@ -102,6 +104,8 @@ def _do_collect_db(db) -> None:  # noqa: ANN001
         DB_CONNECTIONS_ACTIVE.set(active)
         DB_CONNECTIONS_IDLE.set(idle)
         DB_CONNECTIONS_TOTAL.set(active + idle)
+        if hasattr(pool, "overflow"):
+            DB_CONNECTIONS_OVERFLOW.set(pool.overflow())
     except Exception as exc:
         METRICS_COLLECTION_ERRORS_TOTAL.labels(collector="pool").inc()
         logger.warning("metrics_worker: pool stat error", extra={"error": str(exc)})

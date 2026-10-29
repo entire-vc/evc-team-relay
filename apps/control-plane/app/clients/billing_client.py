@@ -38,6 +38,19 @@ class BillingServiceError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
+def _transport_error(e: httpx.TransportError) -> BillingServiceError:
+    """Connect/read timeouts and network failures: Billing Service unreachable.
+
+    Read paths (entitlements, catalog) fall back on BillingServiceError; a raw
+    httpx error would escape that fallback and fail the caller's request.
+    """
+    return BillingServiceError(
+        code="billing_unavailable",
+        message=f"Billing Service unreachable: {type(e).__name__}",
+        status=503,
+    )
+
+
 def _parse_billing_error(e: httpx.HTTPStatusError) -> BillingServiceError:
     """Parse httpx error into BillingServiceError with clean messages."""
     try:
@@ -156,6 +169,8 @@ class BillingClient:
             return resp.json()
         except httpx.HTTPStatusError as e:
             raise _parse_billing_error(e) from e
+        except httpx.TransportError as e:
+            raise _transport_error(e) from e
 
     async def get_products(self) -> dict[str, Any]:
         """Get available products/plans from Billing Service."""
@@ -168,6 +183,8 @@ class BillingClient:
             return resp.json()
         except httpx.HTTPStatusError as e:
             raise _parse_billing_error(e) from e
+        except httpx.TransportError as e:
+            raise _transport_error(e) from e
 
     async def create_subscription(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a subscription/checkout session for a user.

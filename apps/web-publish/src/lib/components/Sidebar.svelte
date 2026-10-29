@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { page } from '$app/stores';
-	import { browser } from '$app/environment';
+	import { page } from '$app/state';
+	import { browser } from '$app/env';
 	import FileTree from './FileTree.svelte';
-	import type { FolderItem } from '$lib/file-tree';
+	import type { FolderItem } from '#lib/file-tree.js';
 
 	interface Branding {
 		name: string;
@@ -64,7 +64,7 @@
 
 	// Close menu when navigating
 	$effect(() => {
-		if ($page.url) {
+		if (page.url) {
 			closeMenu();
 		}
 	});

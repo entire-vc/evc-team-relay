@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # =============================================================================
@@ -9,6 +11,13 @@ from prometheus_client import Counter, Gauge, Histogram, Info
 # =============================================================================
 
 APP_INFO = Info("control_plane", "Control Plane application information")
+
+# The container's memory limit, so an alert can compare it with
+# process_resident_memory_bytes (one uvicorn process per container).
+MEMORY_LIMIT_BYTES = Gauge(
+    "control_plane_memory_limit_bytes",
+    "Memory limit of the control-plane cgroup in bytes; 0 when unlimited",
+)
 
 # =============================================================================
 # HTTP Metrics
@@ -76,6 +85,50 @@ DB_CONNECTIONS_IDLE = Gauge(
 DB_CONNECTIONS_TOTAL = Gauge(
     "db_connections_total",
     "Total SQLAlchemy pool connections (active + idle)",
+)
+
+DB_CONNECTIONS_OVERFLOW = Gauge(
+    "db_connections_overflow",
+    "SQLAlchemy pool overflow (negative while the base pool is not yet full)",
+)
+
+DB_POOL_WAIT_SECONDS = Histogram(
+    "db_pool_wait_seconds",
+    "Time spent waiting for a connection from the SQLAlchemy pool",
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
+
+DB_POOL_TIMEOUTS_TOTAL = Counter(
+    "db_pool_timeouts_total",
+    "Connection requests that gave up waiting on an exhausted SQLAlchemy pool",
+)
+
+# =============================================================================
+# External Service Metrics
+# =============================================================================
+
+BILLING_REQUEST_DURATION_SECONDS = Histogram(
+    "billing_request_duration_seconds",
+    "Duration of Billing Service calls made by the control plane",
+    ["operation", "outcome"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+BILLING_CIRCUIT_OPEN_TOTAL = Counter(
+    "billing_circuit_open_total",
+    "Times the Billing Service circuit opened after a failed or timed-out call",
+)
+
+OBJECT_STORAGE_FAILURES_TOTAL = Counter(
+    "object_storage_failures_total",
+    "Request-path object storage calls that timed out or could not connect",
+    ["operation", "reason"],  # reason: timeout | unavailable
+)
+
+SHARE_UPDATE_COALESCED_TOTAL = Counter(
+    "share_update_coalesced_total",
+    "Folder-items-only share PATCHes not applied on their own",
+    ["outcome"],  # superseded | rejected
 )
 
 # =============================================================================
@@ -232,3 +285,36 @@ BACKUP_FAILURE_TOTAL = Counter(
 def init_app_info(version: str = "0.1.0") -> None:
     """Initialize application info metric."""
     APP_INFO.info({"version": version, "service": "control-plane"})
+
+
+# cgroup v2 first, then v1.
+CGROUP_MEMORY_LIMIT_FILES = (
+    Path("/sys/fs/cgroup/memory.max"),
+    Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+)
+
+
+def read_memory_limit(files: tuple[Path, ...] = CGROUP_MEMORY_LIMIT_FILES) -> int | None:
+    """The cgroup memory limit in bytes, or None when there is none."""
+    for path in files:
+        try:
+            raw = path.read_text().strip()
+        except OSError:
+            continue
+        if raw == "max":
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # cgroup v1 reports "unlimited" as a page-rounded LONG_MAX.
+        return value if value < 1 << 60 else None
+    return None
+
+
+def refresh_memory_limit() -> None:
+    limit = read_memory_limit()
+    if limit is None:
+        MEMORY_LIMIT_BYTES.set(0)
+        return
+    MEMORY_LIMIT_BYTES.set(limit)

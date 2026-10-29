@@ -265,17 +265,26 @@ def update_share(
     payload: share_schema.ShareUpdate,
     actor_user_id: uuid.UUID | None = None,
 ) -> models.Share:
+    # `changes` lists only values that really differ: a PATCH that changes
+    # nothing (the plugin resends the whole folder tree on every file event)
+    # returns without a write, an audit row or a commit.
     changes = {}
-    if payload.kind:
+    if payload.kind and payload.kind != share.kind:
         changes["kind"] = {"old": share.kind.value, "new": payload.kind.value}
         share.kind = payload.kind
-    if payload.path:
+    if payload.path and payload.path != share.path:
         changes["path"] = {"old": share.path, "new": payload.path}
         share.path = payload.path
     if payload.visibility:
-        changes["visibility"] = {"old": share.visibility.value, "new": payload.visibility.value}
+        if payload.visibility != share.visibility:
+            changes["visibility"] = {
+                "old": share.visibility.value,
+                "new": payload.visibility.value,
+            }
         share.visibility = payload.visibility
         if payload.visibility != models.ShareVisibility.PROTECTED:
+            if share.password_hash is not None:
+                changes["password"] = "cleared"
             share.password_hash = None
         elif payload.password:
             share.password_hash = security.get_password_hash(payload.password)
@@ -290,7 +299,8 @@ def update_share(
 
     # Handle web publishing updates
     if payload.web_published is not None:
-        changes["web_published"] = {"old": share.web_published, "new": payload.web_published}
+        if payload.web_published != share.web_published:
+            changes["web_published"] = {"old": share.web_published, "new": payload.web_published}
         share.web_published = payload.web_published
 
         # If enabling web publishing, ensure we have a slug
@@ -305,6 +315,7 @@ def update_share(
                 share.web_slug = slug_candidate
             else:
                 share.web_slug = slug_utils.generate_unique_slug(db, share.path, str(share.id))
+            changes["web_slug"] = {"old": None, "new": share.web_slug}
 
         # If disabling web publishing, optionally clear slug (keep it for re-enabling)
         # We'll keep the slug for now to allow toggling without losing the URL
@@ -320,16 +331,16 @@ def update_share(
             changes["web_slug"] = {"old": share.web_slug, "new": slug_candidate}
             share.web_slug = slug_candidate
 
-    if payload.web_noindex is not None:
+    if payload.web_noindex is not None and payload.web_noindex != share.web_noindex:
         changes["web_noindex"] = {"old": share.web_noindex, "new": payload.web_noindex}
         share.web_noindex = payload.web_noindex
 
-    if payload.web_sync_mode is not None:
+    if payload.web_sync_mode is not None and payload.web_sync_mode != share.web_sync_mode:
         changes["web_sync_mode"] = {"old": share.web_sync_mode, "new": payload.web_sync_mode}
         share.web_sync_mode = payload.web_sync_mode
 
     # Handle web content update
-    if payload.web_content is not None:
+    if payload.web_content is not None and (payload.web_content or None) != share.web_content:
         from datetime import datetime, timezone
 
         # Only log that content was updated, not the actual content (could be large)
@@ -342,20 +353,23 @@ def update_share(
     # Handle web folder items update — MERGE to preserve content/source/storage_key/
     # sha256/size/modified_at
     if payload.web_folder_items is not None:
+        # Flush THIS call's pending changes (kind/path/visibility/web_published/
+        # web_content/etc., set earlier in this same function) before refreshing —
+        # Session.refresh() does NOT autoflush, it reloads straight from the last
+        # COMMITTED row, silently discarding any unflushed in-memory attribute
+        # changes on `share`. Without the flush, a PATCH combining web_folder_items
+        # with e.g. visibility in one call would revert the visibility change with
+        # no error (found while testing the TR-39 guard below, verified via a
+        # standalone SQLAlchemy repro — real bug, not specific to that guard).
+        db.flush()
+        # Fresh read under the row lock — sync_upload or a web file push may have
+        # added artifacts after load, and without the lock one committing between
+        # this read and our write would be overwritten.
+        db.refresh(share, with_for_update=True)
         old_has_items = share.web_folder_items is not None
         new_has_items = len(payload.web_folder_items) > 0
-        changes["web_folder_items"] = {"old": old_has_items, "new": new_has_items}
+        folder_items_change = {"old": old_has_items, "new": new_has_items}
         if payload.web_folder_items:
-            # Flush THIS call's pending changes (kind/path/visibility/web_published/
-            # web_content/etc., set earlier in this same function) before refreshing —
-            # Session.refresh() does NOT autoflush, it reloads straight from the last
-            # COMMITTED row, silently discarding any unflushed in-memory attribute
-            # changes on `share`. Without the flush, a PATCH combining web_folder_items
-            # with e.g. visibility in one call would revert the visibility change with
-            # no error (found while testing the TR-39 guard below, verified via a
-            # standalone SQLAlchemy repro — real bug, not specific to that guard).
-            db.flush()
-            db.refresh(share)  # fresh read — sync_upload may have added artifacts after load
             existing_by_path = {item.get("path"): item for item in (share.web_folder_items or [])}
             new_items = []
             for item in payload.web_folder_items:
@@ -377,13 +391,23 @@ def update_share(
                     and existing_item.get("path") not in new_paths
                 ):
                     new_items.append(existing_item)
-            share.web_folder_items = new_items
-        else:
+            if new_items != (share.web_folder_items or []):
+                changes["web_folder_items"] = folder_items_change
+                share.web_folder_items = new_items
+        elif share.web_folder_items is not None:
+            changes["web_folder_items"] = folder_items_change
             share.web_folder_items = None
 
     # Handle explicit web_content_updated_at bump (set by plugin after initial full-sync)
-    if payload.web_content_updated_at is not None:
+    if (
+        payload.web_content_updated_at is not None
+        and payload.web_content_updated_at != share.web_content_updated_at
+    ):
+        changes["web_content_updated_at"] = "bumped"
         share.web_content_updated_at = payload.web_content_updated_at
+
+    if not changes:
+        return share
 
     # TR-39: reject the RESULTING state of this update if it would leave the
     # share public + published with no content — regardless of which field(s)

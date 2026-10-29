@@ -10,12 +10,12 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.core.config import get_settings
 from app.core.http import get_client_ip
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin-ui", tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/templates")
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 
 # Custom exception for admin auth redirect

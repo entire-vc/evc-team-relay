@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.clients.billing_client import BillingClient, BillingServiceError
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.metrics import BILLING_CIRCUIT_OPEN_TOTAL, BILLING_REQUEST_DURATION_SECONDS
 from app.db import models
 from app.services.billing_stub import (
     _format_entitlement_value,
@@ -36,6 +39,67 @@ _FREE_PRODUCT_CACHE_TTL_SECONDS = 300  # 5 minutes, matches _CACHE_TTL_SECONDS
 
 # Singleton billing client (lazy init)
 _billing_client: BillingClient | None = None
+
+# Read calls (entitlements, catalog) gate share PATCHes. Bound each one well
+# under the client's 30 s read timeout, and after a failure stop calling
+# Billing for a while so a slow or down service is not hit by every request
+# (26.10 incident: 118 ConnectTimeouts inside PATCH /shares in a minute).
+_BILLING_CALL_TIMEOUT_SECONDS = 3.0
+_BILLING_CIRCUIT_OPEN_SECONDS = 30.0
+_billing_circuit_open_until = 0.0
+
+# One in-flight entitlements fetch per casdoor_id: concurrent cache misses
+# share it instead of each calling Billing.
+_entitlements_inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
+
+_T = TypeVar("_T")
+
+
+def _open_billing_circuit() -> None:
+    global _billing_circuit_open_until
+    _billing_circuit_open_until = time.monotonic() + _BILLING_CIRCUIT_OPEN_SECONDS
+    BILLING_CIRCUIT_OPEN_TOTAL.inc()
+
+
+def reset_billing_circuit() -> None:
+    """Close the circuit (tests, and an operator-driven retry)."""
+    global _billing_circuit_open_until
+    _billing_circuit_open_until = 0.0
+
+
+async def _call_billing(operation: str, call: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a Billing read with a deadline, circuit breaker and duration metric.
+
+    Raises BillingServiceError for timeouts, an open circuit and Billing's own
+    errors, so callers keep a single fallback path.
+    """
+    if time.monotonic() < _billing_circuit_open_until:
+        BILLING_REQUEST_DURATION_SECONDS.labels(operation, "circuit_open").observe(0)
+        raise BillingServiceError("billing_unavailable", "Billing Service circuit open", 503)
+
+    started = time.perf_counter()
+    outcome = "error"
+    try:
+        result = await asyncio.wait_for(call(), timeout=_BILLING_CALL_TIMEOUT_SECONDS)
+        outcome = "ok"
+        return result
+    except asyncio.TimeoutError as e:
+        outcome = "timeout"
+        _open_billing_circuit()
+        raise BillingServiceError(
+            "billing_unavailable",
+            f"Billing Service did not answer within {_BILLING_CALL_TIMEOUT_SECONDS:g}s",
+            503,
+        ) from e
+    except BillingServiceError as e:
+        # 4xx means Billing is up and answered; only outages open the circuit.
+        if e.status >= 500:
+            _open_billing_circuit()
+        raise
+    finally:
+        BILLING_REQUEST_DURATION_SECONDS.labels(operation, outcome).observe(
+            time.perf_counter() - started
+        )
 
 
 def get_billing_identity(db: Session, user: models.User) -> str:
@@ -273,7 +337,7 @@ async def _get_catalog_free_entitlements() -> dict[str, Any] | None:
 
     try:
         client = _get_billing_client()
-        result = await client.get_products()
+        result = await _call_billing("get_products", client.get_products)
     except BillingServiceError:
         logger.exception(
             "Billing catalog unreachable while resolving free-tier entitlements "
@@ -315,22 +379,61 @@ async def get_entitlements_cached(casdoor_id: str) -> dict[str, Any]:
         if now - ts < _CACHE_TTL_SECONDS:
             return data
 
-    # Fetch fresh
+    loop = asyncio.get_running_loop()
+    inflight = _entitlements_inflight.get(casdoor_id)
+    if inflight is None or inflight.get_loop() is not loop:
+        inflight = loop.create_task(_fetch_entitlements(casdoor_id, cached))
+        _entitlements_inflight[casdoor_id] = inflight
+
+        def _forget(done: asyncio.Future[dict[str, Any]]) -> None:
+            if _entitlements_inflight.get(casdoor_id) is done:
+                del _entitlements_inflight[casdoor_id]
+
+        inflight.add_done_callback(_forget)
+    # shield: one cancelled waiter must not cancel the fetch the others share.
+    return await asyncio.shield(inflight)
+
+
+async def _fetch_entitlements(
+    casdoor_id: str, cached: tuple[dict[str, Any], float] | None
+) -> dict[str, Any]:
     settings = get_settings()
     if settings.billing_stub_mode:
         data = await get_stub_entitlements(casdoor_id)
     else:
         try:
             client = _get_billing_client()
-            data = await client.get_entitlements(casdoor_id)
+            data = await _call_billing(
+                "get_entitlements", lambda: client.get_entitlements(casdoor_id)
+            )
         except BillingServiceError:
             logger.exception("Failed to fetch entitlements from Billing Service")
             # Fallback to cache if available, even if expired
             if cached:
                 return cached[0]
-            # Last resort: return stub entitlements
-            data = await get_stub_entitlements(casdoor_id)
+            # Last resort: stub entitlements, not cached -- the circuit breaker
+            # already spares Billing, and real entitlements return as soon as
+            # it recovers.
+            return _with_free_tier(await get_stub_entitlements(casdoor_id))
 
+    data = await _with_free_tier_from_catalog(data)
+
+    # Update cache
+    _entitlements_cache[casdoor_id] = (data, time.monotonic())
+    return data
+
+
+def _with_free_tier(data: dict[str, Any]) -> dict[str, Any]:
+    """Fill empty free-plan entitlements from STUB_PLANS (emergency default)."""
+    if not data.get("entitlements") and data.get("plan") in ("free", "Free", None):
+        from app.services.billing_stub import STUB_PLANS
+
+        free_ent = STUB_PLANS["free"]["entitlements"]
+        data["entitlements"] = {k: _format_entitlement_value(v) for k, v in free_ent.items()}
+    return data
+
+
+async def _with_free_tier_from_catalog(data: dict[str, Any]) -> dict[str, Any]:
     # Free tier fallback: billing returns empty entitlements for users without
     # subscription -- this is the normal state for the vast majority of users
     # (exactly one active Relay subscription exists in prod as of this
@@ -342,13 +445,7 @@ async def get_entitlements_cached(casdoor_id: str) -> dict[str, Any]:
         if catalog_free is not None:
             data["entitlements"] = catalog_free
         else:
-            from app.services.billing_stub import STUB_PLANS
-
-            free_ent = STUB_PLANS["free"]["entitlements"]
-            data["entitlements"] = {k: _format_entitlement_value(v) for k, v in free_ent.items()}
-
-    # Update cache
-    _entitlements_cache[casdoor_id] = (data, now)
+            _with_free_tier(data)
     return data
 
 

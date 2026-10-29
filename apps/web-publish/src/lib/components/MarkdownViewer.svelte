@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import RenderedContentStyles from './RenderedContentStyles.svelte';
-	// $lib/markdown (marked + on-demand katex/hljs) is loaded lazily, only when
+	// #lib/markdown (marked + on-demand katex/hljs) is loaded lazily, only when
 	// this component actually needs to render client-side — a normal view with
 	// server-rendered initialHtml never calls renderAndEnhance() at all, so it
 	// never pays for this chunk (#cee667d8).
@@ -133,7 +133,7 @@
 	async function renderAndEnhance() {
 		isRendering = true;
 		try {
-			const { renderMarkdown } = await import('$lib/markdown');
+			const { renderMarkdown } = await import('#lib/markdown.js');
 			renderedHtml = await renderMarkdown(content, { slug, folderItems });
 		} catch (error) {
 			console.error('Failed to render markdown:', error);

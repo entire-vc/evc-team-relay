@@ -33,7 +33,9 @@ def test_readiness_probe(client: TestClient) -> None:
     assert "version" in data
 
 
-def test_readiness_probe_returns_503_when_db_down(client: TestClient) -> None:
+def test_readiness_probe_returns_503_when_db_down(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """TR-17: a DB outage must fail the HTTP status code, not just the JSON body.
 
     Before the fix, /health/ready computed status="unhealthy" in the response
@@ -41,24 +43,14 @@ def test_readiness_probe_returns_503_when_db_down(client: TestClient) -> None:
     or monitor that reads the status code, not the JSON) never saw a failure,
     so a real Postgres outage went undetected.
     """
-    from app.db.session import get_db
+    from app.api.routers import health
 
-    class _BrokenSession:
-        def execute(self, *args: object, **kwargs: object) -> None:
+    class _BrokenEngine:
+        def connect(self) -> None:
             raise RuntimeError("simulated DB outage")
 
-    def _broken_get_db():
-        yield _BrokenSession()
-
-    original = client.app.dependency_overrides.get(get_db)
-    client.app.dependency_overrides[get_db] = _broken_get_db
-    try:
-        response = client.get("/health/ready")
-    finally:
-        if original is not None:
-            client.app.dependency_overrides[get_db] = original
-        else:
-            client.app.dependency_overrides.pop(get_db, None)
+    monkeypatch.setattr(health, "get_probe_engine", lambda: _BrokenEngine())
+    response = client.get("/health/ready")
 
     assert response.status_code == 503, response.text
     data = response.json()

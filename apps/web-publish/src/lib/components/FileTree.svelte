@@ -7,8 +7,8 @@
 		slugifyPath,
 		type TreeNode,
 		type FolderItem
-	} from '$lib/file-tree';
-	import { browser } from '$app/environment';
+	} from '#lib/file-tree.js';
+	import { browser } from '$app/env';
 	import { untrack } from 'svelte';
 
 	interface Props {

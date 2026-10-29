@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { navigating } from '$app/stores';
+	import { navigating } from '$app/state';
 
 	// Progress state
 	let progress = $state(0);
@@ -8,7 +8,7 @@
 
 	// Watch navigation state
 	$effect(() => {
-		if ($navigating) {
+		if (navigating.to) {
 			// Start loading
 			isNavigating = true;
 			progress = 0;

@@ -1,9 +1,9 @@
 import { error } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
-import { slugifyPath, hyphenatePath } from '$lib/file-tree';
-import { verifyEmbedToken } from '$lib/embed-token';
-import { renderMarkdown } from '$lib/markdown';
+import { EMBED_TOKEN_SECRET, WEB_PUBLISH_AGENT_KEY } from '$app/env/private';
+import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '#lib/api.js';
+import { slugifyPath, hyphenatePath } from '#lib/file-tree.js';
+import { verifyEmbedToken } from '#lib/embed-token.js';
+import { renderMarkdown } from '#lib/markdown.js';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, cookies, url }) => {
@@ -18,11 +18,11 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 	let isEmbedTokenAuth = false;
 
 	if (embedToken && !agentKey) {
-		const secret = env.EMBED_TOKEN_SECRET;
+		const secret = EMBED_TOKEN_SECRET;
 		if (secret) {
 			const result = await verifyEmbedToken(embedToken, secret);
 			if (result.ok && result.slug === slug) {
-				const serviceKey = env.WEB_PUBLISH_AGENT_KEY;
+				const serviceKey = WEB_PUBLISH_AGENT_KEY;
 				if (serviceKey) {
 					resolvedAgentKey = serviceKey;
 					isEmbedTokenAuth = true;

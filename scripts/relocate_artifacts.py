@@ -17,10 +17,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
 
@@ -31,6 +32,7 @@ from sqlalchemy.engine import make_url
 
 EXTRA_ROOTS = {"_probe", "mesh-artifacts"}
 ROOT_PATTERN = re.compile(r"[0-9a-fA-F]{8}(?:__[^/]+)?\Z")
+VERIFIED_MARKER = "verified.json"
 
 
 class Refused(RuntimeError):
@@ -656,6 +658,69 @@ def verify_journal(directory: Path, share_id: str) -> dict:
     return journal
 
 
+def backup_anchor(directory: Path) -> Path:
+    """The relocation backup that owns a directory (an inverse journal lives inside it)."""
+    if directory.name == "rollback" and (directory.parent / "checksums.json").is_file():
+        return directory.parent
+    return directory
+
+
+def mark_verified(directory: Path, now: datetime) -> None:
+    # Retention may only ever remove a backup whose run reached VERIFIED.
+    marker = backup_anchor(directory) / VERIFIED_MARKER
+    marker.unlink(missing_ok=True)
+    dump_json(marker, {"verified_at": now.isoformat()})
+
+
+def expired_backups(root: Path, keep_days: int, now: datetime) -> list[Path]:
+    if not root.is_dir():
+        return []
+    result = []
+    for directory in sorted(root.iterdir()):
+        marker = directory / VERIFIED_MARKER
+        if (
+            directory.is_symlink()
+            or not directory.is_dir()
+            or marker.is_symlink()
+            or not marker.is_file()
+            or not (directory / "checksums.json").is_file()
+        ):
+            continue
+        try:
+            verified_at = datetime.fromisoformat(
+                json.loads(marker.read_bytes())["verified_at"]
+            )
+            expired = now - verified_at >= timedelta(days=keep_days)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if expired:
+            result.append(directory)
+    return result
+
+
+def prune_backups(root: Path, keep_days: int, now: datetime, dry_run: bool) -> None:
+    for directory in expired_backups(root, keep_days, now):
+        if dry_run:
+            print(f"would_remove_backup={directory}")
+        else:
+            shutil.rmtree(directory)
+            print(f"removed_backup={directory}")
+
+
+def retention(args: argparse.Namespace, dry_run: bool) -> None:
+    directory = args.backup_dir or args.resume or args.rollback
+    if directory is not None:
+        root = backup_anchor(directory).parent
+        prune_backups(root, args.keep_local_days, datetime.now(UTC), dry_run)
+
+
+def non_negative(value: str) -> int:
+    result = int(value)
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return result
+
+
 def finish(
     connection, shares: Table, audits: Table, key, relay: Relay, plan: dict
 ) -> None:
@@ -750,6 +815,14 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--rollback", type=Path)
     result.add_argument("--backup-dir", type=Path)
     result.add_argument("--relay-data-dir", type=Path)
+    result.add_argument(
+        "--keep-local-days",
+        type=non_negative,
+        default=3,
+        help="Remove sibling backups of --backup-dir/--resume/--rollback whose run "
+        "reached VERIFIED at least N days ago (default 3; unverified backups are "
+        "never removed; --dry-run only lists them)",
+    )
     return result
 
 
@@ -867,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
                 or plan["before_index"] != plan["after_index"]
             )
             if not write or not changed:
+                retention(args, dry_run=not write)
                 return 0
             if args.apply:
                 if not args.backup_dir or not args.relay_data_dir:
@@ -901,6 +975,9 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "VERIFIED: CRDT maps and complete index match; IDs, file count and storage metadata preserved"
             )
+            verified = args.backup_dir if args.apply else args.resume or args.rollback
+            mark_verified(verified, datetime.now(UTC))
+            retention(args, dry_run=False)
             return 0
     except Refused as exc:
         print(f"REFUSED: {exc}")

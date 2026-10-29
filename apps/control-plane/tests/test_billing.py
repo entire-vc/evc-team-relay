@@ -63,12 +63,14 @@ def _billing_enabled_stub_mode():
     get_settings.cache_clear()
     billing_service._entitlements_cache.clear()
     billing_service._free_product_cache.clear()
+    billing_service.reset_billing_circuit()
     yield
     for key in ("BILLING_ENABLED", "BILLING_STUB_MODE", "BILLING_SERVICE_TOKEN"):
         os.environ.pop(key, None)
     get_settings.cache_clear()
     billing_service._entitlements_cache.clear()
     billing_service._free_product_cache.clear()
+    billing_service.reset_billing_circuit()
 
 
 # ---------------------------------------------------------------------------
@@ -1865,6 +1867,7 @@ class TestCatalogFreeEntitlements:
         get_settings.cache_clear()
         billing_service._billing_client = None
         billing_service._free_product_cache.clear()
+        billing_service.reset_billing_circuit()
         yield
         os.environ["BILLING_STUB_MODE"] = "true"
         os.environ.pop("BILLING_SERVICE_TOKEN", None)
@@ -1872,6 +1875,7 @@ class TestCatalogFreeEntitlements:
         get_settings.cache_clear()
         billing_service._billing_client = None
         billing_service._free_product_cache.clear()
+        billing_service.reset_billing_circuit()
 
     @staticmethod
     def _catalog_with_free_product(entitlements: dict, amount: int = 0) -> dict:

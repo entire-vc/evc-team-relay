@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { exchangeOAuthCode, getServerInfo } from '$lib/api';
+import { exchangeOAuthCode, getServerInfo } from '#lib/api.js';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {

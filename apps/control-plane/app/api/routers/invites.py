@@ -7,13 +7,13 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.core import security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 from app.schemas import invite as invite_schema
@@ -23,7 +23,7 @@ from app.services.notification_service import get_notification_service
 from app.utils.url import build_invite_oauth_urls, get_base_url
 
 router = APIRouter(prefix="/shares", tags=["invites"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 # Public routes for invite redemption
 public_router = APIRouter(prefix="/invite", tags=["invites"])

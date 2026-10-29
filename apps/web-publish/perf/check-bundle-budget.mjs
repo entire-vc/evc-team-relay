@@ -32,10 +32,27 @@ const clientManifestPath = path.join(clientDir, '.vite/manifest.json');
 const serverManifestPath = path.join(appRoot, '.svelte-kit/output/server/manifest-full.js');
 const budgetPath = path.join(__dirname, 'budget.json');
 
-const ENTRY_NODE_KEY = '.svelte-kit/generated/client-optimized/app.js';
+// Kit 2 generated these under .svelte-kit/generated/client-optimized/, Kit 3
+// under .svelte-kit/generated/build/client-optimized/ — resolved from the
+// manifest itself so the budget doesn't silently depend on the layout.
+const GENERATED_CLIENT_DIRS = [
+	'.svelte-kit/generated/build/client-optimized',
+	'.svelte-kit/generated/client-optimized'
+];
 
-function nodeManifestKey(i) {
-	return `.svelte-kit/generated/client-optimized/nodes/${i}.js`;
+function generatedClientDir(manifest) {
+	const dir = GENERATED_CLIENT_DIRS.find((d) => `${d}/app.js` in manifest);
+	if (!dir) {
+		throw new Error(`client manifest has no app.js entry under any of: ${GENERATED_CLIENT_DIRS.join(', ')}`);
+	}
+	return dir;
+}
+
+// Entry chunks the server lists for every page (Kit 3: start + payload + app),
+// i.e. what the HTML references before any route node.
+function clientEntryKeys(manifest, serverManifest) {
+	const eager = new Set(serverManifest.client?.imports ?? []);
+	return Object.keys(manifest).filter((k) => manifest[k].isEntry && eager.has(manifest[k].file));
 }
 
 /** BFS over `imports` only (never `dynamicImports`) — the set of chunks the browser fetches eagerly. */
@@ -74,7 +91,10 @@ async function main() {
 
 	const manifest = JSON.parse(await readFile(clientManifestPath, 'utf8'));
 	const { manifest: serverManifest } = await import(pathToFileURL(serverManifestPath).href);
-	const routes = serverManifest._.routes;
+	// Kit 3 flattened the manifest (routes at the top level); Kit 2 nested it under `_`.
+	const routes = (serverManifest._ ?? serverManifest).routes;
+	const generatedDir = generatedClientDir(manifest);
+	const entryKeys = clientEntryKeys(manifest, serverManifest);
 
 	const budget = JSON.parse(await readFile(budgetPath, 'utf8'));
 
@@ -87,7 +107,11 @@ async function main() {
 			throw new Error(`budget.json references route "${spec.route}" (surface "${name}") which doesn't exist or isn't a page in the built server manifest`);
 		}
 		const nodeIndices = [...route.page.layouts.filter((n) => n !== undefined), route.page.leaf];
-		const startKeys = [ENTRY_NODE_KEY, ...nodeIndices.map(nodeManifestKey)];
+		const startKeys = [
+			`${generatedDir}/app.js`,
+			...entryKeys,
+			...nodeIndices.map((i) => `${generatedDir}/nodes/${i}.js`)
+		];
 
 		const closure = staticClosure(manifest, startKeys);
 

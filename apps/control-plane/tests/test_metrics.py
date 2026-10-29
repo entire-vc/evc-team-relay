@@ -249,3 +249,42 @@ def test_share_metrics_per_share_id(client: TestClient, db_session) -> None:
     # until there is actual data; the metric definition is what matters here).
     assert "share_files_total" in content
     assert "share_size_bytes" in content
+
+
+class TestMemoryLimit:
+    """control_plane_memory_limit_bytes: the denominator of the memory alert."""
+
+    def test_cgroup_v2_limit(self, tmp_path) -> None:
+        from app.core.metrics import read_memory_limit
+
+        v2 = tmp_path / "memory.max"
+        v2.write_text("671088640\n")
+        assert read_memory_limit((v2,)) == 671088640
+
+    def test_cgroup_v2_unlimited(self, tmp_path) -> None:
+        from app.core.metrics import read_memory_limit
+
+        v2 = tmp_path / "memory.max"
+        v2.write_text("max\n")
+        assert read_memory_limit((v2,)) is None
+
+    def test_falls_back_to_cgroup_v1(self, tmp_path) -> None:
+        from app.core.metrics import read_memory_limit
+
+        v1 = tmp_path / "memory.limit_in_bytes"
+        v1.write_text("536870912\n")
+        assert read_memory_limit((tmp_path / "missing", v1)) == 536870912
+
+    def test_cgroup_v1_unlimited_sentinel(self, tmp_path) -> None:
+        from app.core.metrics import read_memory_limit
+
+        v1 = tmp_path / "memory.limit_in_bytes"
+        v1.write_text("9223372036854771712\n")
+        assert read_memory_limit((v1,)) is None
+
+    def test_exported_on_scrape(self, client: TestClient, monkeypatch) -> None:
+        from app.core import metrics
+
+        monkeypatch.setattr(metrics, "read_memory_limit", lambda: 671088640)
+        content = client.get("/metrics").text
+        assert "control_plane_memory_limit_bytes 6.7108864e+08" in content

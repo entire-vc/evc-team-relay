@@ -1,5 +1,5 @@
-import { fetchWithTimeout, getServerInfo } from '$lib/api';
-import { proxyableLogoPath } from '$lib/branding';
+import { fetchWithTimeout, getServerInfo } from '#lib/api.js';
+import { proxyableLogoPath } from '#lib/branding.js';
 import type { RequestHandler } from './$types';
 
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://control-plane:8000';

@@ -1,5 +1,5 @@
-import { env } from '$env/dynamic/private';
-import type { Handle } from '@sveltejs/kit';
+import { WEB_FRAME_ANCESTORS } from '$app/env/private';
+import type { Handle } from '@sveltejs/kit/hooks';
 
 export const handle: Handle = async ({ event, resolve }) => {
 	const response = await resolve(event);
@@ -9,8 +9,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 	response.headers.set('X-Content-Type-Options', 'nosniff');
 	response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
 
-	const frameAncestors = env.WEB_FRAME_ANCESTORS
-		? `'self' ${env.WEB_FRAME_ANCESTORS}`
+	const frameAncestors = WEB_FRAME_ANCESTORS
+		? `'self' ${WEB_FRAME_ANCESTORS}`
 		: "'none'";
 
 	const csp = [

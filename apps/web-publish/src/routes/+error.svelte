@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
 	// Error details
-	let errorCode = $derived($page.status || 500);
-	let errorMessage = $derived($page.error?.message || 'An unexpected error occurred');
+	let errorCode = $derived(page.status || 500);
+	let errorMessage = $derived(page.error?.message || 'An unexpected error occurred');
 
 	// Build login URL with return path
-	let loginUrl = $derived(`/login?return=${encodeURIComponent($page.url.pathname)}`);
+	let loginUrl = $derived(`/login?return=${encodeURIComponent(page.url.pathname)}`);
 
 	// Custom error messages
 	const errorMessages: Record<number, { title: string; description: string; showSignIn?: boolean }> = {

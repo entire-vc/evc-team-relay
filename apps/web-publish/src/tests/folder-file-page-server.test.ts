@@ -9,9 +9,9 @@ import { describe, it, expect, vi } from 'vitest';
 // the client-only MarkdownViewer skeleton.
 // ---------------------------------------------------------------------------
 
-vi.mock('$env/dynamic/private', () => ({ env: {} }));
+vi.mock('$app/env/private', () => ({ EMBED_TOKEN_SECRET: undefined, WEB_PUBLISH_AGENT_KEY: undefined }));
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	getShareBySlug: vi.fn(),
 	validateSession: vi.fn(),
 	validateUserToken: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock('@sveltejs/kit', async (importOriginal) => {
 	};
 });
 
-import * as api from '$lib/api';
+import * as api from '#lib/api.js';
 import { load } from '../routes/[slug]/[...path]/+page.server.js';
 
 function makeShare(overrides = {}) {

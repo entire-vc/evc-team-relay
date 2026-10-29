@@ -13,15 +13,15 @@
  */
 
 import { json, error } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { getShareBySlug } from '$lib/api';
-import { signEmbedToken } from '$lib/embed-token';
+import { EMBED_TOKEN_SECRET, PUBLIC_WEB_DOMAIN } from '$app/env/private';
+import { getShareBySlug } from '#lib/api.js';
+import { signEmbedToken } from '#lib/embed-token.js';
 import type { RequestHandler } from '@sveltejs/kit';
 
 const EMBED_TTL_SECONDS = 3600; // 1 hour
 
 export const GET: RequestHandler = async ({ url, request }) => {
-	const secret = env.EMBED_TOKEN_SECRET;
+	const secret = EMBED_TOKEN_SECRET;
 	if (!secret || secret.length < 16) {
 		throw error(503, 'Embed token feature not configured');
 	}
@@ -56,7 +56,7 @@ export const GET: RequestHandler = async ({ url, request }) => {
 	// Issue token
 	const token = await signEmbedToken(slug, path, secret, EMBED_TTL_SECONDS);
 
-	const webDomain = env.PUBLIC_WEB_DOMAIN ?? url.host;
+	const webDomain = PUBLIC_WEB_DOMAIN ?? url.host;
 	const protocol = webDomain.startsWith('localhost') ? 'http' : 'https';
 	const pathSegment = path ? `/${path}` : '';
 	const embedUrl = `${protocol}://${webDomain}/${slug}${pathSegment}?embed_token=${token}`;

@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { getServerInfo, getOAuthAuthorizeUrl } from '$lib/api';
+import { getServerInfo, getOAuthAuthorizeUrl } from '#lib/api.js';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ url, cookies }) => {
