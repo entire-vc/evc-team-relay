@@ -1,12 +1,12 @@
 <script lang="ts">
-	import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
-	import EditableMarkdownViewer from '$lib/components/EditableMarkdownViewer.svelte';
-	import CopyButton from '$lib/components/CopyButton.svelte';
-	import TableOfContents from '$lib/components/TableOfContents.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
-	import { extractTitle, extractDescription, estimateReadingTime } from '$lib/markdown-meta';
+	import MarkdownViewer from '#lib/components/MarkdownViewer.svelte';
+	import EditableMarkdownViewer from '#lib/components/EditableMarkdownViewer.svelte';
+	import CopyButton from '#lib/components/CopyButton.svelte';
+	import TableOfContents from '#lib/components/TableOfContents.svelte';
+	import StatusBar from '#lib/components/StatusBar.svelte';
+	import { extractTitle, extractDescription, estimateReadingTime } from '#lib/markdown-meta.js';
 	import type { PageData } from './$types';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import {
 		Dialog,
 		DialogContent,
@@ -46,8 +46,8 @@
 			: extractDescription(data.content || '', `View shared document: ${data.share.path}`)
 	);
 	const readingTime = $derived(data.content ? estimateReadingTime(data.content) : 0);
-	const shareUrl = $derived($page.url.href);
-	const branding = $derived($page.data?.serverInfo?.branding);
+	const shareUrl = $derived(page.url.href);
+	const branding = $derived(page.data?.serverInfo?.branding);
 	const formattedPath = $derived(data.share.path.split('/').pop()?.replace('.md', '') || title);
 	const lastUpdated = $derived(
 		new Date(data.share.updated_at || data.share.created_at).toLocaleDateString('en-US', {

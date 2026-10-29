@@ -765,8 +765,21 @@ def test_cli_backup_apply_resume_rollback(postgres_engine, tmp_path, monkeypatch
     (backup / "move.yjs").write_bytes(b"corrupt")
     assert relocate.main([*base, "--resume", str(backup)]) == 1
     assert len(posts) == 2
+    # Retention: only the backup whose run reached VERIFIED is ever removed.
+    assert (backup / relocate.VERIFIED_MARKER).is_file()
+    assert not (tmp_path / "failed-backup" / relocate.VERIFIED_MARKER).exists()
+    retained = ["--backup-dir", str(backup), "--keep-local-days", "0"]
+    assert relocate.main([*base, *retained]) == 0
+    assert backup.is_dir()
+    print("RED CONTROL: --dry-run only lists the expired backup")
+    # A no-op resume of the applied inverse journal is the "next run".
+    inverse = ["--resume", str(backup / "rollback"), "--keep-local-days", "0"]
+    assert relocate.main([*base, *inverse]) == 0
+    assert not backup.exists()
+    assert (tmp_path / "failed-backup").is_dir()
     print(
-        "GREEN: complete CLI dry-run/apply/no-op/resume/rollback, real pg_dump+pg_restore+tar, corrupt backup refused"
+        "GREEN: complete CLI dry-run/apply/no-op/resume/rollback, real pg_dump+pg_restore+tar, "
+        "corrupt backup refused, verified backup pruned"
     )
 
 
@@ -851,6 +864,59 @@ def test_finish_resume_after_unknown_post_and_row_lock(postgres_engine):
     ):
         relocate.finish(connection, shares, audits, key, relay, tampered)
     print("GREEN: PostgreSQL index rollback, unknown POST resume and idempotent audit")
+
+
+def retention_fixture(root, name, verified_at=None):
+    directory = root / name
+    directory.mkdir()
+    (directory / "database.dump").write_bytes(b"dump")
+    relocate.write_manifest(directory)
+    if verified_at is not None:
+        relocate.mark_verified(directory, verified_at)
+    return directory
+
+
+def test_retention_removes_only_verified_backups_past_the_window(tmp_path, capsys):
+    from datetime import timedelta
+
+    now = relocate.datetime.now(relocate.UTC)
+    old = retention_fixture(tmp_path, "mesh-1", now - timedelta(days=4))
+    fresh = retention_fixture(tmp_path, "mesh-2", now - timedelta(days=1))
+    failed = retention_fixture(tmp_path, "mesh-3")
+    (tmp_path / "unrelated").mkdir()
+    relocate.prune_backups(tmp_path, 3, now, dry_run=True)
+    assert old.is_dir()
+    assert capsys.readouterr().out == f"would_remove_backup={old}\n"
+    relocate.prune_backups(tmp_path, 3, now, dry_run=False)
+    assert not old.exists()
+    assert fresh.is_dir() and failed.is_dir() and (tmp_path / "unrelated").is_dir()
+    relocate.prune_backups(tmp_path, 0, now, dry_run=False)
+    assert not fresh.exists()
+    assert failed.is_dir(), "a backup whose run never reached VERIFIED is kept"
+
+
+def test_retention_ignores_corrupt_marker_and_marks_rollback_owner(tmp_path):
+    now = relocate.datetime.now(relocate.UTC)
+    corrupt = retention_fixture(tmp_path, "mesh-1")
+    (corrupt / relocate.VERIFIED_MARKER).write_bytes(b"not json")
+    owner = retention_fixture(tmp_path, "mesh-2")
+    inverse = owner / "rollback"
+    inverse.mkdir()
+    relocate.mark_verified(inverse, now)
+    relocate.mark_verified(inverse, now)
+    assert (owner / relocate.VERIFIED_MARKER).is_file()
+    assert not (inverse / relocate.VERIFIED_MARKER).exists()
+    relocate.prune_backups(tmp_path, 0, now, dry_run=False)
+    assert corrupt.is_dir() and not owner.exists()
+
+
+def test_keep_local_days_rejects_negative():
+    with pytest.raises(SystemExit):
+        relocate.parser().parse_args(
+            ["--share-id", str(uuid.uuid4()), "--keep-local-days", "-1"]
+        )
+    args = relocate.parser().parse_args(["--share-id", str(uuid.uuid4())])
+    assert args.keep_local_days == 3
 
 
 @pytest.fixture

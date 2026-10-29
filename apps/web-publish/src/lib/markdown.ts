@@ -20,22 +20,22 @@ import { markedHighlight } from 'marked-highlight';
 import markedFootnote from 'marked-footnote';
 import DOMPurify from 'isomorphic-dompurify';
 import type { HLJSApi, LanguageFn } from 'highlight.js';
-import { env } from '$env/dynamic/public';
+import { PUBLIC_LAZY_RENDERERS_DISABLED } from '$app/env/public';
 import { stripFrontmatter, stripComments } from './markdown-meta';
 
 // Kill switch (#cee667d8): PUBLIC_LAZY_RENDERERS_DISABLED=true reverts to the
 // pre-fix behaviour — hljs core + katex are fetched on every render, whether
 // or not the document actually has code/math, same as when they were static
-// imports. $env/dynamic/public (not $env/static/public) so this is a runtime
+// imports. A runtime (non-static) variable in src/env.ts, so this is a runtime
 // container-restart toggle, not something that needs a rebuild+redeploy to
 // flip — the point of a kill switch is not needing the slow path to turn it
 // off.
-const LAZY_RENDERERS_DISABLED = env.PUBLIC_LAZY_RENDERERS_DISABLED === 'true';
+const LAZY_RENDERERS_DISABLED = PUBLIC_LAZY_RENDERERS_DISABLED === 'true';
 
 // Title/description/reading-time extraction lives in ./markdown-meta (no
 // marked/hljs/katex/dompurify deps) — re-exported here only so existing
-// server-side and test imports of `$lib/markdown` keep working. Client route
-// components must import them from `$lib/markdown-meta` directly, not via
+// server-side and test imports of `#lib/markdown` keep working. Client route
+// components must import them from `#lib/markdown-meta` directly, not via
 // this re-export, or Rollup can't split this module's heavy deps out of
 // their chunk (see the module-splitting note at the top of markdown-meta.ts).
 export { extractTitle, extractDescription, estimateReadingTime } from './markdown-meta';

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
-	import { extractDescription } from '$lib/markdown-meta';
+	import MarkdownViewer from '#lib/components/MarkdownViewer.svelte';
+	import StatusBar from '#lib/components/StatusBar.svelte';
+	import { extractDescription } from '#lib/markdown-meta.js';
 	import {
 		Breadcrumb,
 		BreadcrumbList,
@@ -11,12 +11,12 @@
 		BreadcrumbPage,
 		Separator
 	} from '@entire-vc/ui-svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	const shareUrl = $derived($page.url.href);
+	const shareUrl = $derived(page.url.href);
 	const backUrl = $derived(
 		data.agentKey
 			? `/${data.parentSlug}?agent_key=${encodeURIComponent(data.agentKey)}`
@@ -25,7 +25,7 @@
 	const description = $derived(
 		extractDescription(data.content || '', `View document: ${data.file.path}`)
 	);
-	const branding = $derived($page.data?.serverInfo?.branding);
+	const branding = $derived(page.data?.serverInfo?.branding);
 	const pageTitle = $derived(data.file.name);
 </script>
 

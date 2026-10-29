@@ -240,7 +240,11 @@ def client(engine, db_connection):
 
     app.dependency_overrides[get_db] = override_get_db
 
-    with TestClient(app) as test_client:
+    # Peer = a trusted proxy (loopback here, Caddy's container address in a
+    # deployment): requests that carry X-Forwarded-For are then read the way
+    # prod reads them (app/core/http.get_client_ip trusts the header only
+    # from a proxy).
+    with TestClient(app, client=("127.0.0.1", 50000)) as test_client:
         yield test_client
 
 

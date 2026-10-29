@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 
 	// Get branding from layout data
-	const branding = $derived($page.data?.serverInfo?.branding);
+	const branding = $derived(page.data?.serverInfo?.branding);
 	const instanceName = $derived(branding?.name || 'Relay');
 </script>
 

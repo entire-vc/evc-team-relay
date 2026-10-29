@@ -6,10 +6,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.models import WebhookDeliveryStatus
 from app.db.session import get_db
@@ -18,7 +18,7 @@ from app.services import audit_service, webhook_service
 
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
 admin_router = APIRouter(prefix="/v1/admin/webhooks", tags=["admin", "webhooks"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 
 @router.get("/event-types", response_model=webhook_schema.EventTypesResponse)

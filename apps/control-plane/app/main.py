@@ -9,7 +9,6 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -38,6 +37,7 @@ from app.api.routers.admin_ui import AdminAuthRedirect
 from app.core import security
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.ratelimit import rate_limit_key
 from app.db.session import get_sessionmaker
 from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
@@ -46,7 +46,7 @@ from app.services.billing_service import LimitExceededError, VisibilityNotAllowe
 from app.workers import metrics_worker, retention_worker
 
 # Rate limiter configuration
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 
 tags_metadata = [

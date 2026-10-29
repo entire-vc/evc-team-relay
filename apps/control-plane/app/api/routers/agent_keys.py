@@ -11,20 +11,20 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web/shares/{share_id}/agent-keys", tags=["web"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 
 def _require_share_owner_or_admin(

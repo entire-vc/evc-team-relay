@@ -1,4 +1,4 @@
-import { getSitemapXml } from '$lib/api';
+import { getSitemapXml } from '#lib/api.js';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async () => {

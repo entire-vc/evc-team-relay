@@ -6,7 +6,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Re
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -14,6 +13,7 @@ from app.core import security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
 from app.core.metrics import LOGIN_ATTEMPTS_TOTAL
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 from app.schemas import auth as auth_schema
@@ -30,7 +30,7 @@ from app.services import (
 from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 templates = Jinja2Templates(directory="app/templates")
 
 

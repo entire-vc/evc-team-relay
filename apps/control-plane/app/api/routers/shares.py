@@ -1,29 +1,36 @@
 from __future__ import annotations
 
+import enum
 import hashlib
 import io
 import logging
+import threading
+import time
 import uuid
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
 
+import anyio.from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from jwt.exceptions import InvalidTokenError
 from minio import Minio
 from minio.error import S3Error
 from pydantic import BaseModel
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api import deps
+from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
+from app.core.metrics import SHARE_UPDATE_COALESCED_TOTAL
 from app.core.path_validation import validate_relative_path
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
@@ -31,7 +38,7 @@ from app.services import billing_service, share_service, usage_service
 from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/shares", tags=["shares"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 logger = logging.getLogger(__name__)
 
 
@@ -153,19 +160,15 @@ class SyncArtifactItem(BaseModel):
 
 
 def _get_minio_client() -> Minio:
-    settings = get_settings()
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_secure,
-    )
+    """Shared MinIO client with bounded timeouts."""
+    return storage_client.get_minio_client()
 
 
 def _ensure_minio_bucket(client: Minio, bucket_name: str) -> None:
     try:
-        if not client.bucket_exists(bucket_name):
-            client.make_bucket(bucket_name)
+        with storage_client.storage_errors("ensure_bucket"):
+            if not client.bucket_exists(bucket_name):
+                client.make_bucket(bucket_name)
     except S3Error as e:
         raise HTTPException(status_code=500, detail=f"Failed to access storage: {e}")
 
@@ -336,12 +339,13 @@ def download_share_file(
             settings = get_settings()
             minio_client = _get_minio_client()
             try:
-                resp = minio_client.get_object(settings.minio_bucket, storage_key)
-                try:
-                    data = resp.read()
-                finally:
-                    resp.close()
-                    resp.release_conn()
+                with storage_client.storage_errors("download"):
+                    resp = minio_client.get_object(settings.minio_bucket, storage_key)
+                    try:
+                        data = resp.read()
+                    finally:
+                        resp.close()
+                        resp.release_conn()
             except S3Error as e:
                 if e.code == "NoSuchKey":
                     raise HTTPException(
@@ -457,6 +461,114 @@ def _require_sync_precondition(
         )
 
 
+def _lock_for_sync_write(
+    db: Session,
+    share_id: uuid.UUID,
+    path: str,
+    if_match: str | None,
+    if_none_match: str | None,
+) -> tuple[models.Share, list[dict], dict | None]:
+    """Row-lock the share and check the If-Match/If-None-Match precondition."""
+    locked = db.execute(
+        select(models.Share).where(models.Share.id == share_id).with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+    folder_items = list(locked.web_folder_items or [])
+    current = next((i for i in folder_items if i.get("path") == path), None)
+    _require_sync_precondition(if_match, if_none_match, current, path)
+    return locked, folder_items, current
+
+
+def _put_sync_object(storage_key: str, body: bytes, mime: str) -> None:
+    settings = get_settings()
+    minio_client = _get_minio_client()
+    _ensure_minio_bucket(minio_client, settings.minio_bucket)
+    try:
+        with storage_client.storage_errors("sync_write"):
+            minio_client.put_object(
+                settings.minio_bucket,
+                storage_key,
+                io.BytesIO(body),
+                length=len(body),
+                content_type=mime,
+            )
+    except S3Error as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store document: {e}",
+        )
+
+
+def _apply_sync_write(
+    db: Session,
+    share_id: uuid.UUID,
+    path: str,
+    body: bytes,
+    mime: str,
+    is_text: bool,
+    sha256: str,
+    if_match: str | None,
+    if_none_match: str | None,
+) -> tuple[SyncWriteResult, bool]:
+    """Locked compare-and-swap for PUT /sync-write; blocking, run off the loop."""
+    # Same storage layout as web-publish sync-upload: text is content-addressed
+    # (dedup for the plugin), binary keeps its path so /_assets/ can serve it.
+    storage_key = (
+        f"sync-uploads/{share_id}/{sha256}" if is_text else f"web-assets/{share_id}/{path}"
+    )
+    try:
+        if is_text:
+            # A content-addressed object holds the same bytes whoever writes it, so
+            # it is stored outside the lock: fail fast on a stale tag, release the
+            # row lock and the connection for the storage round-trip, then re-check
+            # the precondition when swapping the index entry.
+            _lock_for_sync_write(db, share_id, path, if_match, if_none_match)
+            db.rollback()
+            _put_sync_object(storage_key, body, mime)
+        locked, folder_items, current = _lock_for_sync_write(
+            db, share_id, path, if_match, if_none_match
+        )
+        if not is_text:
+            # Path-keyed asset: a writer that loses the swap must not overwrite the
+            # winner's bytes, so this put stays under the row lock. The storage
+            # client's connect/read timeouts bound how long the lock is held.
+            _put_sync_object(storage_key, body, mime)
+
+        now_iso = security.utcnow().isoformat()
+        inline_content = (
+            body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
+        )
+        entry = {
+            "path": path,
+            "name": path.split("/")[-1],
+            "type": "doc" if is_text else "asset",
+            "source": "sync-artifact",
+            "mime": mime,
+            "size": len(body),
+            "sha256": sha256,
+            "modified_at": now_iso,
+            "storage_key": storage_key,
+            "content": inline_content,
+        }
+        is_new_file = current is None
+        if is_new_file:
+            folder_items.append(entry)
+        else:
+            current.update(entry)
+
+        locked.web_folder_items = folder_items
+        flag_modified(locked, "web_folder_items")
+        locked.web_content_updated_at = security.utcnow()
+        db.commit()
+    except BaseException:
+        # Release the row lock now, not when the request finally unwinds.
+        db.rollback()
+        raise
+    result = SyncWriteResult(path=path, sha256=sha256, size=len(body), updated_at=now_iso)
+    return result, is_new_file
+
+
 @router.put("/{share_id}/sync-write", response_model=SyncWriteResult)
 @limiter.limit("60/minute")
 async def sync_write_file(
@@ -515,65 +627,21 @@ async def sync_write_file(
     # lock (pool-lock hygiene), but that trade is only safe when the write is
     # unconditional. Here a failed precondition must leave BOTH the index and
     # the object store untouched, which only holds if the compare and the swap
-    # sit in the same critical section.
-    locked = db.execute(
-        select(models.Share).where(models.Share.id == resolved_share_id).with_for_update()
-    ).scalar_one_or_none()
-    if locked is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
-
-    folder_items = list(locked.web_folder_items or [])
-    current = next((i for i in folder_items if i.get("path") == path), None)
-    _require_sync_precondition(if_match, if_none_match, current, path)
-
-    settings = get_settings()
-    minio_client = _get_minio_client()
-    _ensure_minio_bucket(minio_client, settings.minio_bucket)
-    # Same storage layout as web-publish sync-upload: text is content-addressed
-    # (dedup for the plugin), binary keeps its path so /_assets/ can serve it.
-    storage_key = (
-        f"sync-uploads/{locked.id}/{sha256}" if is_text else f"web-assets/{locked.id}/{path}"
+    # sit in the same critical section. It runs on a worker thread: the object
+    # write blocks, and must not stall the event loop while storage is slow.
+    # Its duration is bounded by the storage client's timeouts.
+    result, is_new_file = await run_in_threadpool(
+        _apply_sync_write,
+        db,
+        resolved_share_id,
+        path,
+        body,
+        mime,
+        is_text,
+        sha256,
+        if_match,
+        if_none_match,
     )
-    try:
-        minio_client.put_object(
-            settings.minio_bucket,
-            storage_key,
-            io.BytesIO(body),
-            length=len(body),
-            content_type=mime,
-        )
-    except S3Error as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store document: {e}",
-        )
-
-    now_iso = security.utcnow().isoformat()
-    inline_content = (
-        body.decode("utf-8", errors="replace") if (is_text and len(body) < 256 * 1024) else None
-    )
-    entry = {
-        "path": path,
-        "name": path.split("/")[-1],
-        "type": "doc" if is_text else "asset",
-        "source": "sync-artifact",
-        "mime": mime,
-        "size": len(body),
-        "sha256": sha256,
-        "modified_at": now_iso,
-        "storage_key": storage_key,
-        "content": inline_content,
-    }
-    is_new_file = current is None
-    if is_new_file:
-        folder_items.append(entry)
-    else:
-        current.update(entry)
-
-    locked.web_folder_items = folder_items
-    flag_modified(locked, "web_folder_items")
-    locked.web_content_updated_at = security.utcnow()
-    db.commit()
 
     logger.info(
         "sync_write",
@@ -591,7 +659,7 @@ async def sync_write_file(
 
     # The new version's tag, ready to be fed straight back as the next If-Match.
     response.headers["ETag"] = f'"{sha256}"'
-    return SyncWriteResult(path=path, sha256=sha256, size=len(body), updated_at=now_iso)
+    return result
 
 
 # --- Attachment (CAS) file-token routes -------------------------------------
@@ -772,7 +840,8 @@ def head_share_file(
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
     try:
-        minio_client.stat_object(settings.minio_bucket, object_name)
+        with storage_client.storage_errors("attachment_stat"):
+            minio_client.stat_object(settings.minio_bucket, object_name)
     except S3Error as e:
         if e.code in ("NoSuchKey", "NoSuchObject"):
             raise HTTPException(
@@ -819,7 +888,8 @@ def get_file_download_url(
     try:
         # Confirm the object exists before minting the URL — GET .../content
         # 404ing from OUR api is easier to diagnose than an opaque MinIO 403.
-        minio_client.stat_object(settings.minio_bucket, object_name)
+        with storage_client.storage_errors("attachment_stat"):
+            minio_client.stat_object(settings.minio_bucket, object_name)
     except S3Error as e:
         if e.code in ("NoSuchKey", "NoSuchObject"):
             raise HTTPException(
@@ -867,13 +937,14 @@ def get_file_content(
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
     try:
-        minio_resp = minio_client.get_object(settings.minio_bucket, object_name)
-        try:
-            data = minio_resp.read()
-            content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
-        finally:
-            minio_resp.close()
-            minio_resp.release_conn()
+        with storage_client.storage_errors("attachment_download"):
+            minio_resp = minio_client.get_object(settings.minio_bucket, object_name)
+            try:
+                data = minio_resp.read()
+                content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
+            finally:
+                minio_resp.close()
+                minio_resp.release_conn()
     except S3Error as e:
         if e.code in ("NoSuchKey", "NoSuchObject"):
             raise HTTPException(
@@ -1019,29 +1090,109 @@ async def put_file_content(
         )
 
     settings = get_settings()
-    minio_client = _get_minio_client()
-    _ensure_minio_bucket(minio_client, settings.minio_bucket)
     object_name = f"web-assets/{share_id}/{path}"
     content_type = token_payload.get("content_type") or "application/octet-stream"
-    try:
-        minio_client.put_object(
-            settings.minio_bucket,
-            object_name,
-            io.BytesIO(body),
-            length=len(body),
-            content_type=content_type,
-        )
-    except S3Error as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store file: {e}",
-        ) from e
 
+    def store_object() -> None:
+        minio_client = _get_minio_client()
+        _ensure_minio_bucket(minio_client, settings.minio_bucket)
+        try:
+            with storage_client.storage_errors("attachment_upload"):
+                minio_client.put_object(
+                    settings.minio_bucket,
+                    object_name,
+                    io.BytesIO(body),
+                    length=len(body),
+                    content_type=content_type,
+                )
+        except S3Error as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to store file: {e}",
+            ) from e
+
+    # Blocking client: keep it off the event loop.
+    await run_in_threadpool(store_object)
     return Response(status_code=status.HTTP_200_OK)
 
 
+class _GateOutcome(enum.Enum):
+    APPLY = "apply"
+    SUPERSEDED = "superseded"
+    TIMEOUT = "timeout"
+
+
+class _FolderItemsGate:
+    """Per-share admission for folder-items-only PATCHes.
+
+    The plugin resends the whole folder tree on every vault file event, so a
+    bulk move fires thousands of PATCHes per share (26.10 incident: ~2600 in
+    10 min on 6 shares, each holding a pool connection). Per share, one update
+    applies at a time and at most the newest one waits: an older waiter is
+    superseded, since its full-tree payload would be overwritten by the newer
+    one anyway. A waiter still queued after WAIT_SECONDS gets 429 Retry-After.
+    In-process only; each worker process bounds its own share of the storm.
+    """
+
+    WAIT_SECONDS = 10.0
+    RETRY_AFTER_SECONDS = 2
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._busy: set[uuid.UUID] = set()
+        self._latest: dict[uuid.UUID, int] = {}
+        self._waiting: dict[uuid.UUID, int] = {}
+
+    def enter(self, share_id: uuid.UUID) -> _GateOutcome:
+        with self._cond:
+            ticket = self._latest.get(share_id, 0) + 1
+            self._latest[share_id] = ticket
+            self._cond.notify_all()  # older waiters learn they are superseded
+            deadline = time.monotonic() + self.WAIT_SECONDS
+            self._waiting[share_id] = self._waiting.get(share_id, 0) + 1
+            try:
+                while share_id in self._busy:
+                    if self._latest[share_id] != ticket:
+                        return _GateOutcome.SUPERSEDED
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return _GateOutcome.TIMEOUT
+                    self._cond.wait(remaining)
+                if self._latest[share_id] != ticket:
+                    return _GateOutcome.SUPERSEDED
+                self._busy.add(share_id)
+                return _GateOutcome.APPLY
+            finally:
+                self._waiting[share_id] -= 1
+                self._forget_if_idle(share_id)
+
+    def leave(self, share_id: uuid.UUID) -> None:
+        with self._cond:
+            self._busy.discard(share_id)
+            self._forget_if_idle(share_id)
+            self._cond.notify_all()
+
+    def _forget_if_idle(self, share_id: uuid.UUID) -> None:
+        if share_id not in self._busy and not self._waiting.get(share_id):
+            self._latest.pop(share_id, None)
+            self._waiting.pop(share_id, None)
+
+
+_folder_items_gate = _FolderItemsGate()
+
+
+def _share_read(share: models.Share) -> share_schema.ShareRead:
+    response = share_schema.ShareRead.model_validate(share)
+    response.web_url = share_service.get_web_url(share)
+    return response
+
+
+# Sync `def`: FastAPI runs it in the worker threadpool, so pool waits and
+# queries never block the event loop (health and metrics stayed hung for
+# minutes while this was `async def` with a sync Session). The rare async
+# calls (billing, notifications) hop back to the loop via anyio.from_thread.
 @router.patch("/{share_id}", response_model=share_schema.ShareRead)
-async def update_share(
+def update_share(
     share_id: uuid.UUID,
     request: Request,
     payload: share_schema.ShareUpdate,
@@ -1051,25 +1202,61 @@ async def update_share(
     share = share_service.get_share(db, share_id)
     share_service.ensure_owner_or_admin(current_user, share)
 
+    if payload.model_dump(exclude_none=True).keys() != {"web_folder_items"}:
+        return _apply_share_update(request, share, payload, db, current_user)
+
+    snapshot = _share_read(share)
+    # Release the connection while queued behind this share's in-flight update.
+    db.close()
+    outcome = _folder_items_gate.enter(share_id)
+    if outcome is _GateOutcome.SUPERSEDED:
+        SHARE_UPDATE_COALESCED_TOTAL.labels("superseded").inc()
+        return snapshot
+    if outcome is _GateOutcome.TIMEOUT:
+        SHARE_UPDATE_COALESCED_TOTAL.labels("rejected").inc()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many concurrent updates for this share, retry later",
+            headers={"Retry-After": str(_FolderItemsGate.RETRY_AFTER_SECONDS)},
+        )
+    try:
+        db.add(share)
+        db.add(current_user)
+        return _apply_share_update(request, share, payload, db, current_user)
+    finally:
+        _folder_items_gate.leave(share_id)
+
+
+def _apply_share_update(
+    request: Request,
+    share: models.Share,
+    payload: share_schema.ShareUpdate,
+    db: Session,
+    current_user: models.User,
+) -> share_schema.ShareRead:
     settings = get_settings()
     if settings.billing_enabled:
         new_web_published = (
             payload.web_published if payload.web_published is not None else share.web_published
         )
-        if new_web_published:
+        new_visibility = payload.visibility if payload.visibility is not None else share.visibility
+        enabling_publication = new_web_published and not share.web_published
+        # Entitlements gate only the transitions they govern; content-only
+        # PATCHes on an already-published share never wait on Billing.
+        if new_web_published and (enabling_publication or new_visibility != share.visibility):
             owner = _billing_owner(db, share, current_user)
             casdoor_id = billing_service.get_casdoor_id(db, owner)
-            enabling_publication = not share.web_published
             published_count = (
                 usage_service.count_web_published(db, owner.id) if enabling_publication else 0
             )
-            new_visibility = (
-                payload.visibility if payload.visibility is not None else share.visibility
-            )
             db.close()
             if enabling_publication:
-                await billing_service.check_limit(casdoor_id, "max_web_published", published_count)
-            await billing_service.check_visibility(casdoor_id, new_visibility.value)
+                anyio.from_thread.run(
+                    billing_service.check_limit, casdoor_id, "max_web_published", published_count
+                )
+            anyio.from_thread.run(
+                billing_service.check_visibility, casdoor_id, new_visibility.value
+            )
             db.add(share)
             db.add(current_user)
 
@@ -1097,14 +1284,17 @@ async def update_share(
         ip_address = get_client_ip(request)
         user_agent = request.headers.get("user-agent")
 
-        await notification_service.notify_share_updated(
-            db, updated_share, current_user, changes, ip_address, user_agent
+        anyio.from_thread.run(
+            notification_service.notify_share_updated,
+            db,
+            updated_share,
+            current_user,
+            changes,
+            ip_address,
+            user_agent,
         )
 
-    # Build response with web_url
-    response = share_schema.ShareRead.model_validate(updated_share)
-    response.web_url = share_service.get_web_url(updated_share)
-    return response
+    return _share_read(updated_share)
 
 
 @router.delete("/{share_id}", status_code=status.HTTP_204_NO_CONTENT)

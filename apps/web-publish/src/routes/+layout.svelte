@@ -1,9 +1,9 @@
 <script lang="ts">
 	import '../app.css';
-	import Sidebar from '$lib/components/Sidebar.svelte';
-	import LoadingBar from '$lib/components/LoadingBar.svelte';
-	import { page } from '$app/stores';
-	import { browser } from '$app/environment';
+	import Sidebar from '#lib/components/Sidebar.svelte';
+	import LoadingBar from '#lib/components/LoadingBar.svelte';
+	import { page } from '$app/state';
+	import { browser } from '$app/env';
 
 	let { children, data } = $props();
 
@@ -11,15 +11,15 @@
 	let isAuthenticated = $state(false);
 
 	// Check if on home page
-	const isHomePage = $derived($page.url.pathname === '/');
+	const isHomePage = $derived(page.url.pathname === '/');
 
 	// Extract folder items and slug from page data (if available)
-	// Note: folderItems comes from page data, not layout data, so we use $page.data
-	const folderItems = $derived($page.data?.folderItems);
-	const currentSlug = $derived($page.data?.share?.web_slug);
+	// Note: folderItems comes from page data, not layout data, so we use page.data
+	const folderItems = $derived(page.data?.folderItems);
+	const currentSlug = $derived(page.data?.share?.web_slug);
 	// Current path for highlighting active item in file tree
-	const currentPath = $derived($page.data?.filePath || '');
-	const agentKey = $derived($page.data?.agentKey);
+	const currentPath = $derived(page.data?.filePath || '');
+	const agentKey = $derived(page.data?.agentKey);
 
 	// Get branding from server info (from layout load)
 	const branding = $derived(data?.serverInfo?.branding);

@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import logging
 from datetime import datetime
 from datetime import timezone as _tz
+from typing import AsyncIterator
 from uuid import UUID
 
 # escape() only character-escapes a string we build for XML *output* (the
@@ -17,18 +19,21 @@ from uuid import UUID
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from minio import Minio
 from minio.error import S3Error
 from pydantic import BaseModel
 from slowapi import Limiter
-from slowapi.util import get_remote_address
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session, defer
 
+from app.api.routers.tokens import _RelayTokenGate
+from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
 from app.core.path_validation import validate_relative_path
+from app.core.ratelimit import rate_limit_key
 from app.db import models
 from app.db.session import get_db
 from app.services import share_service
@@ -37,7 +42,7 @@ from app.services.web_session_service import WebSessionService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/web", tags=["web"])
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=rate_limit_key)
 
 
 # NOTE: the TR-03 (#ae52ba05) "standing authority" check that used to live
@@ -249,6 +254,27 @@ class AgentKeySelfDescribeResponse(BaseModel):
     scopes: list[str]
     expires_at: datetime | None
     last_used_at: datetime | None
+
+
+class AgentKeyShareSummary(BaseModel):
+    """The share an agent key is bound to, as seen by the key holder.
+
+    No owner identity (email, user id): the key holder is not the owner and
+    the existing self-describe model already withholds created_by for the
+    same reason.
+    """
+
+    id: str
+    kind: str
+    path: str
+    web_slug: str | None
+    web_published: bool
+
+
+class AgentKeyWhoAmIResponse(AgentKeySelfDescribeResponse):
+    """Response for GET /v1/web/agent-key: self-describe plus the key's share."""
+
+    share: AgentKeyShareSummary
 
 
 @router.get("/shares/{slug}", response_model=WebSharePublic)
@@ -481,7 +507,134 @@ def validate_share_session(
         return WebSessionValidation(valid=False, share_id=None)
 
 
-@router.post("/shares/{slug}/files", status_code=status.HTTP_200_OK)
+class _WebFilePushGate(_RelayTokenGate):
+    """Caps folder-file content pushes in flight per process.
+
+    27.10 incident: two clients of one owner pushed a 1224-file share at the
+    same time, 548 requests in 5 minutes, each queued on the same share row
+    while holding a pool connection, and the pool (5 + 10) ran dry for every
+    other route. With the relay-token gate (8) this leaves room in the pool.
+    """
+
+    MAX_IN_FLIGHT = 4
+    BUSY_DETAIL = "Too many concurrent file pushes, retry later"
+
+
+_web_file_push_gate = _WebFilePushGate()
+
+
+async def web_file_push_slot() -> AsyncIterator[None]:
+    semaphore = await _web_file_push_gate.acquire()
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
+# Finds one item of web_folder_items inside PostgreSQL, so the route never
+# loads the whole column (8.8 MB for a 1224-file share) into Python.
+_FIND_FOLDER_ITEM = text(
+    """
+    SELECT e.ord - 1 AS idx,
+           e.item ->> 'sha256' AS sha256,
+           jsonb_typeof(e.item -> 'content') = 'string' AS has_content
+    FROM shares s,
+         jsonb_array_elements(s.web_folder_items) WITH ORDINALITY AS e(item, ord)
+    WHERE s.id = :share_id AND e.item ->> 'path' = :path
+    LIMIT 1
+    """
+)
+_LOCK_SHARE_ROW = text("SELECT 1 FROM shares WHERE id = :share_id FOR UPDATE")
+_PATCH_FOLDER_ITEM = text(
+    """
+    UPDATE shares
+    SET web_folder_items = jsonb_set(
+            web_folder_items,
+            ARRAY[CAST(:idx AS text)],
+            (web_folder_items -> CAST(:idx AS integer)) || CAST(:fields AS jsonb)
+        ),
+        updated_at = now()
+    WHERE id = :share_id
+    """
+)
+_APPEND_FOLDER_ITEM = text(
+    """
+    UPDATE shares
+    SET web_folder_items = COALESCE(web_folder_items, '[]'::jsonb)
+            || jsonb_build_array(CAST(:item AS jsonb)),
+        updated_at = now()
+    WHERE id = :share_id
+    """
+)
+
+
+def _is_unchanged(found, sha256: str) -> bool:
+    # An item stamped by sync-write keeps its body in object storage, not in
+    # `content`; the web reader needs `content`, so only skip when it is there.
+    return found is not None and found.sha256 == sha256 and found.has_content
+
+
+def _push_folder_item_pg(db: Session, share_id: UUID, path: str, fields: dict) -> bool:
+    """Write one item in place; returns False when nothing had to change.
+
+    The share row is locked before the item index is looked up again, so the
+    index stays valid until the UPDATE and two pushes to different paths of
+    one share cannot drop each other's item. The other web_folder_items
+    writers (PATCH /shares/{id}, sync-write) lock the same row.
+    """
+    params = {"share_id": share_id, "path": path}
+    if _is_unchanged(db.execute(_FIND_FOLDER_ITEM, params).first(), fields["sha256"]):
+        return False
+
+    db.execute(_LOCK_SHARE_ROW, {"share_id": share_id})
+    found = db.execute(_FIND_FOLDER_ITEM, params).first()
+    if _is_unchanged(found, fields["sha256"]):
+        db.rollback()
+        return False
+    if found is not None:
+        db.execute(
+            _PATCH_FOLDER_ITEM,
+            {"share_id": share_id, "idx": found.idx, "fields": json.dumps(fields)},
+        )
+    else:
+        item = {"path": path, "name": path.split("/")[-1], "type": "doc", **fields}
+        db.execute(_APPEND_FOLDER_ITEM, {"share_id": share_id, "item": json.dumps(item)})
+    db.commit()
+    return True
+
+
+def _push_folder_item_orm(db: Session, share: models.Share, path: str, fields: dict) -> bool:
+    """Same contract as _push_folder_item_pg for databases without JSONB (SQLite tests)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    db.refresh(share, ["web_folder_items"], with_for_update=True)
+    folder_items = share.web_folder_items or []
+    found = next((item for item in folder_items if item.get("path") == path), None)
+    if (
+        found is not None
+        and found.get("sha256") == fields["sha256"]
+        and isinstance(found.get("content"), str)
+    ):
+        db.rollback()
+        return False
+    if found is not None:
+        found.update(fields)
+    else:
+        folder_items.append({"path": path, "name": path.split("/")[-1], "type": "doc", **fields})
+
+    share.web_folder_items = folder_items
+    flag_modified(share, "web_folder_items")
+    db.commit()
+    return True
+
+
+# The gate is a route dependency so FastAPI resolves it before get_db and
+# tears it down after it, as on POST /tokens/relay.
+@router.post(
+    "/shares/{slug}/files",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(web_file_push_slot)],
+)
 @limiter.limit("300/minute")  # raised for bulk initial full-sync (was 30/min)
 def sync_folder_file_content(
     request: Request,
@@ -501,6 +654,8 @@ def sync_folder_file_content(
     content-only, invisible to that protocol regardless of who asked (#ee1745ce
     finding 1/2).
 
+    A push whose content hash equals the stored one writes nothing (two clients re-pushing the same share made ~2/3 of all writes no-ops).
+
     Access control:
     - This is an authenticated endpoint (requires valid session or user token)
     - Only the share owner can sync content
@@ -512,10 +667,14 @@ def sync_folder_file_content(
             detail="Web publishing is not enabled on this server",
         )
 
-    # Find share
-    stmt = select(models.Share).where(
-        models.Share.web_slug == slug,
-        models.Share.web_published == True,  # noqa: E712
+    # Find share; web_folder_items is left unloaded (see _FIND_FOLDER_ITEM)
+    stmt = (
+        select(models.Share)
+        .options(defer(models.Share.web_folder_items))
+        .where(
+            models.Share.web_slug == slug,
+            models.Share.web_published == True,  # noqa: E712
+        )
     )
     share = db.execute(stmt).scalar_one_or_none()
 
@@ -535,46 +694,22 @@ def sync_folder_file_content(
     # H-M scope-gate: write endpoint must reject read-only agent keys
     _require_private_web_auth(request, share, db, required_scope="write")
 
-    # Update folder items with content
     content_bytes = payload.content.encode("utf-8")
-    sha256 = hashlib.sha256(content_bytes).hexdigest()
-    now_iso = security.utcnow().isoformat()
+    fields = {
+        "content": payload.content,
+        "sha256": hashlib.sha256(content_bytes).hexdigest(),
+        "size": len(content_bytes),
+        "modified_at": security.utcnow().isoformat(),
+        "source": "sync-artifact",
+    }
 
-    folder_items = share.web_folder_items or []
-    updated = False
+    if db.get_bind().dialect.name == "postgresql":
+        changed = _push_folder_item_pg(db, share.id, path, fields)
+    else:
+        changed = _push_folder_item_orm(db, share, path, fields)
 
-    for item in folder_items:
-        if item.get("path") == path:
-            item["content"] = payload.content
-            item["sha256"] = sha256
-            item["size"] = len(content_bytes)
-            item["modified_at"] = now_iso
-            item["source"] = "sync-artifact"
-            updated = True
-            break
-
-    if not updated:
-        # File not in folder items - add it
-        folder_items.append(
-            {
-                "path": path,
-                "name": path.split("/")[-1],
-                "type": "doc",
-                "content": payload.content,
-                "sha256": sha256,
-                "size": len(content_bytes),
-                "modified_at": now_iso,
-                "source": "sync-artifact",
-            }
-        )
-
-    # Mark as modified to trigger SQLAlchemy update
-    from sqlalchemy.orm.attributes import flag_modified
-
-    share.web_folder_items = folder_items
-    flag_modified(share, "web_folder_items")
-    db.commit()
-
+    if not changed:
+        return {"message": "File content unchanged", "path": path}
     return {"message": "File content synced", "path": path}
 
 
@@ -903,21 +1038,16 @@ def get_sitemap_xml(db: Session = Depends(get_db)) -> Response:
 
 
 def _get_minio_client() -> Minio:
-    """Create MinIO client from settings."""
-    settings = get_settings()
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_secure,
-    )
+    """Shared MinIO client with bounded timeouts."""
+    return storage_client.get_minio_client()
 
 
 def _ensure_minio_bucket(client: Minio, bucket_name: str) -> None:
     """Ensure MinIO bucket exists, create if not."""
     try:
-        if not client.bucket_exists(bucket_name):
-            client.make_bucket(bucket_name)
+        with storage_client.storage_errors("ensure_bucket"):
+            if not client.bucket_exists(bucket_name):
+                client.make_bucket(bucket_name)
     except S3Error as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1053,22 +1183,27 @@ def upload_web_asset(
             detail="Invalid or expired token",
         )
 
+    object_name = f"web-assets/{share.id}/{payload.path}"
+    # Nothing below touches the database: hand the connection back before the
+    # storage round-trip instead of holding it idle in a transaction.
+    db.close()
+
     # Upload to MinIO
     client = _get_minio_client()
     bucket_name = settings.minio_bucket
     _ensure_minio_bucket(client, bucket_name)
 
-    object_name = f"web-assets/{share.id}/{payload.path}"
     data_stream = io.BytesIO(binary_data)
 
     try:
-        client.put_object(
-            bucket_name,
-            object_name,
-            data_stream,
-            length=len(binary_data),
-            content_type=payload.content_type,
-        )
+        with storage_client.storage_errors("asset_upload"):
+            client.put_object(
+                bucket_name,
+                object_name,
+                data_stream,
+                length=len(binary_data),
+                content_type=payload.content_type,
+            )
     except S3Error as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1138,13 +1273,14 @@ def serve_web_asset(
     object_name = f"web-assets/{share.id}/{path}"
 
     try:
-        minio_resp = client.get_object(bucket_name, object_name)
-        try:
-            data = minio_resp.read()
-            content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
-        finally:
-            minio_resp.close()
-            minio_resp.release_conn()
+        with storage_client.storage_errors("asset"):
+            minio_resp = client.get_object(bucket_name, object_name)
+            try:
+                data = minio_resp.read()
+                content_type = minio_resp.headers.get("Content-Type", "application/octet-stream")
+            finally:
+                minio_resp.close()
+                minio_resp.release_conn()
 
         headers: dict[str, str] = {}
         # SVG XSS mitigation: block script execution for SVG assets regardless of visibility.
@@ -1254,25 +1390,28 @@ async def upload_mesh_artifact(
     mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
 
     # Store in MinIO under web-assets/{share_id}/{path} (reuses existing serve path)
-    minio_client = _get_minio_client()
-    bucket_name = settings.minio_bucket
-    _ensure_minio_bucket(minio_client, bucket_name)
-
     object_name = f"web-assets/{share.id}/{path}"
-    data_stream = io.BytesIO(body)
-    try:
-        minio_client.put_object(
-            bucket_name,
-            object_name,
-            data_stream,
-            length=len(body),
-            content_type=mime,
-        )
-    except S3Error as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store artifact: {e}",
-        )
+
+    def store_object() -> None:
+        minio_client = _get_minio_client()
+        _ensure_minio_bucket(minio_client, settings.minio_bucket)
+        try:
+            with storage_client.storage_errors("mesh_upload"):
+                minio_client.put_object(
+                    settings.minio_bucket,
+                    object_name,
+                    io.BytesIO(body),
+                    length=len(body),
+                    content_type=mime,
+                )
+        except S3Error as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to store artifact: {e}",
+            )
+
+    # Blocking client: keep it off the event loop.
+    await run_in_threadpool(store_object)
 
     logger.info(
         "agent_key.used",
@@ -1476,6 +1615,70 @@ def describe_own_agent_key(
     )
 
 
+@router.get("/agent-key", response_model=AgentKeyWhoAmIResponse)
+def describe_agent_key_without_share(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AgentKeyWhoAmIResponse:
+    """
+    Self-describe for a key holder that does not know its own share.
+
+    A key is bound to exactly one share (ShareAgentKey.share_id is NOT NULL)
+    and is looked up by key_hash globally, so the share does not need to be in
+    the path. Mesh holds only the key, not a Team Relay user token, and needs
+    this to show which share a pasted key belongs to instead of asking for the
+    share UUID by hand.
+
+    Same contract as describe_own_agent_key — any scope, last_used_at not
+    touched, never key material — plus the key creator's standing over the
+    share is checked, as on every other agent-key route that reads share data.
+    """
+    settings = get_settings()
+    if not settings.web_publish_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Web publishing is not enabled on this server",
+        )
+
+    raw_key = request.headers.get("X-Agent-Key")
+    if not raw_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="X-Agent-Key header required"
+        )
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    share = db.execute(
+        select(models.Share)
+        .join(models.ShareAgentKey, models.ShareAgentKey.share_id == models.Share.id)
+        .where(models.ShareAgentKey.key_hash == key_hash)
+    ).scalar_one_or_none()
+    if share is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid agent key")
+
+    # Revoked/expired policy stays in one place: the share-bound resolver.
+    agent_key = _resolve_share_agent_key(share, request, db)
+    if not share_service.agent_key_creator_authorized(db, agent_key, share):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent key creator is no longer an owner or member of this share",
+        )
+
+    return AgentKeyWhoAmIResponse(
+        id=str(agent_key.id),
+        label=agent_key.label,
+        share_id=str(agent_key.share_id),
+        scopes=sorted(agent_key_scopes.parse_scopes(agent_key.scopes)),
+        expires_at=agent_key.expires_at,
+        last_used_at=agent_key.last_used_at,
+        share=AgentKeyShareSummary(
+            id=str(share.id),
+            kind=share.kind.value,
+            path=share.path,
+            web_slug=share.web_slug,
+            web_published=bool(share.web_published),
+        ),
+    )
+
+
 def _auth_agent_key(
     share: models.Share, request: Request, db: Session, required_scope: str | None = None
 ) -> models.ShareAgentKey:
@@ -1658,6 +1861,11 @@ async def sync_upload(
             detail="sync-upload only supported for folder shares",
         )
     agent_key = _auth_agent_key(share, request, db, required_scope="write")
+    share_pk, agent_key_id = share.id, agent_key.id
+    # Authentication is read-only. Return the connection before the body read
+    # and the object write: neither needs the database, and a slow client or a
+    # slow store must not hold a pool slot (or a transaction) meanwhile.
+    db.close()
 
     body = await request.body()
     if len(body) > MAX_MESH_UPLOAD_SIZE:
@@ -1672,35 +1880,38 @@ async def sync_upload(
 
     # Storage: text files go to CAS (dedup for Obsidian plugin); binary assets go to
     # web-assets/{share_id}/{path} so the _assets/ serve endpoint can find them by path.
-    minio_client = _get_minio_client()
-    bucket_name = settings.minio_bucket
-    _ensure_minio_bucket(minio_client, bucket_name)
-
     if is_text:
-        storage_key = f"sync-uploads/{share.id}/{sha256}"
+        storage_key = f"sync-uploads/{share_pk}/{sha256}"
     else:
-        storage_key = f"web-assets/{share.id}/{path}"
+        storage_key = f"web-assets/{share_pk}/{path}"
 
-    try:
-        minio_client.put_object(
-            bucket_name,
-            storage_key,
-            io.BytesIO(body),
-            length=len(body),
-            content_type=mime,
-        )
-    except S3Error as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store artifact: {e}",
-        )
+    def store_object() -> None:
+        minio_client = _get_minio_client()
+        _ensure_minio_bucket(minio_client, settings.minio_bucket)
+        try:
+            with storage_client.storage_errors("sync_upload"):
+                minio_client.put_object(
+                    settings.minio_bucket,
+                    storage_key,
+                    io.BytesIO(body),
+                    length=len(body),
+                    content_type=mime,
+                )
+        except S3Error as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to store artifact: {e}",
+            )
+
+    # Blocking client: keep it off the event loop.
+    await run_in_threadpool(store_object)
 
     logger.info(
         "agent_key.used",
         extra={
             "event": "sync_upload",
-            "key_id": str(agent_key.id),
-            "share_id": str(share.id),
+            "key_id": str(agent_key_id),
+            "share_id": str(share_pk),
             "path": path,
             "sha256": sha256,
             "ip": get_client_ip(request),
@@ -1759,7 +1970,9 @@ async def sync_upload(
     share.web_folder_items = folder_items
     flag_modified(share, "web_folder_items")
     share.web_content_updated_at = security.utcnow()
-    agent_key.last_used_at = security.utcnow()
+    agent_key = db.get(models.ShareAgentKey, agent_key_id)
+    if agent_key is not None:
+        agent_key.last_used_at = security.utcnow()
     db.commit()
 
     # Build response URLs.
@@ -1873,14 +2086,20 @@ def download_mesh_artifact(
 
         storage_key = item.get("storage_key")
         if storage_key:
+            mime = item.get("mime", "application/octet-stream")
+            # Persist the key's last_used_at and return the connection before
+            # the storage read: a slow store must not hold a transaction open.
+            db.commit()
+            db.close()
             minio_client = _get_minio_client()
             try:
-                resp = minio_client.get_object(settings.minio_bucket, storage_key)
-                try:
-                    data = resp.read()
-                finally:
-                    resp.close()
-                    resp.release_conn()
+                with storage_client.storage_errors("download"):
+                    resp = minio_client.get_object(settings.minio_bucket, storage_key)
+                    try:
+                        data = resp.read()
+                    finally:
+                        resp.close()
+                        resp.release_conn()
             except S3Error as e:
                 if e.code == "NoSuchKey":
                     raise HTTPException(
@@ -1890,8 +2109,6 @@ def download_mesh_artifact(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to retrieve file: {e}",
                 )
-            mime = item.get("mime", "application/octet-stream")
-            db.commit()
             return Response(content=data, media_type=mime)
 
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found: {path}")

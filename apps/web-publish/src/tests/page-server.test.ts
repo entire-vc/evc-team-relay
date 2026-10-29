@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 //   - private: OAuth JWT via validateUserToken or agent_key from CP response
 // ---------------------------------------------------------------------------
 
-vi.mock('$lib/api', async (importOriginal) => {
+vi.mock('#lib/api.js', async (importOriginal) => {
 	const mod = await importOriginal();
 	return {
 		...mod,
@@ -34,8 +34,8 @@ vi.mock('@sveltejs/kit', async (importOriginal) => {
 	};
 });
 
-import * as api from '$lib/api';
-import { ShareNotFoundError } from '$lib/api';
+import * as api from '#lib/api.js';
+import { ShareNotFoundError } from '#lib/api.js';
 import { load } from '../routes/[slug]/+page.server.js';
 
 // Helper: build a minimal mock share

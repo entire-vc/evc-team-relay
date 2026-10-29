@@ -2,9 +2,9 @@
  * Lightweight markdown metadata helpers — title/description/reading-time
  * extraction via plain string/regex ops, no markdown parser or renderer.
  *
- * Deliberately kept in its own module, separate from $lib/markdown: these
+ * Deliberately kept in its own module, separate from #lib/markdown: these
  * are imported directly by client route components (+page.svelte) for page
- * <title>/meta tags, and $lib/markdown pulls in marked/highlight.js/katex/
+ * <title>/meta tags, and #lib/markdown pulls in marked/highlight.js/katex/
  * dompurify. A single shared file would force Rollup to bundle all of that
  * into the client's main chunk too — a static importer anywhere prevents a
  * dynamic import() elsewhere from splitting the module out (#cee667d8).

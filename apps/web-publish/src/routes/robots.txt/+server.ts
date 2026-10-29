@@ -1,4 +1,4 @@
-import { getRobotsTxt } from '$lib/api';
+import { getRobotsTxt } from '#lib/api.js';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async () => {

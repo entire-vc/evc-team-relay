@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
-import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '$lib/api';
-import { renderMarkdown } from '$lib/markdown';
+import { getShareBySlug, validateSession, validateUserToken, getFolderFileContent, ShareNotFoundError } from '#lib/api.js';
+import { renderMarkdown } from '#lib/markdown.js';
 import type { PageServerLoad } from './$types';
 
 /**

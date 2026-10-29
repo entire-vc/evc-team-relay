@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '$lib/api';
+import { fetchWithTimeout } from '#lib/api.js';
 import type { RequestHandler } from './$types';
 
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://control-plane:8000';

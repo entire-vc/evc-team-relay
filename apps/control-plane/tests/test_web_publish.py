@@ -1229,6 +1229,36 @@ class TestFolderFileContentSync:
 
         get_settings.cache_clear()
 
+    def test_sync_folder_file_content_same_content_is_a_no_op(
+        self, client: TestClient, db_session: Session, folder_share: models.Share, monkeypatch
+    ):
+        """Re-pushing identical content must not rewrite the share row."""
+        monkeypatch.setenv("WEB_PUBLISH_DOMAIN", "docs.test.com")
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        raw_key, _ = self._make_agent_key(db_session, folder_share, scopes="write")
+
+        def push(content: str) -> dict:
+            response = client.post(
+                f"/v1/web/shares/{folder_share.web_slug}/files?path=doc1.md",
+                json={"content": content},
+                headers={"X-Agent-Key": raw_key},
+            )
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        assert push("# same\n")["message"] == "File content synced"
+        assert push("# same\n")["message"] == "File content unchanged"
+        assert push("# other\n")["message"] == "File content synced"
+
+        db_session.refresh(folder_share)
+        entry = next(i for i in folder_share.web_folder_items if i.get("path") == "doc1.md")
+        assert entry["content"] == "# other\n"
+
+        get_settings.cache_clear()
+
     def test_sync_folder_file_content_fake_bearer_returns_401(
         self, client: TestClient, folder_share: models.Share, monkeypatch
     ):

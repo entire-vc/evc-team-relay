@@ -1,11 +1,9 @@
 """Unit tests for app.core.http.get_client_ip.
 
-Behind Caddy (infra/Caddyfile, no `trusted_proxies`), `request.client.host` is
-always Caddy's own container IP, never the real caller — that's the bug this
-helper exists to fix. Caddy itself replaces (does not append to) any
-client-supplied X-Forwarded-For before proxying (verified empirically against
-the pinned `caddy:2` image), so trusting the header here is safe; these tests
-exercise the helper's own precedence and fallback logic in isolation.
+Behind Caddy, `request.client.host` is always Caddy's own container IP, never
+the real caller — that's the bug this helper exists to fix. The forwarding
+headers are believed only when that peer is a trusted proxy, and the client is
+the right-most X-Forwarded-For hop that is not one.
 """
 
 from __future__ import annotations
@@ -23,7 +21,8 @@ def whoami(request: Request) -> dict:
     return {"ip": get_client_ip(request)}
 
 
-client = TestClient(app)
+# Peer = Caddy's container address, a trusted proxy by default.
+client = TestClient(app, client=("172.18.0.14", 50000))
 
 
 def test_prefers_x_forwarded_for() -> None:
@@ -31,11 +30,28 @@ def test_prefers_x_forwarded_for() -> None:
     assert resp.json()["ip"] == "203.0.113.7"
 
 
-def test_x_forwarded_for_multiple_entries_takes_first() -> None:
-    # Caddy's own set value is a single entry in our deployment, but the
-    # helper must not choke on (or misread) a chain if one ever appears.
+def test_x_forwarded_for_chain_skips_trusted_proxy_hops() -> None:
     resp = client.get("/whoami", headers={"X-Forwarded-For": "203.0.113.5, 172.18.0.14"})
     assert resp.json()["ip"] == "203.0.113.5"
+
+
+def test_two_hop_chain_through_edge_proxy() -> None:
+    # Edge Caddy (10.0.0.1) -> host Caddy -> control plane.
+    resp = client.get("/whoami", headers={"X-Forwarded-For": "198.51.100.23, 10.0.0.1"})
+    assert resp.json()["ip"] == "198.51.100.23"
+
+
+def test_client_supplied_left_entries_are_not_believed() -> None:
+    # Whatever the client put in front of the chain is left of the hop our
+    # proxy recorded; the right-most untrusted hop wins.
+    resp = client.get("/whoami", headers={"X-Forwarded-For": "192.0.2.4, 198.51.100.23, 10.0.0.1"})
+    assert resp.json()["ip"] == "198.51.100.23"
+
+
+def test_forwarding_headers_ignored_from_untrusted_peer() -> None:
+    direct = TestClient(app, client=("198.51.100.99", 50000))
+    resp = direct.get("/whoami", headers={"X-Forwarded-For": "192.0.2.4", "X-Real-IP": "192.0.2.8"})
+    assert resp.json()["ip"] == "198.51.100.99"
 
 
 def test_x_forwarded_for_entry_is_trimmed() -> None:

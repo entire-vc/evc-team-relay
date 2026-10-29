@@ -15,13 +15,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-from app.core.metrics import init_app_info
+from app.core.metrics import init_app_info, refresh_memory_limit
+from app.core.ratelimit import rate_limit_key
 
 # Conservative rate limit: Prometheus default scrape interval is 15–60 s,
 # so 10/min is generous for scrapers but blocks any scanning.
-_limiter = Limiter(key_func=get_remote_address)
+_limiter = Limiter(key_func=rate_limit_key)
 
 router = APIRouter(tags=["metrics"])
 
@@ -40,4 +40,5 @@ router = APIRouter(tags=["metrics"])
 async def get_metrics(request: Request) -> PlainTextResponse:
     """Serve cached Prometheus metrics registry."""
     init_app_info()
+    refresh_memory_limit()
     return PlainTextResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

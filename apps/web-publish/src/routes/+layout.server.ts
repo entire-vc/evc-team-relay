@@ -1,6 +1,6 @@
 import type { LayoutServerLoad } from './$types';
-import { getServerInfo } from '$lib/api';
-import { LOGO_PROXY_PATH, proxyableLogoPath } from '$lib/branding';
+import { getServerInfo } from '#lib/api.js';
+import { LOGO_PROXY_PATH, proxyableLogoPath } from '#lib/branding.js';
 
 // Public URL for control plane (for branding assets)
 const PUBLIC_CONTROL_PLANE_URL = process.env.PUBLIC_CONTROL_PLANE_URL || '';

@@ -4,15 +4,14 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.session import get_db
+from app.db.session import get_probe_engine, get_sessionmaker
 
 logger = get_logger(__name__)
 
@@ -51,7 +50,7 @@ async def liveness_probe() -> HealthStatus:
 
 
 @router.get("/health/ready", response_model=DetailedHealthStatus)
-def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus | JSONResponse:
+def readiness_probe() -> DetailedHealthStatus | JSONResponse:
     """
     Kubernetes readiness probe.
     Returns 200 if the application is ready to serve traffic, 503 otherwise.
@@ -59,9 +58,16 @@ def readiness_probe(db: Session = Depends(get_db)) -> DetailedHealthStatus | JSO
     """
     settings = get_settings()
 
-    # Check database connectivity
+    # Check database connectivity on the probe engine's own connection: a busy
+    # request pool must not stall this probe behind the 5 s pool wait.
     try:
-        db.execute(text("SELECT 1"))
+        probe_engine = get_probe_engine()
+        if probe_engine is not None:
+            with probe_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        else:
+            with get_sessionmaker()() as db:
+                db.execute(text("SELECT 1"))
         db_status = "healthy"
     except Exception as e:
         logger.warning("Database health check failed", extra={"error": str(e)})

@@ -72,6 +72,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Proxies whose X-Forwarded-For we believe (app/core/http.get_client_ip).
+    # Default = loopback + private ranges: the docker network Caddy sits on and
+    # an edge proxy reaching this host over a private network.
+    trusted_proxy_cidrs: str = Field(
+        default="127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7",
+        description=(
+            "Comma-separated CIDRs of reverse proxies allowed to set X-Forwarded-For. "
+            "The client IP is the right-most X-Forwarded-For hop outside these ranges."
+        ),
+    )
+
     # Relay Ed25519 authentication
     relay_private_key: str | None = Field(
         default=None, description="Ed25519 private key in PEM format for signing relay tokens"
@@ -336,6 +347,17 @@ class Settings(BaseSettings):
     minio_secret_key: str = Field(default="minioadmin", description="MinIO secret key")
     minio_secure: bool = Field(default=False, description="Use TLS for MinIO")
     minio_bucket: str = Field(default="relay-assets", description="MinIO bucket name")
+    minio_connect_timeout_seconds: float = Field(
+        default=2.0, gt=0, description="MinIO connect timeout for request-path calls"
+    )
+    minio_read_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        description=(
+            "MinIO per-read timeout for request-path calls. A stalled store fails the "
+            "request with 504 after this long instead of holding it for minutes"
+        ),
+    )
     metrics_minio_interval_seconds: int = Field(
         default=900,
         ge=1,
