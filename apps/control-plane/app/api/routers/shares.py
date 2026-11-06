@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api import deps
+from app.api.admission import db_admission_slot
 from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
@@ -763,7 +764,11 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
     return user
 
 
-@router.post("/{share_id}/file-token", response_model=FileTokenResponse)
+@router.post(
+    "/{share_id}/file-token",
+    response_model=FileTokenResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def create_file_token(
     request: Request,
     share_id: uuid.UUID,
@@ -822,7 +827,7 @@ def create_file_token(
     return FileTokenResponse(token=token, base_url=base_url, expires_at=expires_at)
 
 
-@router.head("/{share_id}/files/{path:path}")
+@router.head("/{share_id}/files/{path:path}", dependencies=[Depends(db_admission_slot)])
 def head_share_file(
     share_id: uuid.UUID,
     path: str,
@@ -853,7 +858,11 @@ def head_share_file(
     return Response(status_code=status.HTTP_200_OK)
 
 
-@router.get("/{share_id}/files/{path:path}/download-url", response_model=DownloadUrlResponse)
+@router.get(
+    "/{share_id}/files/{path:path}/download-url",
+    response_model=DownloadUrlResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_download_url(
     share_id: uuid.UUID,
     path: str,
@@ -911,7 +920,10 @@ def get_file_download_url(
     return DownloadUrlResponse(downloadUrl=download_url)
 
 
-@router.get("/{share_id}/files/{path:path}/content")
+@router.get(
+    "/{share_id}/files/{path:path}/content",
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_content(
     share_id: uuid.UUID,
     path: str,
@@ -962,7 +974,11 @@ def get_file_content(
     )
 
 
-@router.post("/{share_id}/files/{path:path}/upload-url", response_model=UploadUrlResponse)
+@router.post(
+    "/{share_id}/files/{path:path}/upload-url",
+    response_model=UploadUrlResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_upload_url(
     share_id: uuid.UUID,
     path: str,
@@ -1051,7 +1067,10 @@ def get_file_upload_url(
     return UploadUrlResponse(uploadUrl=url)
 
 
-@router.put("/{share_id}/files/{path:path}/content")
+@router.put(
+    "/{share_id}/files/{path:path}/content",
+    dependencies=[Depends(db_admission_slot)],
+)
 async def put_file_content(
     request: Request,
     share_id: uuid.UUID,

@@ -218,6 +218,18 @@ cp.{$DOMAIN_BASE} {
 # duplicate site address if both are set to the same domain, rather than
 # silently picking one.
 {$SITE_DOMAIN:site.disabled} {
+  # Team Relay context forms; other installations keep their own site routes.
+  @teamrelay_forms {
+    host teamrelay.ru
+    path /api/contact
+  }
+  log_skip @teamrelay_forms
+  handle @teamrelay_forms {
+    reverse_proxy https://entire.vc {
+      header_up Host entire.vc
+      header_up X-Forwarded-For {remote_host}
+    }
+  }
   import security_headers
   import no_framing
   import access_log_redacted
