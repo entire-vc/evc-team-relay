@@ -27,7 +27,7 @@ from slowapi import Limiter
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, defer
 
-from app.api.routers.tokens import _RelayTokenGate
+from app.api.admission import DbAdmissionGate
 from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
@@ -507,13 +507,13 @@ def validate_share_session(
         return WebSessionValidation(valid=False, share_id=None)
 
 
-class _WebFilePushGate(_RelayTokenGate):
+class _WebFilePushGate(DbAdmissionGate):
     """Caps folder-file content pushes in flight per process.
 
     27.10 incident: two clients of one owner pushed a 1224-file share at the
     same time, 548 requests in 5 minutes, each queued on the same share row
     while holding a pool connection, and the pool (5 + 10) ran dry for every
-    other route. With the relay-token gate (8) this leaves room in the pool.
+    other route. With the shared admission gate (8) this leaves room in the pool.
     """
 
     MAX_IN_FLIGHT = 4
