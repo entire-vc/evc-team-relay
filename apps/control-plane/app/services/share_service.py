@@ -379,7 +379,15 @@ def update_share(
                 # re-empty files-index's `updated_at` on the very next nav-tree-only
                 # PATCH (WebSyncManager fires one on every create/rename/delete),
                 # undoing sync_folder_file_content's stamp without touching sha256.
-                for key in ("content", "source", "storage_key", "sha256", "size", "modified_at"):
+                for key in (
+                    "content",
+                    "source",
+                    "storage_key",
+                    "sha256",
+                    "size",
+                    "modified_at",
+                    "origin",
+                ):
                     if key in existing:
                         new_item[key] = existing[key]
                 new_items.append(new_item)

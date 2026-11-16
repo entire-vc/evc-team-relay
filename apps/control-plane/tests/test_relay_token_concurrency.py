@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from app.api import admission
 from app.api.routers import tokens
 from app.core import security
 from app.core.metrics import DB_POOL_TIMEOUTS_TOTAL
@@ -124,21 +125,22 @@ def _run_burst(app, share_id, token):
         [r.status_code for r in responses],
         DB_POOL_TIMEOUTS_TOTAL._value.get() - timeouts_before,
         health_latencies,
+        {r.headers.get("Retry-After") for r in responses if r.status_code == 429},
     )
 
 
 def test_gate_stays_below_default_pool():
     # QueuePool defaults the control plane runs on: pool_size 5, max_overflow 10.
     pool = QueuePool(lambda: None)
-    assert tokens._RelayTokenGate.MAX_IN_FLIGHT < pool.size() + pool._max_overflow
+    assert admission.DbAdmissionGate.MAX_IN_FLIGHT < pool.size() + pool._max_overflow
 
 
 def test_burst_from_one_caller_never_times_out_on_pool(burst_app, monkeypatch):
     app, engine, share_id, token = burst_app
-    monkeypatch.setattr(tokens._RelayTokenGate, "MAX_IN_FLIGHT", POOL_SIZE - 1)
-    monkeypatch.setattr(tokens, "_relay_token_gate", tokens._RelayTokenGate())
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", POOL_SIZE - 1)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
 
-    statuses, pool_timeouts, health_latencies = _run_burst(app, share_id, token)
+    statuses, pool_timeouts, health_latencies, _ = _run_burst(app, share_id, token)
 
     assert statuses == [200] * BURST, sorted(set(statuses))
     assert pool_timeouts == 0
@@ -149,10 +151,10 @@ def test_burst_from_one_caller_never_times_out_on_pool(burst_app, monkeypatch):
 def test_burst_without_gate_drains_pool(burst_app, monkeypatch):
     """Negative control: the same burst with admission opened up hits the pool timeout."""
     app, engine, share_id, token = burst_app
-    monkeypatch.setattr(tokens._RelayTokenGate, "MAX_IN_FLIGHT", BURST)
-    monkeypatch.setattr(tokens, "_relay_token_gate", tokens._RelayTokenGate())
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", BURST)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
 
-    statuses, pool_timeouts, _ = _run_burst(app, share_id, token)
+    statuses, pool_timeouts, _, _ = _run_burst(app, share_id, token)
 
     assert pool_timeouts >= 1
     assert any(s >= 500 for s in statuses), sorted(set(statuses))
@@ -160,11 +162,109 @@ def test_burst_without_gate_drains_pool(burst_app, monkeypatch):
 
 def test_waiter_past_deadline_gets_429_retry_after(burst_app, monkeypatch):
     app, _, share_id, token = burst_app
-    monkeypatch.setattr(tokens._RelayTokenGate, "MAX_IN_FLIGHT", 1)
-    monkeypatch.setattr(tokens._RelayTokenGate, "WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(tokens, "_relay_token_gate", tokens._RelayTokenGate())
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", 1)
+    monkeypatch.setattr(admission.DbAdmissionGate, "WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
 
-    statuses, pool_timeouts, _ = _run_burst(app, share_id, token)
+    statuses, pool_timeouts, _, retry_after = _run_burst(app, share_id, token)
 
     assert set(statuses) == {200, 429}, sorted(set(statuses))
+    assert retry_after == {str(admission.DbAdmissionGate.RETRY_AFTER_SECONDS)}, retry_after
     assert pool_timeouts == 0
+
+
+def _run_cas_burst(app, share_id, token, hold):
+    """Mixed burst: CAS file-token -> upload-url, HEAD, plus relay-token."""
+    headers = {"Authorization": f"Bearer {token}"}
+    relay_body = {"share_id": str(share_id), "doc_id": str(share_id), "mode": "read"}
+    cas_body = {
+        "path": "a.png",
+        "sha256": "0" * 64,
+        "content_type": "image/png",
+        "content_length": 4,
+    }
+
+    async def one_cas(client):
+        minted = await client.post(
+            f"/v1/shares/{share_id}/file-token", json=cas_body, headers=headers
+        )
+        if minted.status_code != 200:
+            return [minted]
+        file_headers = {"Authorization": f"Bearer {minted.json()['token']}"}
+        upload = await client.post(
+            f"/v1/shares/{share_id}/files/a.png/upload-url", headers=file_headers
+        )
+        return [minted, upload]
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=60
+        ) as client:
+            cas = [one_cas(client) for _ in range(BURST)]
+            relay = [
+                client.post("/v1/tokens/relay", json=relay_body, headers=headers) for _ in range(20)
+            ]
+            results = await asyncio.gather(*cas, *relay)
+        return [r for group in results for r in (group if isinstance(group, list) else [group])]
+
+    timeouts_before = DB_POOL_TIMEOUTS_TOTAL._value.get()
+    responses = asyncio.run(exercise())
+    retry_after = {r.headers.get("Retry-After") for r in responses if r.status_code == 429}
+    return (
+        [r.status_code for r in responses],
+        DB_POOL_TIMEOUTS_TOTAL._value.get() - timeouts_before,
+        retry_after,
+    )
+
+
+@pytest.fixture
+def slow_cas(monkeypatch):
+    from app.api.routers import shares
+    from app.services import share_service
+
+    get_share = share_service.get_share
+
+    def slow_get_share(db, share_id):
+        share = get_share(db, share_id)
+        time.sleep(HOLD_SECONDS)
+        return share
+
+    monkeypatch.setattr(shares.share_service, "get_share", slow_get_share)
+
+
+def test_cas_burst_never_times_out_on_pool(burst_app, slow_cas, monkeypatch):
+    app, engine, share_id, token = burst_app
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", POOL_SIZE - 1)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
+
+    statuses, pool_timeouts, _ = _run_cas_burst(app, share_id, token, HOLD_SECONDS)
+
+    assert pool_timeouts == 0
+    assert not [s for s in statuses if s >= 500], sorted(set(statuses))
+    assert engine.pool.checkedout() == 0
+
+
+def test_cas_burst_without_gate_drains_pool(burst_app, slow_cas, monkeypatch):
+    """Negative control: the CAS burst with admission opened up hits the pool timeout."""
+    app, engine, share_id, token = burst_app
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", 10_000)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
+
+    statuses, pool_timeouts, _ = _run_cas_burst(app, share_id, token, HOLD_SECONDS)
+
+    assert pool_timeouts >= 1
+    assert any(s >= 500 for s in statuses), sorted(set(statuses))
+
+
+def test_cas_overload_is_429_with_retry_after_and_releases_slots(burst_app, slow_cas, monkeypatch):
+    app, engine, share_id, token = burst_app
+    monkeypatch.setattr(admission.DbAdmissionGate, "MAX_IN_FLIGHT", 1)
+    monkeypatch.setattr(admission.DbAdmissionGate, "WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(admission, "db_admission_gate", admission.DbAdmissionGate())
+
+    statuses, pool_timeouts, retry_after = _run_cas_burst(app, share_id, token, HOLD_SECONDS)
+
+    assert 429 in statuses and 200 in statuses, sorted(set(statuses))
+    assert retry_after == {str(admission.DbAdmissionGate.RETRY_AFTER_SECONDS)}, retry_after
+    assert pool_timeouts == 0
+    assert engine.pool.checkedout() == 0

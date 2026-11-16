@@ -32,7 +32,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from test_fault_injection import LiveServer, _reset_rate_limiters
 
-from app.api.routers import tokens, web
+from app.api import admission
+from app.api.routers import web
 from app.core import security
 from app.core.config import get_settings
 from app.db import models
@@ -158,7 +159,7 @@ def push_env(monkeypatch):
 def test_push_gate_and_relay_gate_fit_in_default_pool():
     # QueuePool defaults the control plane runs on: pool_size 5, max_overflow 10.
     pool = QueuePool(lambda: None)
-    in_flight = web._WebFilePushGate.MAX_IN_FLIGHT + tokens._RelayTokenGate.MAX_IN_FLIGHT
+    in_flight = web._WebFilePushGate.MAX_IN_FLIGHT + admission.DbAdmissionGate.MAX_IN_FLIGHT
     assert in_flight < pool.size() + pool._max_overflow
 
 

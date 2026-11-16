@@ -27,13 +27,14 @@ from slowapi import Limiter
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, defer
 
-from app.api.routers.tokens import _RelayTokenGate
+from app.api.admission import DbAdmissionGate
 from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
 from app.core.http import get_client_ip
 from app.core.path_validation import validate_relative_path
 from app.core.ratelimit import rate_limit_key
+from app.core.sync_origin import SYNC_ORIGIN_EXTERNAL, resolve_sync_origin
 from app.db import models
 from app.db.session import get_db
 from app.services import share_service
@@ -57,8 +58,10 @@ def _require_private_web_auth(
     share: models.Share,
     db: Session,
     required_scope: str = "read",
-) -> None:
+) -> str:
     """Raise 401/403 if the request carries no valid credential for a PRIVATE share.
+
+    Returns how the caller authenticated: "agent_key" or "user".
 
     Accepts (in order):
     1. X-Agent-Key header — non-expired, non-revoked key for this share.
@@ -132,7 +135,7 @@ def _require_private_web_auth(
                         db.commit()
                     except Exception:  # pragma: no cover - telemetry must not 500
                         db.rollback()
-                    return  # authenticated via agent key with sufficient scope
+                    return "agent_key"  # authenticated via agent key with sufficient scope
 
     # --- User JWT path ---
     token: str | None = None
@@ -153,7 +156,7 @@ def _require_private_web_auth(
                 ).scalar_one_or_none()
                 if user and user.is_active:
                     if share.owner_user_id == user_id:
-                        return  # authenticated as owner
+                        return "user"  # authenticated as owner
                     member = db.execute(
                         select(models.ShareMember).where(
                             models.ShareMember.share_id == share.id,
@@ -161,7 +164,7 @@ def _require_private_web_auth(
                         )
                     ).scalar_one_or_none()
                     if member is not None:
-                        return  # authenticated as member
+                        return "user"  # authenticated as member
         except Exception:
             pass
 
@@ -507,13 +510,13 @@ def validate_share_session(
         return WebSessionValidation(valid=False, share_id=None)
 
 
-class _WebFilePushGate(_RelayTokenGate):
+class _WebFilePushGate(DbAdmissionGate):
     """Caps folder-file content pushes in flight per process.
 
     27.10 incident: two clients of one owner pushed a 1224-file share at the
     same time, 548 requests in 5 minutes, each queued on the same share row
     while holding a pool connection, and the pool (5 + 10) ran dry for every
-    other route. With the relay-token gate (8) this leaves room in the pool.
+    other route. With the shared admission gate (8) this leaves room in the pool.
     """
 
     MAX_IN_FLIGHT = 4
@@ -693,7 +696,7 @@ def sync_folder_file_content(
         )
 
     # H-M scope-gate: write endpoint must reject read-only agent keys
-    _require_private_web_auth(request, share, db, required_scope="write")
+    auth_method = _require_private_web_auth(request, share, db, required_scope="write")
 
     content_bytes = payload.content.encode("utf-8")
     fields = {
@@ -702,6 +705,9 @@ def sync_folder_file_content(
         "size": len(content_bytes),
         "modified_at": security.utcnow().isoformat(),
         "source": "sync-artifact",
+        # Same rule as PUT /shares/{id}/sync-write: the plugin's
+        # auto-sync pushes CRDT-backed text and says so; an agent key never can.
+        "origin": resolve_sync_origin(request, auth_method),
     }
 
     if db.get_bind().dialect.name == "postgresql":
@@ -1947,6 +1953,9 @@ async def sync_upload(
                     "modified_at": now_iso,
                     "storage_key": storage_key,
                     "content": inline_content,
+                    # An agent upload replaces whatever version was there,
+                    # including a crdt mirror: the vaults must pull it.
+                    "origin": SYNC_ORIGIN_EXTERNAL,
                 }
             )
             updated = True
@@ -1965,6 +1974,7 @@ async def sync_upload(
                 "modified_at": now_iso,
                 "storage_key": storage_key,
                 "content": inline_content,
+                "origin": SYNC_ORIGIN_EXTERNAL,
             }
         )
 

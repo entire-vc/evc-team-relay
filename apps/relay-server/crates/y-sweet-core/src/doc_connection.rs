@@ -160,7 +160,7 @@ impl DocConnection {
                 let callback = callback.clone();
                 let closed = closed.clone();
                 doc.observe_update_v1(move |_, event| {
-                    if closed.get().is_some() {
+                    if closed.get().is_some() || expired_at(expiration_time) {
                         return;
                     }
                     // https://github.com/y-crdt/y-sync/blob/56958e83acfd1f3c09f5dd67cf23c9c72f000707/src/net/broadcast.rs#L47-L52
@@ -177,7 +177,7 @@ impl DocConnection {
             let callback = callback.clone();
             let closed = closed.clone();
             let awareness_subscription = awareness.on_update(move |awareness, e| {
-                if closed.get().is_some() {
+                if closed.get().is_some() || expired_at(expiration_time) {
                     return;
                 }
 
@@ -321,11 +321,14 @@ impl DocConnection {
 
     /// Check if the token associated with this connection has expired
     fn is_expired(&self) -> bool {
-        if let Some(exp) = self.expiration_time {
-            current_time_epoch_millis() > exp
-        } else {
-            false // No expiration means token never expires
-        }
+        expired_at(self.expiration_time)
+    }
+
+    /// Expiry (epoch millis) of the token this connection was opened with;
+    /// `None` if it never expires. The socket owner closes the connection at
+    /// this deadline.
+    pub fn expiration_time(&self) -> Option<u64> {
+        self.expiration_time
     }
 
     pub async fn send(&self, update: &[u8]) -> Result<(), anyhow::Error> {
@@ -685,6 +688,11 @@ impl DocConnection {
 
     /// Send an event to this connection if it's subscribed to the event type
     pub fn send_event(&self, event: &EventMessage) -> Result<(), anyhow::Error> {
+        // An expired connection gets no more server-pushed data.
+        if self.is_expired() {
+            return Ok(());
+        }
+
         // Check if connection is subscribed to this event type
         let is_subscribed = if let Ok(subscriptions) = self.event_subscriptions.read() {
             subscriptions.contains(&event.event_type)
@@ -722,6 +730,13 @@ impl DocConnection {
             .map(|subscriptions| subscriptions.clone())
             .unwrap_or_default()
     }
+}
+
+/// `true` once a token with this expiry (epoch millis) has expired; never for
+/// `None`. Shared by the request path and the server-push callbacks so an
+/// expired connection neither writes nor receives.
+fn expired_at(expiration_time: Option<u64>) -> bool {
+    expiration_time.is_some_and(|exp| current_time_epoch_millis() > exp)
 }
 
 impl Drop for DocConnection {
@@ -1266,5 +1281,51 @@ mod tests {
         let result = connection.handle_msg(&DefaultProtocol, update);
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    /// Server-push after token expiry: an owner edit must not reach a
+    /// connection whose token has expired (positive control: a live one does).
+    #[test]
+    fn test_expired_connection_receives_no_doc_broadcast() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use yrs::{Map, Transact};
+
+        let doc = yrs::Doc::new();
+        let awareness = Arc::new(RwLock::new(Awareness::new(doc.clone())));
+        let now = current_time_epoch_millis();
+        let live_count = Arc::new(AtomicUsize::new(0));
+        let expired_count = Arc::new(AtomicUsize::new(0));
+        let live = {
+            let c = live_count.clone();
+            DocConnection::new_with_expiration(
+                awareness.clone(),
+                Authorization::Full,
+                Some(now + 60_000),
+                move |_| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+        };
+        let expired = {
+            let c = expired_count.clone();
+            DocConnection::new_with_expiration(
+                awareness.clone(),
+                Authorization::Full,
+                Some(now - 1),
+                move |_| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+        };
+        let live_before = live_count.load(Ordering::SeqCst);
+        let expired_before = expired_count.load(Ordering::SeqCst);
+
+        let map = doc.get_or_insert_map("probe");
+        map.insert(&mut doc.transact_mut(), "owner", "edit");
+
+        assert!(live_count.load(Ordering::SeqCst) > live_before);
+        assert_eq!(expired_count.load(Ordering::SeqCst), expired_before);
+        assert_eq!(expired.expiration_time(), Some(now - 1));
+        drop(live);
     }
 }
