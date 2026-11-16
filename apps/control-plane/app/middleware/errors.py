@@ -24,6 +24,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
                 "request_id": getattr(request.state, "request_id", None),
             }
         },
+        # Keeps Retry-After on gate 429s (and WWW-Authenticate on 401s).
+        headers=getattr(exc, "headers", None),
     )
 
 

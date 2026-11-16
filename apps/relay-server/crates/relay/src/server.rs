@@ -998,27 +998,12 @@ async fn handle_socket_upgrade_with_channel_and_user(
     authorization: Authorization,
     routing_channel: Option<String>,
     user: Option<String>,
-    token: Option<String>,
+    expiration_time: Option<u64>,
     State(server_state): State<Arc<Server>>,
 ) -> Result<Response, AppError> {
     server_state
         .ensure_socket_doc_access(&doc_id, authorization)
         .await?;
-
-    // Extract expiration time from token
-    let expiration_time = if let Some(authenticator) = &server_state.authenticator {
-        if let Some(token_str) = token.as_deref() {
-            authenticator
-                .decode_token(token_str)
-                .ok()
-                .and_then(|payload| payload.expiration_millis)
-                .map(|exp| exp.0)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
 
     let user_for_pud = user.clone();
     let dwskv = server_state
@@ -1048,48 +1033,53 @@ async fn handle_socket_upgrade_with_channel_and_user(
     }))
 }
 
+/// Verified WS-upgrade token: authorization, routing channel, user and the
+/// token's expiry (epoch millis) that the open socket must enforce.
+type SocketTokenGrant = (Authorization, Option<String>, Option<String>, Option<u64>);
+
 fn verify_socket_token(
     server_state: &Arc<Server>,
     doc_id: &str,
     token: Option<&str>,
-) -> Result<(Authorization, Option<String>, Option<String>), AppError> {
-    let (permission, channel) = if let Some(authenticator) = &server_state.authenticator {
-        let token = token.ok_or_else(|| {
-            AppError::auth(
-                StatusCode::UNAUTHORIZED,
-                anyhow!("No token provided."),
-                "missing_token",
-            )
-        })?;
+) -> Result<SocketTokenGrant, AppError> {
+    let (permission, channel, expiration_time) =
+        if let Some(authenticator) = &server_state.authenticator {
+            let token = token.ok_or_else(|| {
+                AppError::auth(
+                    StatusCode::UNAUTHORIZED,
+                    anyhow!("No token provided."),
+                    "missing_token",
+                )
+            })?;
 
-        authenticator
-            .verify_token_with_channel(token, current_time_epoch_millis())
-            .map_err(|e| {
-                tracing::debug!("Token verification failed: {:?}", e);
-                // Distinguish expired/invalid_signature/key_mismatch/etc instead of
-                // collapsing every WS-upgrade auth failure into "invalid_token" —
-                // matches validate_file_token's use of the same AuthError::to_metric_label(),
-                // and was the missing signal in #75491f2f's recurrence diagnosis (2026-09-17):
-                // the sole error series on /d/:doc_id/ws/:doc_id2 gave no way to tell a token
-                // clock-skew/expiry problem apart from a signature/key mismatch.
-                let error_type = e.to_metric_label();
-                if matches!(e, y_sweet_core::auth::AuthError::Expired) {
-                    // Diagnostic for #cde2a0b7: HOW expired — race at the TTL boundary
-                    // (~1-2s), stale cached token (minutes+) or clock skew (constant N s).
-                    // Value only; the token and its claims are never logged or labelled.
-                    if let Some(overshoot) =
-                        authenticator.expired_overshoot_secs(token, current_time_epoch_millis())
-                    {
-                        server_state
-                            .metrics
-                            .record_ws_token_expired_overshoot(overshoot);
+            authenticator
+                .verify_token_with_channel_and_expiry(token, current_time_epoch_millis())
+                .map_err(|e| {
+                    tracing::debug!("Token verification failed: {:?}", e);
+                    // Distinguish expired/invalid_signature/key_mismatch/etc instead of
+                    // collapsing every WS-upgrade auth failure into "invalid_token" —
+                    // matches validate_file_token's use of the same AuthError::to_metric_label(),
+                    // and was the missing signal in #75491f2f's recurrence diagnosis (2026-09-17):
+                    // the sole error series on /d/:doc_id/ws/:doc_id2 gave no way to tell a token
+                    // clock-skew/expiry problem apart from a signature/key mismatch.
+                    let error_type = e.to_metric_label();
+                    if matches!(e, y_sweet_core::auth::AuthError::Expired) {
+                        // Diagnostic for #cde2a0b7: HOW expired — race at the TTL boundary
+                        // (~1-2s), stale cached token (minutes+) or clock skew (constant N s).
+                        // Value only; the token and its claims are never logged or labelled.
+                        if let Some(overshoot) =
+                            authenticator.expired_overshoot_secs(token, current_time_epoch_millis())
+                        {
+                            server_state
+                                .metrics
+                                .record_ws_token_expired_overshoot(overshoot);
+                        }
                     }
-                }
-                AppError::auth(StatusCode::UNAUTHORIZED, e.into(), error_type)
-            })?
-    } else {
-        (Permission::Server, None)
-    };
+                    AppError::auth(StatusCode::UNAUTHORIZED, e.into(), error_type)
+                })?
+        } else {
+            (Permission::Server, None, None)
+        };
 
     let (authorization, user) = match permission {
         Permission::Doc(doc_perm) => {
@@ -1122,7 +1112,7 @@ fn verify_socket_token(
         }
     };
 
-    Ok((authorization, channel, user))
+    Ok((authorization, channel, user, expiration_time))
 }
 
 async fn handle_socket_upgrade_deprecated(
@@ -1134,7 +1124,7 @@ async fn handle_socket_upgrade_deprecated(
     tracing::warn!(
         "/doc/ws/:doc_id is deprecated; call /doc/:doc_id/auth instead and use the returned URL."
     );
-    let (authorization, channel, user) =
+    let (authorization, channel, user, expiration_time) =
         verify_socket_token(&server_state, &doc_id, params.token.as_deref())?;
 
     handle_socket_upgrade_with_channel_and_user(
@@ -1143,7 +1133,7 @@ async fn handle_socket_upgrade_deprecated(
         authorization,
         channel,
         user,
-        params.token.clone(), // Pass the token from query params
+        expiration_time,
         State(server_state),
     )
     .await
@@ -1165,7 +1155,7 @@ async fn handle_socket_upgrade_full_path(
         ));
     }
 
-    let (authorization, channel, user) =
+    let (authorization, channel, user, expiration_time) =
         verify_socket_token(&server_state, &doc_id, params.token.as_deref())?;
 
     handle_socket_upgrade_with_channel_and_user(
@@ -1174,7 +1164,7 @@ async fn handle_socket_upgrade_full_path(
         authorization,
         channel,
         user,
-        params.token.clone(), // Pass the token from query params
+        expiration_time,
         State(server_state),
     )
     .await
@@ -1192,16 +1182,11 @@ async fn handle_socket(
     doc_id: String,
     metrics: Arc<RelayMetrics>,
 ) {
-    let (mut sink, stream) = socket.split();
-    let (send, mut recv) = channel(1024);
+    let (sink, stream) = socket.split();
+    let (send, recv) = channel(1024);
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel();
 
-    let mut writer = tokio::spawn(async move {
-        while let Some(msg) = recv.recv().await {
-            if sink.send(msg).await.is_err() {
-                break;
-            }
-        }
-    });
+    let mut writer = tokio::spawn(socket_writer(sink, recv, close_rx));
 
     let send_clone = send.clone();
     let mut conn = DocConnection::new_with_expiration(
@@ -1220,7 +1205,7 @@ async fn handle_socket(
     }
     let connection = Arc::new(conn);
 
-    handle_socket_stream(
+    let close_frame = handle_socket_stream(
         stream,
         connection,
         send,
@@ -1230,8 +1215,14 @@ async fn handle_socket(
         metrics,
     )
     .await;
-    // Drain queued Close frames, but never retain the split socket indefinitely
-    // when a disconnected peer no longer accepts writes.
+    match close_frame {
+        Some(frame) => {
+            let _ = close_tx.send(frame);
+        }
+        None => drop(close_tx),
+    }
+    // Let the writer send the close frame, but never retain the split socket
+    // indefinitely when a disconnected peer no longer accepts writes.
     if tokio::time::timeout(Duration::from_secs(1), &mut writer)
         .await
         .is_err()
@@ -1241,6 +1232,76 @@ async fn handle_socket(
     }
 }
 
+/// Resolves when the token behind a socket expires; never for a token without
+/// an expiry. `expiration_time` is epoch millis, as `DocConnection` stores it.
+async fn token_expiry_deadline(expiration_time: Option<u64>) {
+    match expiration_time {
+        Some(exp) => {
+            let remaining = exp.saturating_sub(current_time_epoch_millis());
+            // `DocConnection::is_expired` is `now > exp`: wake strictly after it.
+            tokio::time::sleep(Duration::from_millis(remaining.saturating_add(1))).await;
+        }
+        None => futures::future::pending::<()>().await,
+    }
+}
+
+/// Forwards queued messages to the socket until the queue closes, then sends
+/// the close frame `handle_socket_stream` asked for, if any.
+///
+/// The close frame is a separate channel polled first (`biased`), so it goes
+/// out on the very next write no matter how many messages are queued ahead
+/// of it; those are dropped. A peer that accepts no writes at all cannot get
+/// any frame: `handle_socket` aborts this writer after its timeout, which
+/// drops the socket.
+async fn socket_writer<Si>(
+    mut sink: Si,
+    mut recv: Receiver<Message>,
+    mut close: tokio::sync::oneshot::Receiver<Message>,
+) where
+    Si: futures::Sink<Message> + Unpin,
+{
+    // Set once the close channel ended without a frame: keep draining data.
+    let mut no_close = false;
+    loop {
+        tokio::select! {
+            biased;
+            frame = &mut close, if !no_close => match frame {
+                Ok(frame) => {
+                    let _ = sink.send(frame).await;
+                    return;
+                }
+                Err(_) => no_close = true,
+            },
+            msg = recv.recv() => match msg {
+                Some(msg) => {
+                    if sink.send(msg).await.is_err() {
+                        return;
+                    }
+                }
+                None => break,
+            },
+        }
+    }
+    // Every data sender is gone; the close frame (if any) may still follow.
+    if !no_close {
+        if let Ok(frame) = close.await {
+            let _ = sink.send(frame).await;
+        }
+    }
+}
+
+/// Close frame for a socket whose token expired (1008 Policy Violation).
+fn expired_socket_close(metrics: &RelayMetrics, doc_id: &str) -> Message {
+    metrics.record_http_auth_error("expired", "1008", "websocket_connection", "WS");
+    tracing::warn!(doc_id = %doc_id, "Closing connection due to token expiration");
+    Message::Close(Some(CloseFrame {
+        code: 1008, // Policy Violation - indicates a policy violation
+        reason: "Token expired".into(),
+    }))
+}
+
+/// Runs the receive side of a socket. Returns the close frame the server must
+/// send (token expiry), or `None` when the socket just ends.
 async fn handle_socket_stream<S>(
     mut stream: S,
     connection: Arc<DocConnection>,
@@ -1249,14 +1310,27 @@ async fn handle_socket_stream<S>(
     sync_protocol_event_sender: Arc<SyncProtocolEventSender>,
     doc_id: String,
     metrics: Arc<RelayMetrics>,
-) where
+) -> Option<Message>
+where
     S: futures::Stream<Item = Result<Message, axum::Error>> + Unpin,
 {
+    let mut close_frame = None;
     // Register the connection with the sync protocol event sender
     sync_protocol_event_sender.register_doc_connection(doc_id.clone(), Arc::downgrade(&connection));
 
+    // The token is verified once, at upgrade. Enforce its expiry on the open
+    // socket too, without waiting for the client to send something: otherwise
+    // an idle (or read-only) client keeps receiving broadcasts after its access
+    // ended.
+    let token_expiry = token_expiry_deadline(connection.expiration_time());
+    tokio::pin!(token_expiry);
+
     loop {
         tokio::select! {
+            _ = &mut token_expiry => {
+                close_frame = Some(expired_socket_close(&metrics, &doc_id));
+                break;
+            }
             msg = stream.next() => {
                 let msg = match msg {
                     Some(Ok(Message::Binary(bytes))) => bytes,
@@ -1275,20 +1349,7 @@ async fn handle_socket_stream<S>(
                 match connection.send(&msg).await {
                     Ok(_) => {},
                     Err(e) if e.to_string().contains("Token expired") => {
-                        metrics.record_http_auth_error(
-                            "expired",
-                            "1008",
-                            "websocket_connection",
-                            "WS",
-                        );
-                        tracing::warn!(
-                            doc_id = %doc_id,
-                            "Closing connection due to token expiration"
-                        );
-                        let _ = send.try_send(Message::Close(Some(CloseFrame {
-                            code: 1008, // Policy Violation - indicates a policy violation
-                            reason: "Token expired".into(),
-                        })));
+                        close_frame = Some(expired_socket_close(&metrics, &doc_id));
                         break;
                     }
                     Err(e) => {
@@ -1304,6 +1365,7 @@ async fn handle_socket_stream<S>(
         }
     }
     sync_protocol_event_sender.unregister_doc_connection(&doc_id, &Arc::downgrade(&connection));
+    close_frame
 }
 
 async fn check_store(
@@ -2903,12 +2965,13 @@ mod test {
             .unwrap(),
         );
 
-        let (authorization, channel, user) =
+        let (authorization, channel, user, expiration_time) =
             verify_socket_token(&server_state, "test-doc", None).unwrap();
 
         assert_eq!(authorization, Authorization::Full);
         assert_eq!(channel, None);
         assert_eq!(user, None);
+        assert_eq!(expiration_time, None);
     }
 
     #[tokio::test]
@@ -3531,6 +3594,255 @@ mod test {
         let text = guard.doc().get_or_insert_text("body");
         let mut txn = guard.doc().transact_mut();
         text.insert(&mut txn, 0, "trigger dirty callback on closed channel");
+    }
+
+    /// Token expiry ends the receive side with a 1008 close frame even when
+    /// the outbound queue is full (slow client): the frame is returned, not
+    /// queued behind the data.
+    #[tokio::test]
+    async fn websocket_expiry_returns_close_even_with_full_outbound_queue() {
+        let doc = DocWithSyncKv::new("socket-expiry-backpressure", None, || {}, None)
+            .await
+            .unwrap();
+        let metrics = RelayMetrics::new_with_registry(&prometheus::Registry::new()).unwrap();
+        let events = Arc::new(SyncProtocolEventSender::new().with_metrics(metrics.clone()));
+        let connection = Arc::new(DocConnection::new_with_expiration(
+            doc.awareness(),
+            Authorization::Full,
+            Some(current_time_epoch_millis() + 50),
+            |_| {},
+        ));
+        // Queue of one, full and never drained.
+        let (send, _recv) = channel(1);
+        send.try_send(Message::Binary(vec![1, 2, 3])).unwrap();
+
+        let close = tokio::time::timeout(
+            Duration::from_secs(2),
+            handle_socket_stream(
+                futures::stream::pending(),
+                connection,
+                send,
+                CancellationToken::new(),
+                events,
+                "socket-expiry-backpressure".into(),
+                metrics,
+            ),
+        )
+        .await
+        .expect("expired socket task must finish");
+        match close {
+            Some(Message::Close(Some(frame))) => {
+                assert_eq!(frame.code, 1008);
+                assert_eq!(frame.reason, "Token expired");
+            }
+            other => panic!("expected close 1008, got {other:?}"),
+        }
+    }
+
+    /// The writer sends the close frame ahead of a full outbound queue and
+    /// stops; queued data after expiry is not delivered.
+    #[tokio::test]
+    async fn socket_writer_sends_close_ahead_of_full_queue() {
+        let (send, recv) = channel(1024);
+        for i in 0..1024u32 {
+            send.try_send(Message::Binary(i.to_le_bytes().to_vec()))
+                .unwrap();
+        }
+        assert!(
+            send.try_send(Message::Binary(vec![])).is_err(),
+            "queue must be full"
+        );
+        let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+        close_tx
+            .send(Message::Close(Some(CloseFrame {
+                code: 1008,
+                reason: "Token expired".into(),
+            })))
+            .unwrap();
+        let (sink, mut out) = futures::channel::mpsc::unbounded::<Message>();
+
+        tokio::time::timeout(Duration::from_secs(1), socket_writer(sink, recv, close_rx))
+            .await
+            .expect("writer must stop after the close frame");
+
+        match out.next().await {
+            Some(Message::Close(Some(frame))) => assert_eq!(frame.code, 1008),
+            other => panic!("first frame must be the close, got {other:?}"),
+        }
+        assert!(out.next().await.is_none(), "nothing may follow the close");
+        drop(send);
+    }
+
+    /// Positive control: without a close the writer forwards every queued
+    /// message in order and ends when the queue closes.
+    #[tokio::test]
+    async fn socket_writer_forwards_data_without_close() {
+        let (send, recv) = channel(4);
+        for i in 0..3u8 {
+            send.try_send(Message::Binary(vec![i])).unwrap();
+        }
+        drop(send);
+        let (close_tx, close_rx) = tokio::sync::oneshot::channel::<Message>();
+        drop(close_tx);
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+
+        tokio::time::timeout(Duration::from_secs(1), socket_writer(sink, recv, close_rx))
+            .await
+            .expect("writer must end when the queue closes");
+
+        let frames: Vec<Message> = out.collect().await;
+        assert_eq!(
+            frames,
+            vec![
+                Message::Binary(vec![0]),
+                Message::Binary(vec![1]),
+                Message::Binary(vec![2])
+            ]
+        );
+    }
+
+    /// An OPEN WebSocket must not outlive its CWT token's `exp`.
+    ///
+    /// The handshake already rejects an expired token; this covers the path
+    /// after it (server.rs → DocConnection). Production tokens are CWT, which
+    /// the legacy bincode `decode_token` cannot read, so the connection used to
+    /// get `expiration_time = None` and stayed open for its whole life: a member
+    /// removed from a share kept reading (owner edits broadcast to it) and
+    /// writing (its updates applied) until the socket dropped.
+    ///
+    /// Real router + real WS client: positive control before `exp`, then after
+    /// `exp` the server must close 1008 "Token expired" on its own (no incoming
+    /// message needed), must not broadcast an owner edit made after `exp`, and
+    /// must not apply an update the client sends after `exp`.
+    #[tokio::test]
+    async fn test_open_websocket_is_closed_at_cwt_token_expiry() {
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        use yrs::{updates::encoder::Encode, Map, ReadTxn, Transact};
+
+        const AUDIENCE: &str = "https://test.example.com";
+        let mut authenticator = y_sweet_core::auth::Authenticator::gen_key().unwrap();
+        authenticator.set_expected_audience(Some(AUDIENCE.to_string()));
+        let server_state = Arc::new(
+            Server::new(
+                None,
+                Duration::from_secs(60),
+                Some(authenticator.clone()),
+                None,
+                vec![],
+                CancellationToken::new(),
+                false,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = server_state.routes();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // CWT `exp` has one-second resolution: align it so the real deadline is exact.
+        let exp_millis = (current_time_epoch_millis() / 1000 + 3) * 1000;
+        let doc_id = "ws-expiry-doc";
+        let token = authenticator
+            .gen_doc_token_cwt(
+                doc_id,
+                Authorization::Full,
+                ExpirationTimeEpochMillis(exp_millis),
+                Some("member@example.com"),
+                None,
+            )
+            .unwrap();
+        let token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/d/{doc_id}/ws/{doc_id}?token={token}"
+        ))
+        .await
+        .expect("a fresh token must open the socket");
+
+        let update_msg = |key: &str, value: &str| {
+            let client = yrs::Doc::new();
+            let map = client.get_or_insert_map("probe");
+            map.insert(&mut client.transact_mut(), key, value);
+            let update = client
+                .transact()
+                .encode_state_as_update_v1(&yrs::StateVector::default());
+            y_sweet_core::sync::Message::Sync(y_sweet_core::sync::SyncMessage::Update(update))
+                .encode_v1()
+        };
+        let server_value = |key: &str| -> Option<String> {
+            let doc = server_state.docs.get(doc_id)?;
+            let awareness = doc.awareness();
+            let awareness = awareness.read().unwrap();
+            let txn = awareness.doc().transact();
+            let map = txn.get_map("probe")?;
+            map.get(&txn, key).map(|v| v.to_string(&txn))
+        };
+
+        // Positive control: before exp the member writes through this socket.
+        ws.send(WsMessage::Binary(update_msg("before", "ok")))
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while server_value("before").is_none() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(server_value("before").as_deref(), Some("ok"));
+
+        // Drain everything the server sent before exp (handshake, echoes).
+        while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), ws.next()).await {}
+
+        // Cross the deadline without sending anything on this socket.
+        let wait = exp_millis + 500 - current_time_epoch_millis().min(exp_millis + 500);
+        tokio::time::sleep(Duration::from_millis(wait)).await;
+
+        // Owner edit after exp: an expired socket must not receive it.
+        {
+            let dwskv = server_state.get_or_create_doc(doc_id).await.unwrap();
+            let owner = yrs::Doc::new();
+            let map = owner.get_or_insert_map("probe");
+            map.insert(&mut owner.transact_mut(), "owner", "after-exp");
+            let update = owner
+                .transact()
+                .encode_state_as_update_v1(&yrs::StateVector::default());
+            dwskv.apply_update(&update).unwrap();
+        }
+
+        let mut binary_after_exp = 0usize;
+        let mut close: Option<(u16, String)> = None;
+        let read_until = tokio::time::Instant::now() + Duration::from_millis(1500);
+        while let Ok(Some(frame)) = tokio::time::timeout_at(read_until, ws.next()).await {
+            match frame {
+                Ok(WsMessage::Binary(_)) => binary_after_exp += 1,
+                Ok(WsMessage::Close(frame)) => {
+                    close = frame.map(|f| (u16::from(f.code), f.reason.to_string()));
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+
+        // The member tries to write after exp (the socket may already be closed).
+        let _ = ws
+            .send(WsMessage::Binary(update_msg("member", "after-exp")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert_eq!(
+            binary_after_exp, 0,
+            "server kept broadcasting to a socket whose token expired"
+        );
+        assert_eq!(
+            close,
+            Some((1008, "Token expired".to_string())),
+            "server did not close the expired socket on its own"
+        );
+        assert_eq!(
+            server_value("member"),
+            None,
+            "an update sent after exp was applied"
+        );
     }
 }
 

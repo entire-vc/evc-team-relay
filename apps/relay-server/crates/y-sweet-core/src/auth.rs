@@ -1437,7 +1437,7 @@ impl Authenticator {
             TokenFormat::Cwt => {
                 // CWT tokens use COSE header key IDs
                 if let Some(ref audience) = self.expected_audience {
-                    let (permission, _channel) =
+                    let (permission, _channel, _expiration) =
                         self.verify_cwt_token_with_channel(token, current_time, audience)?;
                     Ok(permission)
                 } else {
@@ -1663,7 +1663,7 @@ impl Authenticator {
         token: &str,
         current_time: u64,
         expected_audience: &str,
-    ) -> Result<(Permission, Option<String>), AuthError> {
+    ) -> Result<(Permission, Option<String>, Option<u64>), AuthError> {
         // Extract key ID from COSE headers
         let cwt_key_id = extract_cwt_key_id(token);
 
@@ -1723,7 +1723,7 @@ impl Authenticator {
                 current_time,
                 expected_audience,
             ) {
-                Ok((permission, channel)) => return Ok((permission, channel)),
+                Ok(verified) => return Ok(verified),
                 Err(err) => {
                     // Prioritize specific errors over generic ones
                     match (&last_error, &err) {
@@ -1761,7 +1761,7 @@ impl Authenticator {
         token: &str,
         current_time: u64,
         expected_audience: &str,
-    ) -> Result<(Permission, Option<String>), AuthError> {
+    ) -> Result<(Permission, Option<String>, Option<u64>), AuthError> {
         use crate::cwt::scope_to_permission;
 
         tracing::debug!("Starting CWT token verification with specific key and channel");
@@ -1865,7 +1865,8 @@ impl Authenticator {
         }
 
         tracing::debug!("CWT token verification successful");
-        Ok((permission, claims.channel))
+        let expiration_millis = claims.expiration.map(|exp| exp.saturating_mul(1000));
+        Ok((permission, claims.channel, expiration_millis))
     }
 
     /// Extract user information from a token (works with both custom and CWT tokens)
@@ -1962,16 +1963,34 @@ impl Authenticator {
         token: &str,
         current_time: u64,
     ) -> Result<(Permission, Option<String>), AuthError> {
+        let (permission, channel, _expiration) =
+            self.verify_token_with_channel_and_expiry(token, current_time)?;
+        Ok((permission, channel))
+    }
+
+    /// Like `verify_token_with_channel`, plus the token's expiry (epoch millis)
+    /// taken from the claims that were just verified, for either token format.
+    /// `None` means the token carries no expiry.
+    ///
+    /// A long-lived connection (WebSocket) must enforce this deadline itself:
+    /// the token is only checked once, at upgrade. `decode_token` cannot be used
+    /// for this — it only reads the legacy bincode format and yields nothing for
+    /// a CWT, which silently left CWT-authenticated sockets without a deadline.
+    pub fn verify_token_with_channel_and_expiry(
+        &self,
+        token: &str,
+        current_time: u64,
+    ) -> Result<(Permission, Option<String>, Option<u64>), AuthError> {
         match detect_token_format(token) {
             TokenFormat::Custom => {
                 let permission = self.verify_token_auto(token, current_time)?;
-                Ok((permission, None)) // Custom tokens don't have channel claims
+                // Signature already verified above; read the signed expiry.
+                let expiration = self.decode_token(token)?.expiration_millis.map(|exp| exp.0);
+                Ok((permission, None, expiration)) // Custom tokens don't have channel claims
             }
             TokenFormat::Cwt => {
                 if let Some(ref audience) = self.expected_audience {
-                    let (permission, channel) =
-                        self.verify_cwt_token_with_channel(token, current_time, audience)?;
-                    Ok((permission, channel))
+                    self.verify_cwt_token_with_channel(token, current_time, audience)
                 } else {
                     tracing::warn!("CWT token verification without audience validation - consider configuring server.url");
                     return Err(AuthError::InvalidToken);
@@ -2438,6 +2457,50 @@ mod tests {
         ));
     }
 
+    /// The verified expiry must come back for CWT tokens too: the WS path used `decode_token`, which reads only the legacy format,
+    /// so CWT sockets got no deadline at all.
+    #[test]
+    fn test_verify_token_with_channel_and_expiry_returns_exp_for_both_formats() {
+        let current_time_epoch_millis = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let exp_millis = (current_time_epoch_millis() / 1000 + 120) * 1000;
+
+        let cwt_auth = create_test_authenticator_with_audience();
+        let cwt = cwt_auth
+            .gen_doc_token_cwt(
+                "doc123",
+                Authorization::Full,
+                ExpirationTimeEpochMillis(exp_millis),
+                None,
+                None,
+            )
+            .unwrap();
+        let (_, _, exp) = cwt_auth
+            .verify_token_with_channel_and_expiry(&cwt, current_time_epoch_millis())
+            .unwrap();
+        assert_eq!(exp, Some(exp_millis));
+        // The pre-fix source of the WS deadline yields nothing for a CWT.
+        assert!(cwt_auth.decode_token(&cwt).is_err());
+
+        let legacy_auth = Authenticator::gen_key_legacy().unwrap();
+        let legacy = legacy_auth
+            .gen_doc_token(
+                "doc123",
+                Authorization::Full,
+                ExpirationTimeEpochMillis(exp_millis),
+                None,
+            )
+            .unwrap();
+        let (_, _, exp) = legacy_auth
+            .verify_token_with_channel_and_expiry(&legacy, current_time_epoch_millis())
+            .unwrap();
+        assert_eq!(exp, Some(exp_millis));
+    }
+
     #[test]
     fn test_cwt_expiration() {
         let authenticator = create_test_authenticator_with_audience();
@@ -2813,7 +2876,7 @@ mod tests {
         // The verify_cwt_token method returns Permission
         // where Permission contains the doc_id and authorization
         match auth.verify_cwt_token_with_channel(token, test_time, "https://test.example.com") {
-            Ok((permission, _channel)) => {
+            Ok((permission, _channel, _expiration)) => {
                 // Token verification succeeded
 
                 // Check if the permission matches our expected doc_id

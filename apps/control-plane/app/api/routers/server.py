@@ -23,6 +23,10 @@ class ServerFeatures(BaseModel):
     billing_enabled: bool = False
     web_publish_enabled: bool = False
     web_publish_domain: str | None = None
+    # PUT /shares/{id}/sync-write honours `X-Sync-Origin: crdt` and files-index
+    # reports `origin` per item. The plugin turns its outbound
+    # sync-protocol writer on only when this is true.
+    sync_write_origin: bool = True
 
 
 class ServerBranding(BaseModel):

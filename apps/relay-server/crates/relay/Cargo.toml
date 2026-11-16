@@ -43,5 +43,6 @@ sha2 = "0.10"
 tempfile = "3.8.1"
 
 [dev-dependencies]
+tokio-tungstenite = "0.24"
 http = "1.1.0"
 tempfile = "3.8.1"

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api import deps
+from app.api.admission import db_admission_slot
 from app.clients import storage_client
 from app.core import agent_key_scopes, security
 from app.core.config import get_settings
@@ -31,6 +32,11 @@ from app.core.http import get_client_ip
 from app.core.metrics import SHARE_UPDATE_COALESCED_TOTAL
 from app.core.path_validation import validate_relative_path
 from app.core.ratelimit import rate_limit_key
+from app.core.sync_origin import (
+    SYNC_ORIGIN_EXTERNAL,
+    item_sync_origin,
+    resolve_sync_origin,
+)
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
@@ -157,6 +163,12 @@ class SyncArtifactItem(BaseModel):
     size: int
     updated_at: str
     type: str = "sync-artifact"
+    # Who produced the stored version: "crdt" = an Obsidian client
+    # mirrored its live CRDT text here, so every other client already has it via
+    # the relay and must not write it to disk again; "external" = anything else
+    # (Mesh/agent writes, legacy items without the field), which the plugin's
+    # inbound downloader has to pull into the vault.
+    origin: str = "external"
 
 
 def _get_minio_client() -> Minio:
@@ -275,6 +287,7 @@ def get_share_files_index(
                 sha256=sha256,
                 size=item.get("size", 0),
                 updated_at=item.get("modified_at", ""),
+                origin=item_sync_origin(item),
             )
         )
     return result
@@ -510,6 +523,7 @@ def _apply_sync_write(
     sha256: str,
     if_match: str | None,
     if_none_match: str | None,
+    origin: str = SYNC_ORIGIN_EXTERNAL,
 ) -> tuple[SyncWriteResult, bool]:
     """Locked compare-and-swap for PUT /sync-write; blocking, run off the loop."""
     # Same storage layout as web-publish sync-upload: text is content-addressed
@@ -550,6 +564,9 @@ def _apply_sync_write(
             "modified_at": now_iso,
             "storage_key": storage_key,
             "content": inline_content,
+            # Always set, never inherited: an external write over a crdt item
+            # must stop being skipped by the clients' inbound path.
+            "origin": origin,
         }
         is_new_file = current is None
         if is_new_file:
@@ -591,6 +608,10 @@ async def sync_write_file(
     or `If-None-Match: *` to create. A mismatch is 412 and writes nothing —
     neither the object store nor the index is touched.
 
+    `X-Sync-Origin: crdt` (user JWT only) records the version as the mirror of
+    the live CRDT text (`origin=crdt` in files-index); an agent-key write is
+    always `origin=external`.
+
     Produces the same index entry shape as the web-publish `sync-upload`
     (source=sync-artifact), so the written document is immediately visible to
     GET /shares/{id}/files-index and to the Obsidian plugin's inbound sync.
@@ -621,6 +642,7 @@ async def sync_write_file(
     mime = request.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
     is_text = mime.startswith("text/") or mime in ("application/json", "application/xml")
     sha256 = hashlib.sha256(body).hexdigest()
+    origin = resolve_sync_origin(request, auth_method)
 
     # Row lock, then check, then write — in that order and in one transaction.
     # The web-publish sync-upload deliberately keeps MinIO I/O outside the row
@@ -641,6 +663,7 @@ async def sync_write_file(
         sha256,
         if_match,
         if_none_match,
+        origin,
     )
 
     logger.info(
@@ -654,6 +677,7 @@ async def sync_write_file(
             # NOT "created": that is a reserved LogRecord attribute and
             # logging raises KeyError on any attempt to overwrite it.
             "is_new_file": is_new_file,
+            "origin": origin,
         },
     )
 
@@ -763,7 +787,11 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
     return user
 
 
-@router.post("/{share_id}/file-token", response_model=FileTokenResponse)
+@router.post(
+    "/{share_id}/file-token",
+    response_model=FileTokenResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def create_file_token(
     request: Request,
     share_id: uuid.UUID,
@@ -822,7 +850,7 @@ def create_file_token(
     return FileTokenResponse(token=token, base_url=base_url, expires_at=expires_at)
 
 
-@router.head("/{share_id}/files/{path:path}")
+@router.head("/{share_id}/files/{path:path}", dependencies=[Depends(db_admission_slot)])
 def head_share_file(
     share_id: uuid.UUID,
     path: str,
@@ -853,7 +881,11 @@ def head_share_file(
     return Response(status_code=status.HTTP_200_OK)
 
 
-@router.get("/{share_id}/files/{path:path}/download-url", response_model=DownloadUrlResponse)
+@router.get(
+    "/{share_id}/files/{path:path}/download-url",
+    response_model=DownloadUrlResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_download_url(
     share_id: uuid.UUID,
     path: str,
@@ -911,7 +943,10 @@ def get_file_download_url(
     return DownloadUrlResponse(downloadUrl=download_url)
 
 
-@router.get("/{share_id}/files/{path:path}/content")
+@router.get(
+    "/{share_id}/files/{path:path}/content",
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_content(
     share_id: uuid.UUID,
     path: str,
@@ -962,7 +997,11 @@ def get_file_content(
     )
 
 
-@router.post("/{share_id}/files/{path:path}/upload-url", response_model=UploadUrlResponse)
+@router.post(
+    "/{share_id}/files/{path:path}/upload-url",
+    response_model=UploadUrlResponse,
+    dependencies=[Depends(db_admission_slot)],
+)
 def get_file_upload_url(
     share_id: uuid.UUID,
     path: str,
@@ -1051,7 +1090,10 @@ def get_file_upload_url(
     return UploadUrlResponse(uploadUrl=url)
 
 
-@router.put("/{share_id}/files/{path:path}/content")
+@router.put(
+    "/{share_id}/files/{path:path}/content",
+    dependencies=[Depends(db_admission_slot)],
+)
 async def put_file_content(
     request: Request,
     share_id: uuid.UUID,
