@@ -57,6 +57,27 @@ function makeUrl(params = {}) {
 	return { searchParams: { get: (k) => params[k] ?? null } };
 }
 
+describe('folder-file load() — protected-share session', () => {
+	it('forwards the session cookie when fetching folder metadata', async () => {
+		vi.mocked(api.getShareBySlug).mockResolvedValue(makeShare({ visibility: 'protected' }));
+		vi.mocked(api.validateSession).mockResolvedValue({ valid: true, share_id: 'share-id' });
+		vi.mocked(api.getFolderFileContent).mockResolvedValue({
+			path: 'Notes/Doc.md',
+			name: 'Doc.md',
+			type: 'doc',
+			content: 'Protected body'
+		});
+
+		await load({
+			params: { slug: 'test-slug', path: 'Notes/Doc.md' },
+			cookies: makeCookies({ web_session: 'my-session-token' }),
+			url: makeUrl()
+		});
+
+		expect(api.getShareBySlug).toHaveBeenCalledWith('test-slug', undefined, 'my-session-token');
+	});
+});
+
 describe('folder-file load() — server-rendered HTML (contentHtml)', () => {
 	it('returns contentHtml rendered from the file body', async () => {
 		vi.mocked(api.getShareBySlug).mockResolvedValue(makeShare());

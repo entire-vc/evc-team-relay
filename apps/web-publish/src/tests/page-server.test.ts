@@ -152,6 +152,18 @@ describe('load() — protected share', () => {
 
 		expect(api.validateSession).toHaveBeenCalledWith('test-slug', 'my-session-token');
 	});
+
+	it('forwards the session cookie when fetching share metadata', async () => {
+		vi.mocked(api.validateSession).mockResolvedValue({ valid: true, share_id: 'share-id' });
+
+		await load({
+			params: { slug: 'test-slug' },
+			cookies: makeCookies({ web_session: 'my-session-token' }),
+			url: makeUrl()
+		});
+
+		expect(api.getShareBySlug).toHaveBeenCalledWith('test-slug', undefined, 'my-session-token');
+	});
 });
 
 // ---------------------------------------------------------------------------

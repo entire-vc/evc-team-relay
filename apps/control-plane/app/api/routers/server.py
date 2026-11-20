@@ -27,6 +27,10 @@ class ServerFeatures(BaseModel):
     # reports `origin` per item. The plugin turns its outbound
     # sync-protocol writer on only when this is true.
     sync_write_origin: bool = True
+    # DELETE /shares/{id}/sync-write removes one file from the sync protocol,
+    # conditionally on If-Match. The plugin reports local deletes
+    # only when this is true.
+    sync_delete: bool = True
 
 
 class ServerBranding(BaseModel):

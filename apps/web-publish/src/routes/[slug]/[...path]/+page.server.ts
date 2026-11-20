@@ -33,7 +33,7 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 
 	try {
 		// Fetch folder share metadata from Control Plane
-		const share = await getShareBySlug(slug, resolvedAgentKey);
+		const share = await getShareBySlug(slug, resolvedAgentKey, cookies.get('web_session'));
 
 		if (share.kind !== 'folder') {
 			throw error(404, 'Not a folder share');

@@ -129,6 +129,34 @@ describe('getShareBySlug', () => {
 		expect(capturedUrl).not.toContain('secret-key');
 		expect(capturedUrl).not.toContain('agent_key');
 	});
+
+	it('sends a protected-share session as the Cookie header', async () => {
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((_url: string, init?: RequestInit) => {
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+			})
+		);
+
+		await getShareBySlug('my-share', undefined, 'session-token');
+		expect(capturedHeaders['Cookie']).toBe('web_session=session-token');
+	});
+
+	it('omits the Cookie header when no session token is provided', async () => {
+		let capturedHeaders: Record<string, string> = {};
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((_url: string, init?: RequestInit) => {
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+			})
+		);
+
+		await getShareBySlug('my-share');
+		expect(capturedHeaders['Cookie']).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------

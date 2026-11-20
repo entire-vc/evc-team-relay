@@ -73,13 +73,18 @@ export interface SessionValidation {
 /**
  * Fetch share metadata by slug.
  */
-export async function getShareBySlug(slug: string, agentKey?: string): Promise<WebShare> {
+export async function getShareBySlug(
+	slug: string,
+	agentKey?: string,
+	sessionToken?: string
+): Promise<WebShare> {
 	const urlObj = new URL(`${CONTROL_PLANE_URL}/v1/web/shares/${slug}`);
 	// Agent key goes in the X-Agent-Key header, never the query string — a query
 	// param leaks a write-scoped bearer secret into Caddy access logs, Referer
 	// headers, and browser history (TR-14).
 	const headers: Record<string, string> = {};
 	if (agentKey) headers['X-Agent-Key'] = agentKey;
+	if (sessionToken) headers['Cookie'] = `web_session=${sessionToken}`;
 	const response = await fetchWithTimeout(urlObj.toString(), { headers });
 
 	if (!response.ok) {

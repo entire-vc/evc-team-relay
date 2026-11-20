@@ -34,10 +34,15 @@ from app.core.config import get_settings
 from app.core.http import get_client_ip
 from app.core.path_validation import validate_relative_path
 from app.core.ratelimit import rate_limit_key
-from app.core.sync_origin import SYNC_ORIGIN_EXTERNAL, resolve_sync_origin
+from app.core.sync_origin import (
+    SYNC_ASSET_METADATA,
+    SYNC_ORIGIN_EXTERNAL,
+    is_sync_asset_object,
+    resolve_sync_origin,
+)
 from app.db import models
 from app.db.session import get_db
-from app.services import share_service
+from app.services import share_service, sync_tombstones
 from app.services.web_session_service import WebSessionService
 
 logger = logging.getLogger(__name__)
@@ -1217,6 +1222,10 @@ def upload_web_asset(
             detail=f"Failed to upload asset: {e}",
         )
 
+    # Untagged, never indexed: republishing a path removed by sync DELETE
+    # makes it public again.
+    sync_tombstones.clear(db, share.id, payload.path)
+
     return {
         "message": "Asset uploaded successfully",
         "path": payload.path,
@@ -1274,6 +1283,12 @@ def serve_web_asset(
     if share.visibility == models.ShareVisibility.PRIVATE:
         _require_private_web_auth(request, share, db)
 
+    indexed = any(item.get("path") == path for item in (share.web_folder_items or []))
+    if not indexed and sync_tombstones.is_deleted(db, share.id, path):
+        # Removed by sync DELETE; the bytes stay in storage only so a racing
+        # upload keeps its own (objects written before the sync tag included).
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+
     # Read from MinIO
     client = _get_minio_client()
     bucket_name = settings.minio_bucket
@@ -1288,6 +1303,14 @@ def serve_web_asset(
             finally:
                 minio_resp.close()
                 minio_resp.release_conn()
+
+        if not indexed and is_sync_asset_object(minio_resp.headers):
+            # A sync-written object whose path is not indexed: deleted, or its
+            # index write never committed.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found",
+            )
 
         headers: dict[str, str] = {}
         # SVG XSS mitigation: block script execution for SVG assets regardless of visibility.
@@ -1903,6 +1926,7 @@ async def sync_upload(
                     io.BytesIO(body),
                     length=len(body),
                     content_type=mime,
+                    metadata=None if is_text else SYNC_ASSET_METADATA,
                 )
         except S3Error as e:
             raise HTTPException(

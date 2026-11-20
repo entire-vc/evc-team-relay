@@ -24,8 +24,8 @@ export const load: PageServerLoad = async ({ params, cookies, url }) => {
 	const agentKey = url.searchParams.get('agent_key') ?? undefined;
 
 	try {
-		// Fetch share metadata from Control Plane (agent_key forwarded so CP can expose content)
-		const share = await getShareBySlug(slug, agentKey);
+		// Fetch share metadata from Control Plane (agent_key and web_session forwarded so CP can expose content)
+		const share = await getShareBySlug(slug, agentKey, cookies.get('web_session'));
 
 		// For protected shares, check if user has valid session (password-based)
 		let isAuthenticated = false;

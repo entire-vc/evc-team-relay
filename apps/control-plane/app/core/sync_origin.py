@@ -36,3 +36,22 @@ def resolve_sync_origin(request: Request, auth_method: str) -> str:
 def item_sync_origin(item: dict[str, Any]) -> str:
     """Stored origin of an index item; absent or unknown means external."""
     return SYNC_ORIGIN_CRDT if item.get("origin") == SYNC_ORIGIN_CRDT else SYNC_ORIGIN_EXTERNAL
+
+
+# A path-keyed asset object (web-assets/{share}/{path}) written through the sync
+# protocol carries this user metadata. Sync DELETE only drops the index entry
+# (removing the object races a newer upload and cannot roll back with the DB),
+# so the public asset route serves a tagged object only while the index still
+# lists its path. Untagged objects (web-publish and attachment uploads, which
+# never had an index entry) are served as before.
+SYNC_ASSET_META_KEY = "relay-sync"
+SYNC_ASSET_METADATA = {SYNC_ASSET_META_KEY: "1"}
+_SYNC_ASSET_META_HEADER = f"x-amz-meta-{SYNC_ASSET_META_KEY}"
+
+
+def is_sync_asset_object(headers: Any) -> bool:
+    """True when a storage response's headers carry the sync-asset tag."""
+    for name, value in (headers or {}).items():
+        if str(name).lower() == _SYNC_ASSET_META_HEADER:
+            return str(value).strip() == "1"
+    return False
