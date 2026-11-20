@@ -33,6 +33,7 @@ from app.core.metrics import SHARE_UPDATE_COALESCED_TOTAL
 from app.core.path_validation import validate_relative_path
 from app.core.ratelimit import rate_limit_key
 from app.core.sync_origin import (
+    SYNC_ASSET_METADATA,
     SYNC_ORIGIN_EXTERNAL,
     item_sync_origin,
     resolve_sync_origin,
@@ -40,7 +41,7 @@ from app.core.sync_origin import (
 from app.db import models
 from app.db.session import get_db
 from app.schemas import share as share_schema
-from app.services import billing_service, share_service, usage_service
+from app.services import billing_service, share_service, sync_tombstones, usage_service
 from app.services.notification_service import get_notification_service
 
 router = APIRouter(prefix="/shares", tags=["shares"])
@@ -493,7 +494,7 @@ def _lock_for_sync_write(
     return locked, folder_items, current
 
 
-def _put_sync_object(storage_key: str, body: bytes, mime: str) -> None:
+def _put_sync_object(storage_key: str, body: bytes, mime: str, is_text: bool) -> None:
     settings = get_settings()
     minio_client = _get_minio_client()
     _ensure_minio_bucket(minio_client, settings.minio_bucket)
@@ -505,6 +506,7 @@ def _put_sync_object(storage_key: str, body: bytes, mime: str) -> None:
                 io.BytesIO(body),
                 length=len(body),
                 content_type=mime,
+                metadata=None if is_text else SYNC_ASSET_METADATA,
             )
     except S3Error as e:
         raise HTTPException(
@@ -539,7 +541,7 @@ def _apply_sync_write(
             # the precondition when swapping the index entry.
             _lock_for_sync_write(db, share_id, path, if_match, if_none_match)
             db.rollback()
-            _put_sync_object(storage_key, body, mime)
+            _put_sync_object(storage_key, body, mime, is_text)
         locked, folder_items, current = _lock_for_sync_write(
             db, share_id, path, if_match, if_none_match
         )
@@ -547,7 +549,7 @@ def _apply_sync_write(
             # Path-keyed asset: a writer that loses the swap must not overwrite the
             # winner's bytes, so this put stays under the row lock. The storage
             # client's connect/read timeouts bound how long the lock is held.
-            _put_sync_object(storage_key, body, mime)
+            _put_sync_object(storage_key, body, mime, is_text)
 
         now_iso = security.utcnow().isoformat()
         inline_content = (
@@ -684,6 +686,147 @@ async def sync_write_file(
     # The new version's tag, ready to be fed straight back as the next If-Match.
     response.headers["ETag"] = f'"{sha256}"'
     return result
+
+
+# --- Sync-protocol conditional delete ---------------------------------------
+#
+# Before this the sync protocol had no file-level delete. A note
+# trashed in Obsidian only left the vault's nav tree, and PATCH /shares/{id}
+# deliberately keeps sync-artifacts absent from the tree (share_service: they
+# may be versions a vault has not pulled yet). So files-index and /download
+# served the deleted note forever and Mesh re-mounted it. The server does not
+# infer a delete from the tree; the client states it explicitly, here, and
+# proves which version it removes.
+
+
+def _require_delete_precondition(if_match: str | None, if_none_match: str | None) -> set[str]:
+    """Parse the mandatory If-Match of a sync delete into candidate tags."""
+    if if_none_match is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="If-None-Match is not supported on delete",
+        )
+    if if_match is None:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail=(
+                "If-Match: <sha256> is required — unconditional deletes are not "
+                "accepted on the sync protocol"
+            ),
+        )
+    candidates = {_parse_etag_value(part) for part in if_match.split(",") if part.strip()}
+    if "*" in candidates:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="If-Match: * is not accepted — supply the sha256 of the version you delete",
+        )
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="If-Match header is empty"
+        )
+    return candidates
+
+
+def _apply_sync_delete(
+    db: Session,
+    share_id: uuid.UUID,
+    path: str,
+    candidates: set[str],
+) -> dict[str, Any]:
+    """Locked compare-and-delete of the index entry for DELETE /sync-write.
+
+    Blocking (row lock), run off the loop. Returns the removed index entry.
+    """
+    try:
+        locked = db.execute(
+            select(models.Share).where(models.Share.id == share_id).with_for_update()
+        ).scalar_one_or_none()
+        if locked is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+        folder_items = list(locked.web_folder_items or [])
+        current = next((i for i in folder_items if i.get("path") == path), None)
+        if current is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found: {path}"
+            )
+        stored = str(current.get("sha256") or "").lower()
+        if not stored or stored not in candidates:
+            raise HTTPException(
+                status_code=status.HTTP_412_PRECONDITION_FAILED,
+                detail="sha256 mismatch: the file changed since it was read",
+            )
+
+        # Only the index entry goes; object storage is not touched. A text object
+        # is content-addressed and may back another path. A path-keyed asset
+        # (web-assets/{share}/{path}) is written by uploads BEFORE they take this
+        # row lock, so removing it here could erase a newer upload's bytes, and a
+        # removal before commit would lose them on a rollback. The next upload to
+        # the same path overwrites it. The tombstone, committed with the index
+        # removal, stops the public asset route serving what is left behind.
+        locked.web_folder_items = [i for i in folder_items if i is not current]
+        flag_modified(locked, "web_folder_items")
+        locked.web_content_updated_at = security.utcnow()
+        sync_tombstones.record(db, share_id, path)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return current
+
+
+@router.delete("/{share_id}/sync-write", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("60/minute")
+async def sync_delete_file(
+    request: Request,
+    share_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path within share"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+    db: Session = Depends(get_db),
+    current_user: models.User | None = Depends(deps.get_optional_user),
+) -> Response:
+    """
+    Delete one document from a folder share, conditionally on its current sha256.
+
+    Auth: same as PUT /sync-write — Authorization: Bearer <user JWT>
+    (owner/editor), or X-Agent-Key with `write` scope.
+
+    Precondition (mandatory): `If-Match: "<sha256>"` of the version being
+    deleted. No entry → 404; a mismatch → 412 and nothing is touched, so a
+    delete never removes a newer version than the one the caller saw.
+
+    On success the entry leaves files-index and /download answers 404;
+    `web_content_updated_at` is bumped so inbound pollers notice. Object
+    storage is left alone (see _apply_sync_delete).
+    """
+    share = share_service.get_share(db, share_id)
+    if share.kind != models.ShareKind.FOLDER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sync-write only supported for folder shares",
+        )
+    auth_method, _agent_key = _authorize_share_sync(
+        request, share, db, current_user, required_scope="write"
+    )
+    path = validate_relative_path(path)
+    candidates = _require_delete_precondition(if_match, if_none_match)
+
+    resolved_share_id = share.id
+    db.close()
+    removed = await run_in_threadpool(_apply_sync_delete, db, resolved_share_id, path, candidates)
+
+    logger.info(
+        "sync_delete",
+        extra={
+            "event": "sync_delete",
+            "auth_method": auth_method,
+            "share_id": str(share_id),
+            "path": path,
+            "sha256": removed.get("sha256"),
+            "origin": item_sync_origin(removed),
+        },
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Attachment (CAS) file-token routes -------------------------------------
@@ -1155,6 +1298,9 @@ async def put_file_content(
 
     # Blocking client: keep it off the event loop.
     await run_in_threadpool(store_object)
+    # An attachment upload is untagged and never indexed: republishing a path
+    # removed by sync DELETE makes it public again.
+    await run_in_threadpool(sync_tombstones.clear, db, share_id, path)
     return Response(status_code=status.HTTP_200_OK)
 
 

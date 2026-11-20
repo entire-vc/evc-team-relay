@@ -832,3 +832,25 @@ class RelayDocBinding(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class SyncAssetTombstone(Base):
+    """A path removed from a share's index by sync DELETE.
+
+    Sync DELETE leaves object storage alone (removing a path-keyed object races
+    a newer upload and cannot roll back with the index), so the public asset
+    route needs to know a path was deleted even for objects written before
+    they carried the sync tag. Written in the same transaction as the index
+    removal; cleared when an untagged upload (web-publish, attachment)
+    republishes the path. A path back in the index is served regardless.
+    """
+
+    __tablename__ = "sync_asset_tombstones"
+
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), primary_key=True
+    )
+    path: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
