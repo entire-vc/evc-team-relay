@@ -782,6 +782,7 @@ def oauth_settings(
         "client_secret_set": bool(settings.oauth_client_secret),
         "scopes": settings.oauth_scopes,
         "auto_register": settings.oauth_auto_register,
+        "link_existing_by_email": settings.oauth_link_existing_by_email,
         "sync_user_info": settings.oauth_sync_user_info,
         "admin_groups": settings.oauth_admin_groups,
         "default_role": settings.oauth_default_role,

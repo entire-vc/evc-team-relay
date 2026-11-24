@@ -122,6 +122,12 @@ curl -X POST https://cp.example.com/v1/admin/settings/oauth \
   }'
 ```
 
+Account linking by email:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OAUTH_LINK_EXISTING_BY_EMAIL` | No | `false` | When an OAuth identity has no link yet but its email matches an existing local account, link it to that account. Off by default: such a login is refused with `409` and audited as `oauth_account_link_denied` (reason `email_linking_disabled`); already linked identities and brand-new users are unaffected. When on, linking additionally requires `email_verified=true` in the validated `id_token`. Enable it only if your identity provider does not let users mark their own email as verified. |
+
 ### Rate Limiting
 
 Built-in rate limits (not configurable via env):

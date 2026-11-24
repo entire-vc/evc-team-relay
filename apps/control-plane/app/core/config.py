@@ -220,6 +220,16 @@ class Settings(BaseSettings):
         default="openid profile email",
         description="OAuth scopes to request (space-separated)",
     )
+    oauth_link_existing_by_email: bool = Field(
+        default=False,
+        description=(
+            "Link an OAuth identity to an existing local account whose email "
+            "matches, when that identity has no link yet. Off by default: the "
+            "login is refused with 409. When on, linking additionally requires "
+            "email_verified=true in the validated id_token. Enable only if the "
+            "identity provider does not let users mark their own email verified."
+        ),
+    )
     oauth_admin_groups: str | None = Field(
         default=None,
         description="Comma-separated list of IAM groups that grant admin role",

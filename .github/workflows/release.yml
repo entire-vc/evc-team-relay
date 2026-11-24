@@ -230,6 +230,13 @@ jobs:
         working-directory: infra
         run: python3 ../scripts/release_smoke.py
 
+      - name: Check every docker pull line of the release notes resolves
+        # Same renderer create-release publishes, so a self-hoster's first
+        # command from the release page is executed here before that page exists.
+        run: |
+          python3 scripts/release_notes.py render "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > /tmp/release-notes.md
+          python3 scripts/release_notes.py check /tmp/release-notes.md
+
       - name: Dump logs on failure
         if: failure()
         working-directory: infra
@@ -276,17 +283,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Render release notes
+        run: python3 scripts/release_notes.py render "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" > release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           generate_release_notes: true
-          body: |
-            ## Docker Images
-
-            ```bash
-            docker pull ghcr.io/${{ github.repository }}/control-plane:${{ github.ref_name }}
-            docker pull ghcr.io/${{ github.repository }}/relay-server:${{ github.ref_name }}
-            docker pull ghcr.io/${{ github.repository }}/web-publish:${{ github.ref_name }}
-            ```
-
-            See [installation guide](https://github.com/${{ github.repository }}/blob/main/docs/installation.md) for setup instructions.
+          # Image tags carry no `v` (metadata-action semver); smoke-test has
+          # already run every pull line of this exact file against ghcr.
+          body_path: release-notes.md
