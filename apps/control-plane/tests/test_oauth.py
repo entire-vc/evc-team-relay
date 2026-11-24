@@ -1468,10 +1468,21 @@ class TestGetUserInfoEmailVerifiedSource:
         assert userinfo.email_verified is False
 
 
-class TestOAuthCallbackEmailVerifiedGate:
-    """Router-level red/green controls for the account-linking gate
-    (#f1e6f0dc). Mirrors TestOAuthCallbackSessionNotification's pattern:
-    mock exchange_code_for_tokens + get_user_info, hit the real callback."""
+@pytest.fixture
+def email_linking_enabled(monkeypatch):
+    """Turn OAUTH_LINK_EXISTING_BY_EMAIL on for one test (default is off)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("OAUTH_LINK_EXISTING_BY_EMAIL", "true")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("OAUTH_LINK_EXISTING_BY_EMAIL", raising=False)
+    get_settings.cache_clear()
+
+
+class _OAuthCallbackHarness:
+    """Shared helpers: mock exchange_code_for_tokens + get_user_info and hit
+    the real callback (mirrors TestOAuthCallbackSessionNotification)."""
 
     def _make_existing_user(self, db_session: Session, email: str) -> models.User:
         user = models.User(
@@ -1539,6 +1550,16 @@ class TestOAuthCallbackEmailVerifiedGate:
                 f"/v1/auth/oauth/{provider.name}/callback",
                 params={"code": "fake-code", "state": state},
             )
+
+
+class TestOAuthCallbackEmailVerifiedGate(_OAuthCallbackHarness):
+    """Router-level red/green controls for the account-linking gate
+    (#f1e6f0dc) in the opt-in mode (OAUTH_LINK_EXISTING_BY_EMAIL=true),
+    where linking is gated on id_token.email_verified."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_email_linking(self, email_linking_enabled):
+        yield
 
     def test_RED_unverified_email_match_is_refused(self, client: TestClient, db_session: Session):
         """Existing user's email, but the id_token says NOT verified — MUST
@@ -1627,3 +1648,79 @@ class TestOAuthCallbackEmailVerifiedGate:
         assert response.status_code == 200, response.text
         created = oauth_service.find_user_by_email(db_session, "brand-new@example.com")
         assert created is not None
+
+
+class TestOAuthCallbackEmailLinkingDisabled(_OAuthCallbackHarness):
+    """#b69988f1: with OAUTH_LINK_EXISTING_BY_EMAIL unset (the default),
+    an OAuth identity is never linked to an existing account by email
+    match — not even when the id_token says email_verified=true, because
+    some identity providers let users set that flag on themselves."""
+
+    def test_flag_defaults_to_off(self):
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+        assert get_settings().oauth_link_existing_by_email is False
+
+    def test_RED_verified_email_match_refused_when_linking_disabled(
+        self, client: TestClient, db_session: Session
+    ):
+        provider = self._make_provider_row(db_session)
+        existing = self._make_existing_user(db_session, "victim@example.com")
+
+        response = self._run_callback(
+            client,
+            provider,
+            email="victim@example.com",
+            email_verified=True,
+            sub="self-verified-sub",
+        )
+
+        assert response.status_code == 409, response.text
+        assert "already exists" in response.json().get("detail", response.text)
+
+        # No user_oauth_accounts row for the existing user or the new sub.
+        assert (
+            oauth_service.find_user_by_oauth(db_session, provider.id, "self-verified-sub") is None
+        )
+        accounts = db_session.query(models.UserOAuthAccount).filter_by(user_id=existing.id).all()
+        assert accounts == []
+
+        denial = (
+            db_session.query(models.AuditLog)
+            .filter_by(action=models.AuditAction.OAUTH_ACCOUNT_LINK_DENIED)
+            .one_or_none()
+        )
+        assert denial is not None
+        assert denial.target_user_id == existing.id
+        assert denial.details["provider_user_id"] == "self-verified-sub"
+        assert denial.details["reason"] == "email_linking_disabled"
+
+    def test_already_linked_identity_still_logs_in(self, client: TestClient, db_session: Session):
+        """Positive control: an identity that is already linked to the
+        account keeps working with the flag off."""
+        provider = self._make_provider_row(db_session)
+        existing = self._make_existing_user(db_session, "linked@example.com")
+        oauth_service.link_oauth_account(
+            db_session,
+            user_id=existing.id,
+            provider_id=provider.id,
+            provider_user_id="linked-sub",
+            email="linked@example.com",
+            name="Linked",
+            picture_url=None,
+        )
+        db_session.commit()
+
+        response = self._run_callback(
+            client, provider, email="linked@example.com", email_verified=False, sub="linked-sub"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["user_id"] == str(existing.id)
+        denial = (
+            db_session.query(models.AuditLog)
+            .filter_by(action=models.AuditAction.OAUTH_ACCOUNT_LINK_DENIED)
+            .one_or_none()
+        )
+        assert denial is None

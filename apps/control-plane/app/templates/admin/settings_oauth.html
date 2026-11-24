@@ -105,6 +105,18 @@
             </td>
         </tr>
         <tr>
+            <td><code>OAUTH_LINK_EXISTING_BY_EMAIL</code></td>
+            <td>
+                {% if oauth_config.link_existing_by_email %}
+                <span class="badge badge-warning">Enabled</span>
+                <span class="text-muted">— OAuth login links to an existing account with the same verified email</span>
+                {% else %}
+                <span class="badge badge-success">Disabled</span>
+                <span class="text-muted">— OAuth login never links to an existing account by email</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
             <td><code>OAUTH_SYNC_USER_INFO</code></td>
             <td>
                 {% if oauth_config.sync_user_info %}
@@ -198,6 +210,7 @@ OAUTH_CLIENT_SECRET=your_client_secret
 # Optional settings
 OAUTH_SCOPES=openid profile email
 OAUTH_AUTO_REGISTER=true
+OAUTH_LINK_EXISTING_BY_EMAIL=false
 OAUTH_SYNC_USER_INFO=true
 OAUTH_ADMIN_GROUPS=admins,superusers
 OAUTH_DEFAULT_ROLE=user</pre>

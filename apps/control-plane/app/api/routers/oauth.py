@@ -150,7 +150,19 @@ async def callback(
         user = oauth_service.find_user_by_email(db, userinfo.email)
 
         if user:
-            if not userinfo.email_verified:
+            # SECURITY (#b69988f1): email-match linking is off unless the
+            # operator explicitly enables it. Some identity providers let a
+            # user mark their own email as verified, which makes the
+            # id_token claim below untrustworthy. Refuse regardless of
+            # email_verified when the flag is off.
+            if not settings.oauth_link_existing_by_email:
+                deny_reason: str | None = "email_linking_disabled"
+            elif not userinfo.email_verified:
+                deny_reason = "email_not_verified"
+            else:
+                deny_reason = None
+
+            if deny_reason is not None:
                 # SECURITY (#f1e6f0dc): do NOT link an unverified external
                 # identity to an existing account just because the email
                 # matches — that's exactly the account-takeover path this
@@ -169,7 +181,7 @@ async def callback(
                         "provider": provider,
                         "provider_user_id": userinfo.sub,
                         "email": userinfo.email,
-                        "reason": "email_not_verified",
+                        "reason": deny_reason,
                     },
                 )
                 db.commit()
